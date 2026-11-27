@@ -4,6 +4,7 @@ import { api, setActiveWorkspace, useAction, useResource } from './api.ts';
 import { CatalogPage } from './catalog.tsx';
 import { BoardPage } from './board.tsx';
 import { PlansPage } from './plans.tsx';
+import { BudgetsPage } from './budgets.tsx';
 import { HistoryPage } from './history.tsx';
 import { WorktreesPage } from './worktrees.tsx';
 import { Field, Modal, Notice } from './ui.tsx';
@@ -14,6 +15,7 @@ const pages = {
   board: ['▦', '协作任务板'],
   plans: ['≡', '计划与审批'],
   worktrees: ['⑂', '代码与联调'],
+  budgets: ['∑', '调用预算'],
   history: ['◷', '活动记录'],
 };
 type Page = keyof typeof pages;
@@ -98,6 +100,8 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
           />
         ) : page === 'worktrees' ? (
           <WorktreesPage />
+        ) : page === 'budgets' ? (
+          <BudgetsPage workspace={data?.workspaces.find((w) => w.id === data.active)} events={events} />
         ) : (
           <HistoryPage events={events} />
         )}

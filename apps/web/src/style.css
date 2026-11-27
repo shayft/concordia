@@ -689,3 +689,30 @@ pre {
   color: var(--muted);
   margin: 0 8px;
 }
+.download {
+  display: inline-block;
+  background: var(--green);
+  color: #fff;
+  text-decoration: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.budget-counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 9px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.budget-counters b {
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
+.member-permissions {
+  margin-top: 12px;
+}
+.action-list .check {
+  margin: 0;
+}

@@ -20,7 +20,12 @@ export function HistoryPage({ events }: { events: number }) {
           <h1>活动记录</h1>
           <p>按事件序号查看执行、交付与状态变化。</p>
         </div>
-        <button onClick={() => void reload()}>刷新</button>
+        <div className="actions">
+          <button onClick={() => void reload()}>刷新</button>
+          <a className="download" href="/api/export/audit" download="concordia-audit.json">
+            下载脱敏审计摘要
+          </a>
+        </div>
       </header>
       <Notice error={error || recovery.error} />
       {Boolean(recovery.data?.unresolved.length) && (

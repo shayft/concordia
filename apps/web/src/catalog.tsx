@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, type FormEvent } from 'react';
 import type { Catalog, CatalogModel, Connection, Member, QuotaPool } from '@concordia/protocol/connections';
+import { MemberPermissions } from './member-permissions.tsx';
 import { api, useAction, useResource } from './api.ts';
 import { Empty, Field, Modal, Notice } from './ui.tsx';
 
@@ -100,6 +101,10 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                   enabled,
                   connectionId,
                   role: text(fields, 'role'),
+                  reportsTo: text(fields, 'reportsTo') || undefined,
+                  allowedActions: fields.has('customActions')
+                    ? fields.getAll('allowedActions').map(String)
+                    : undefined,
                   systemPrompt: text(fields, 'systemPrompt') || undefined,
                   modelId: text(fields, 'modelId') || undefined,
                 }
@@ -358,6 +363,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
               <textarea id="systemPrompt" name="systemPrompt" defaultValue={member?.systemPrompt} />
             </Field>
           )}
+          {tab === 'members' && <MemberPermissions member={member} members={catalog.members} />}
           <Notice error={feedback.error} />
           <div className="modal-actions">
             <button type="button" onClick={onClose}>

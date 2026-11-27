@@ -262,3 +262,82 @@ it('在连接页添加、编辑、禁用并重新启用指定连接', async () =
     'PUT',
   ]);
 });
+
+it('调用预算按选定范围保存正整数上限，移除后仍显示累计用量', async () => {
+  const { BudgetsPage } = await import('../src/budgets.tsx');
+  const scope = 'pool',
+    id = 'connection:gateway';
+  let limit: unknown;
+  serve = (path, body) => {
+    if (path === '/api/catalog')
+      return { connections: [{ id: 'gateway', name: '独立网关' }], models: [], members: [], pools: [] };
+    if (path === '/api/budgets')
+      return { limits: limit ? [limit] : [], usage: [{ scope, id, calls: 12, tokens: 930, active: 0 }] };
+    limit = body ? { ...(body as object), scope, id } : undefined;
+    return {};
+  };
+  await render(<BudgetsPage workspace={{ id: 'test', name: '测试' }} events={0} />);
+  await click(button('额度池'));
+  await click(button('设置上限'));
+  container.querySelector<HTMLInputElement>('#maxTokens')!.value = '12000';
+  await click(button('保存上限'));
+  expect(requests.find((r) => r.method === 'PUT')).toEqual({
+    path: '/api/budgets/pool/connection%3Agateway',
+    method: 'PUT',
+    body: { maxTokens: 12000 },
+  });
+  expect(container.textContent).toContain('12000');
+  await click(button('设置上限'));
+  await click(button('移除全部限额'));
+  expect(requests.some((r) => r.method === 'DELETE')).toBe(false);
+  await click(button('确认移除，此范围累计用量将保留'));
+  expect(requests.filter((r) => r.method === 'DELETE')).toHaveLength(1);
+  expect(container.textContent).toContain('930');
+});
+
+it('岗位保存直属上级和显式空动作白名单，重新打开仍为受限模式', async () => {
+  const catalog = {
+    connections: [{ id: 'c', name: '编程', kind: 'codex', enabled: true }],
+    models: [],
+    members: [{ id: 'engineer', name: '开发', role: '开发', connectionId: 'c', enabled: true }],
+    pools: [],
+  };
+  serve = (path, body) => {
+    if (path === '/api/catalog') return catalog;
+    if (path === '/api/members') catalog.members.push(body as (typeof catalog.members)[number]);
+    return body;
+  };
+  await render(<CatalogPage />);
+  await click(button('岗位 1'));
+  await click(button('＋ 添加岗位'));
+  for (const [field, value] of [
+    ['id', 'reviewer'],
+    ['name', '复审'],
+    ['role', '审查'],
+    ['reportsTo', 'engineer'],
+  ]) {
+    container.querySelector<HTMLInputElement | HTMLSelectElement>('dialog [name="' + field + '"]')!.value =
+      value;
+  }
+  await click(container.querySelector<HTMLInputElement>('[name="customActions"]')!);
+  await click(button('保存岗位'));
+  expect(requests.filter((r) => r.path === '/api/members')[0]?.body).toMatchObject({
+    id: 'reviewer',
+    reportsTo: 'engineer',
+    allowedActions: [],
+  });
+  const row = [...container.querySelectorAll('.record')].find((r) => r.textContent.includes('复审'))!;
+  await click([...row.querySelectorAll('button')].find((b) => b.textContent === '编辑')!);
+  expect(container.querySelector<HTMLInputElement>('[name="customActions"]')!.checked).toBe(true);
+  expect(container.querySelectorAll('[name="allowedActions"]:checked')).toHaveLength(0);
+});
+
+it('活动页的下载使用当前会话的固定 JSON 摘要端点', async () => {
+  const { HistoryPage } = await import('../src/history.tsx');
+  serve = (path) => (path === '/api/recovery' ? { recovered: [], unresolved: [] } : []);
+  await render(<HistoryPage events={0} />);
+  const link = container.querySelector<HTMLAnchorElement>('a[download]')!;
+  expect(link.getAttribute('href')).toBe('/api/export/audit');
+  expect(link.download).toBe('concordia-audit.json');
+  expect(requests.some((r) => r.path === '/api/export/audit')).toBe(false);
+});
