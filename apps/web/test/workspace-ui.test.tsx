@@ -221,3 +221,44 @@ it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
     snapshot: [{ treeId: 'tree', sha: 'a'.repeat(40) }],
   });
 });
+
+it('在连接页添加、编辑、禁用并重新启用指定连接', async () => {
+  const connections: Record<string, unknown>[] = [];
+  serve = (path, body) => {
+    if (path === '/api/catalog') return { connections, models: [], members: [], pools: [] };
+    const item = body as Record<string, unknown>;
+    if (path === '/api/connections') connections.push(item);
+    else if (path === '/api/connections/gateway-a') connections[0] = item;
+    return item;
+  };
+  await render(<CatalogPage />);
+  await click(button('＋ 添加连接'));
+  const set = (field: string, value: string) => {
+    container.querySelector<HTMLInputElement>('dialog [name="' + field + '"]')!.value = value;
+  };
+  set('id', 'gateway-a');
+  set('name', '研究网关');
+  set('baseUrl', 'https://gateway.invalid/v1');
+  await click(button('保存连接'));
+  expect(connections[0]).toMatchObject({
+    id: 'gateway-a',
+    name: '研究网关',
+    kind: 'chat-completions',
+    enabled: true,
+  });
+  await click(button('编辑'));
+  set('name', '交付网关');
+  await click(button('保存连接'));
+  expect(container.textContent).toContain('交付网关');
+  await click(button('禁用'));
+  expect(connections[0].enabled).toBe(false);
+  expect(button('验证').disabled).toBe(true);
+  await click(button('启用'));
+  expect(connections[0].enabled).toBe(true);
+  expect(requests.filter((r) => r.method !== 'GET').map((r) => r.method)).toEqual([
+    'POST',
+    'PUT',
+    'PUT',
+    'PUT',
+  ]);
+});
