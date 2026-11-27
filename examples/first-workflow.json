@@ -1,0 +1,15 @@
+{
+  "id": "first-workflow",
+  "title": "交付一张标题卡",
+  "goal": "把一张标题卡交给审阅者，练习确认交付版本。",
+  "acceptance": ["打开标题卡版本，可看到文字「模拟交付 · 发布标题卡」。"],
+  "agents": [
+    { "id": "editor", "name": "编辑（模拟）", "connection": "mock-editor" }
+  ],
+  "slots": [{ "id": "title-card", "title": "标题卡" }],
+  "tasks": [
+    { "id": "publish-title", "title": "发布标题卡", "owner": "editor", "produces": ["title-card"] }
+  ],
+  "requiredSlots": ["title-card"],
+  "maxCalls": 1
+}

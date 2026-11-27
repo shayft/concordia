@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, request, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -109,6 +109,28 @@ async function history(ui:Client,after=0):Promise<WorkflowEvent[]> {
 async function apply(ui: Client, plan:unknown=spec) {
   expect((await ui.post('/api/spec/apply',{spec:plan,expectedRevision:0,approved:true})).status).toBe(200);
 }
+
+it('README 无账号示例从手工预览到主卡验收均可在空连接目录运行', async () => {
+  const example = JSON.parse(await readFile(new URL('../../../examples/first-workflow.json', import.meta.url), 'utf8'));
+  app = await startLocalServer(web, data);
+  const ui = await login(app);
+  expect(await (await ui.get('/api/catalog')).json()).toMatchObject({ connections: [], members: [], models: [] });
+  expect((await ui.post('/api/spec/preview', { spec: example })).status).toBe(200);
+  expect((await board(ui)).spec).toBeNull();
+  expect((await ui.post('/api/spec/apply', { spec: example, expectedRevision: 0 })).status).toBe(400);
+  await apply(ui, example);
+  const task = '/api/tasks/publish-title';
+  expect((await ui.post(task + '/run', { mode: 'simulation' })).status).toBe(200);
+  await vi.waitFor(async () => expect((await board(ui)).tasks[0].status).toBe('review'));
+  const { versions: [version], executions } = await board(ui);
+  expect(executions).toHaveLength(1);
+  expect(executions[0]).toMatchObject({ status: 'success', connection: 'mock-editor' });
+  expect(version.slotId).toBe('title-card');
+  expect(await (await ui.get('/api/versions/' + version.id)).json()).toMatchObject({ content: '模拟交付 · 发布标题卡' });
+  expect((await ui.post(task + '/control', { action: 'accept' })).status).toBe(200);
+  expect(await (await ui.post('/api/accept', {})).json()).toEqual({ snapshot: { 'title-card': version.id } });
+  expect(api.seen).toHaveLength(0);
+});
 
 it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计划和调用，最终验收指定版本',async () => {
   app=await startLocalServer(web,data);const ui=await login(app);
