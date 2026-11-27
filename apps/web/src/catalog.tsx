@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState, type FormEvent } from 'react';
 import type { Catalog, CatalogModel, Connection, Member, QuotaPool } from '@concordia/protocol/connections';
+import { modelPricingSchema } from '@concordia/protocol/pricing';
 import { MemberPermissions } from './member-permissions.tsx';
 import { api, useAction, useResource } from './api.ts';
 import { Empty, Field, Modal, Notice } from './ui.tsx';
@@ -23,6 +24,20 @@ function isMember(row: Row): row is Member {
 const tabs = { connections: '连接', models: '模型', members: '岗位', pools: '额度池' };
 const cli = (kind: Connection['kind']) => kind === 'claude' || kind === 'codex';
 const text = (form: FormData, field: string) => String(form.get(field) ?? '').trim();
+function readPricing(form: FormData) {
+  const currency = text(form, 'currency');
+  const input = text(form, 'inputPerMillion');
+  const output = text(form, 'outputPerMillion');
+  if (!input && !output && !currency) return undefined;
+  const parsed = modelPricingSchema.safeParse({
+    currency,
+    inputPerMillion: input ? Number(input) : undefined,
+    outputPerMillion: output ? Number(output) : undefined,
+  });
+  if (!parsed.success) throw new Error('定价需要三位币种代码和至少一项非负单价。');
+  return parsed.data;
+}
+
 type FormProps = {
   tab: Tab;
   catalog: Catalog;
@@ -92,6 +107,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                 enabled,
                 connectionId,
                 modelId: text(fields, 'modelId'),
+                pricing: readPricing(fields),
                 params: json('params'),
                 toolMode: text(fields, 'toolMode') || undefined,
               }
@@ -298,6 +314,43 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
               </>
             )}
           </div>
+          {tab === 'models' && (
+            <details className="advanced">
+              <summary>模型价格（可选）</summary>
+              <div className="form-grid">
+                <Field name="currency" label="币种代码">
+                  <input
+                    id="currency"
+                    name="currency"
+                    pattern="[A-Za-z]{3}"
+                    maxLength={3}
+                    defaultValue={model?.pricing?.currency}
+                    placeholder="如 CNY 或 USD"
+                  />
+                </Field>
+                <Field name="inputPerMillion" label="每百万输入 token 单价">
+                  <input
+                    id="inputPerMillion"
+                    name="inputPerMillion"
+                    type="number"
+                    step="any"
+                    min="0"
+                    defaultValue={model?.pricing?.inputPerMillion}
+                  />
+                </Field>
+                <Field name="outputPerMillion" label="每百万输出 token 单价">
+                  <input
+                    id="outputPerMillion"
+                    name="outputPerMillion"
+                    type="number"
+                    step="any"
+                    min="0"
+                    defaultValue={model?.pricing?.outputPerMillion}
+                  />
+                </Field>
+              </div>
+            </details>
+          )}
           {((tab === 'connections' && !cli(kind)) || tab === 'models') && (
             <details className="advanced">
               <summary>高级调用参数</summary>

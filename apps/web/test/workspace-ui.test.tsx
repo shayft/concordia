@@ -382,3 +382,66 @@ it('活动页的下载使用当前会话的固定 JSON 摘要端点', async () =
   expect(link.download).toBe('concordia-audit.json');
   expect(requests.some((r) => r.path === '/api/export/audit')).toBe(false);
 });
+
+it('模型可跳过定价、设置零输入单价并保留独立的输入和输出报价', async () => {
+  const models: Record<string, unknown>[] = [];
+  serve = (path, body) => {
+    if (path === '/api/catalog')
+      return {
+        connections: [{ id: 'api', kind: 'responses', name: '网关', enabled: true }],
+        models,
+        members: [],
+        pools: [],
+      };
+    const record = body as Record<string, unknown>;
+    if (path === '/api/models') models.push(record);
+    if (path === '/api/models/m') models[0] = record;
+    return record;
+  };
+  await render(<CatalogPage />);
+  await click(button('模型 0'));
+  await click(button('＋ 添加模型'));
+  function set(field: string, value: string) {
+    container.querySelector<HTMLInputElement>('dialog [name="' + field + '"]')!.value = value;
+  }
+  set('id', 'm');
+  set('name', '模型');
+  set('modelId', 'api/model');
+  await click(button('保存模型'));
+  expect(models[0]).not.toHaveProperty('pricing');
+  await click(button('编辑'));
+  set('currency', 'cny');
+  set('inputPerMillion', '0');
+  set('outputPerMillion', '14');
+  await click(button('保存模型'));
+  expect(models[0].pricing).toEqual({ currency: 'CNY', inputPerMillion: 0, outputPerMillion: 14 });
+  await click(button('编辑'));
+  expect(container.querySelector<HTMLInputElement>('#inputPerMillion')?.value).toBe('0');
+});
+
+it('活动页显示任务执行时价格、已知成本和未知用量，并随事件刷新', async () => {
+  const { HistoryPage } = await import('../src/history.tsx');
+  const first = {
+    id: 'e1',
+    taskId: 'a',
+    connection: 'local',
+    modelId: 'custom',
+    started: 1,
+    inputTokens: 10,
+    outputTokens: 0,
+    pricing: { currency: 'USD', inputPerMillion: 2, outputPerMillion: 0 },
+    amount: 0.00002,
+  };
+  serve = (path) =>
+    path === '/api/execution-costs'
+      ? [first, { ...first, id: 'e2', modelId: null, pricing: null, amount: null, inputTokens: null }]
+      : path === '/api/recovery'
+        ? { recovered: 0, unresolved: [] }
+        : [];
+  await render(<HistoryPage events={0} />);
+  expect(container.textContent).toContain('0.00002 USD');
+  expect(container.textContent).toContain('未知模型');
+  expect(container.textContent).toContain('未知 / 0');
+  await render(<HistoryPage events={1} />);
+  expect(requests.filter((r) => r.path === '/api/execution-costs')).toHaveLength(2);
+});

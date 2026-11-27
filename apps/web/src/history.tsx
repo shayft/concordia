@@ -1,3 +1,4 @@
+import type { ExecutionCost } from '@concordia/protocol/pricing';
 import { useEffect } from 'react';
 import { useResource } from './api.ts';
 import { Empty, Notice } from './ui.tsx';
@@ -10,9 +11,14 @@ interface EventRecord {
 export function HistoryPage({ events }: { events: number }) {
   const { data, error, reload } = useResource<EventRecord[]>('history');
   const recovery = useResource<{ recovered: unknown; unresolved: unknown[] }>('recovery');
+  const {
+    data: costs,
+    error: costError,
+    reload: reloadCosts,
+  } = useResource<ExecutionCost[]>('execution-costs');
   useEffect(() => {
-    if (events) void reload();
-  }, [events, reload]);
+    if (events) void Promise.all([reload(), reloadCosts()]);
+  }, [events, reload, reloadCosts]);
   return (
     <>
       <header className="page-title">
@@ -21,18 +27,61 @@ export function HistoryPage({ events }: { events: number }) {
           <p>按事件序号查看执行、交付与状态变化。</p>
         </div>
         <div className="actions">
-          <button onClick={() => void reload()}>刷新</button>
+          <button onClick={() => void Promise.all([reload(), reloadCosts(), recovery.reload()])}>
+            刷新
+          </button>
           <a className="download" href="/api/export/audit" download="concordia-audit.json">
             下载脱敏审计摘要
           </a>
         </div>
       </header>
-      <Notice error={error || recovery.error} />
+      <Notice error={error || costError || recovery.error} />
       {Boolean(recovery.data?.unresolved.length) && (
         <div className="notice error">
           有 {recovery.data?.unresolved.length} 个历史进程待人工核对，真实执行暂时受限。
         </div>
       )}
+      <section className="surface">
+        <div className="section-head">
+          <h2>执行成本</h2>
+          <span>按执行时单价估算</span>
+        </div>
+        {costs
+          ?.slice()
+          .reverse()
+          .map((row) => (
+            <details key={row.id} className="event">
+              <summary>
+                任务 {row.taskId} · {row.modelId ?? '未知模型'}{' '}
+                <strong>
+                  {row.amount === null || !row.pricing
+                    ? '未知'
+                    : row.amount.toLocaleString('zh-CN', { maximumSignificantDigits: 12 }) +
+                      ' ' +
+                      row.pricing.currency}
+                </strong>
+              </summary>
+              <dl className="meta">
+                <dt>执行</dt>
+                <dd>{row.id}</dd>
+                <dt>连接</dt>
+                <dd>{row.connection}</dd>
+                <dt>开始时间</dt>
+                <dd>{new Date(row.started).toLocaleString()}</dd>
+                <dt>输入 / 输出 token</dt>
+                <dd>
+                  {row.inputTokens ?? '未知'} / {row.outputTokens ?? '未知'}
+                </dd>
+                <dt>每百万输入 / 输出 token 单价</dt>
+                <dd>
+                  {row.pricing?.inputPerMillion ?? '未知'} / {row.pricing?.outputPerMillion ?? '未知'}{' '}
+                  {row.pricing?.currency}
+                </dd>
+              </dl>
+            </details>
+          ))}
+        {costs && !costs.length && <Empty>此工作区尚无执行。</Empty>}
+      </section>
       <section className="surface">
         <div className="section-head">
           <h2>工作区事件</h2>
