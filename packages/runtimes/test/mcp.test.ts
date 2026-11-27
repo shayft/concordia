@@ -30,3 +30,21 @@ it('MCP 协商、参数白名单、重发、错绑、撤销和到期', async () 
   mcp.close('a');
   expect((await send('a','tools/call',action)).status).toBe(401);
 });
+
+it('分配给执行的凭证不会进入请求编号、动作回执或错误正文', async()=>{
+  let token='';
+  const mcp=new ExecutionMcpServer(async()=>({value:token}));
+  token=mcp.open('one',undefined,new Set(['progress']));
+  const send=(id:number|string,method:string,params:unknown)=>mcp.handle({
+    executionId:'one',authorization:'Bearer '+token,body:{jsonrpc:'2.0',id,method,params},
+  });
+  await send(1,'initialize',{});
+  for (const response of [
+    await send(token,'ping',{}),
+    await send(2,'tools/call',{name:'progress',arguments:{message:token.toUpperCase()}}),
+    await send(3,'tools/call',{name:'progress',arguments:{message:'正常进度'}}),
+  ]) {
+    expect(JSON.stringify(response).toLowerCase().includes(token)).toBe(false);
+    expect(response.body).toHaveProperty('error');
+  }
+});

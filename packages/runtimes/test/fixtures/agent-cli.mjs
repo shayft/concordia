@@ -6,7 +6,9 @@ const option = name => args[args.indexOf(name) + 1];
 const tomlUrl = args.find(a => a.startsWith('mcp_servers='))?.match(/url="([^"]+)"/)?.[1];
 if (args.includes('--version')) console.log(claude ? '2.1.330 (Claude Code)' : 'codex-cli 0.171.0');
 else if (args.includes('--help')) {
-  console.log('--no-daemon --disable --ask-for-approval --sandbox --ephemeral --skip-git-repo-check --json resume --resume --session-id --restricted --print --output-format --safe-mode --permission-mode --tools --allowedTools --disallowedTools --strict-mcp-config --mcp-config --max-turns --no-session-persistence --settings --model');
+  let help='--no-daemon --disable --ask-for-approval --sandbox --ephemeral --skip-git-repo-check --json resume --resume --session-id --verbose --restricted --print --output-format --safe-mode --permission-mode --tools --allowedTools --disallowedTools --strict-mcp-config --mcp-config --max-turns --no-session-persistence --settings --model';
+  if(process.env.LANG==='synthetic-legacy') help=help.split(' ').filter(x => !['--mcp-config','--allowedTools'].includes(x)).join(' ');
+  console.log(help);
 } else if (args.includes('features')) {
   args.forEach((arg, i) => { if (arg === '--disable') console.log(args[i + 1] + ' stable false'); });
 } else if (args.includes('list')) {
@@ -19,7 +21,15 @@ else if (args.includes('--help')) {
 } else {
   const prompt = await text(process.stdin);
   const token = process.env.CONCORDIA_MCP_TOKEN;
-  if (!token || args.some(arg => arg.includes(token) || arg === prompt)) process.exit(2);
+  const remote = args.includes('--mcp-config') || Boolean(tomlUrl);
+  if (Boolean(token) !== remote || args.some(arg => (token && arg.includes(token)) || arg === prompt)) process.exit(2);
+  const resume = args.includes(claude ? '--resume' : 'resume');
+  const session = resume ? option(claude ? '--resume' : 'resume') : (claude ? option('--session-id') : randomUUID());
+  const init = claude ? {type:'system',subtype:'init',session_id:session} : {type:'thread.started',thread_id:session};
+  console.log(JSON.stringify(init));
+  if(prompt==='interrupt') await new Promise(resolve=>setTimeout(resolve,60_000));
+  let result = (resume ? 'resumed ' : 'new ') + session;
+  if (remote) {
   let url = tomlUrl;
   if (claude) {
     const config = JSON.parse(option('--mcp-config')).mcpServers.concordia;
@@ -49,13 +59,21 @@ else if (args.includes('--help')) {
   if (write && !claude && !args.includes('sandbox_workspace_write.exclude_slash_tmp=true')) process.exit(9);
   await rpc(3, 'tools/call', { name: 'publish_artifact', arguments: { slotId: 'contract', content: prompt } });
   await rpc(4, 'tools/call', { name: 'write_file', arguments: { path: 'src/demo.ts', content: '测试内容' } }, !write);
-  const resume = args.includes(claude ? '--resume' : 'resume');
-  const session = resume ? option(claude ? '--resume' : 'resume') : (claude ? option('--session-id') : randomUUID());
-  const result = (resume ? 'resumed ' : 'new ') + session;
+  } else {
+    if (claude && (option('--tools') !== '' || option('--disallowedTools') !== '*')) process.exit(11);
+    if (!claude && option('--sandbox') !== 'read-only') process.exit(12);
+    if (prompt === '生成计划') {
+      result='单次输出';
+    } else {
+      const {task,tools}=JSON.parse(prompt);
+      if(!tools.some(tool=>tool.name==='submit_result')) process.exit(13);
+      result=JSON.stringify({actions:[{type:'submit_result',summary:task}]});
+    }
+  }
   if (claude) console.log(JSON.stringify({ type:'result',subtype:'success',is_error:false,result,session_id:session,usage:{input_tokens:3,output_tokens:2} }));
   else {
     for (const event of [
-      { type:'thread.started',thread_id:session }, { type:'turn.started' },
+      { type:'turn.started' },
       { type:'item.completed',item:{type:'agent_message',text:result} },
       { type:'turn.completed',usage:{input_tokens:3,output_tokens:2} },
     ]) console.log(JSON.stringify(event));

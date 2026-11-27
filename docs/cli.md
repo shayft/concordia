@@ -35,3 +35,7 @@ Claude 使用单次 `--strict-mcp-config --mcp-config` 设置本机 HTTP 地址�
 Codex 使用单次 `-c mcp_servers=...` 注入唯一的本机服务器，`bearer_token_env_var` 指定环境变量名。执行前用同一覆盖运行 `mcp list --json` 核对实际服务器和地址。只读任务传 `--sandbox read-only`；明确授权的工作树才使用 `workspace-write`，额外写入根为空，同时排除临时目录并关闭沙箱网络。Shell、hooks、外部插件和网页搜索继续被禁用。若当前 CLI 无法确认这些约束，运行停止。[Codex MCP](https://developers.openai.com/codex/mcp/) · [Codex 沙箱配置](https://developers.openai.com/codex/config-reference/)
 
 独立会话按 CLI、连接、模型、成员、任务、工作目录和权限绑定，禁止同一会话并行运行。Claude 首次指定新 `--session-id`，随后指定 `--resume <UUID>`；Codex 首次从 `thread.started` 得到 UUID，之后用 `exec resume <UUID> -`。后端登记正反向绑定，发现返回 UUID 变更或属于另一任务即停止。用量保留 CLI 公开字段，动作发生时即可交给调度器，最终文本和用量在子进程结束后交付。CLI 对版本、原生登录、组织策略和计费的真实兼容性仍按真实验收记录判断。[Claude CLI 会话](https://code.claude.com/docs/en/cli-reference) · [Codex 非交互会话](https://developers.openai.com/codex/noninteractive/)
+
+连接可显式选 JSON 动作通道。对于帮助中缺少单次 MCP 注入参数、但可验证只读与禁用外部工具的 Claude 版本，预检后直接选择 JSON；运行时的 MCP 故障不会触发第二次模型请求。JSON 模式使用同一动作 schema 生成说明，先校验完整动作列表，再逐项检查当前执行和权限。该模式只在 CLI 结束后交付动作，不向子进程提供执行令牌。负责人生成计划时只取文本并关闭动作。平台拒绝在动作参数、请求编号或回复中携带当前执行的 MCP 凭证。
+
+CLI 协作运行时在收到 Codex `thread.started` 或 Claude `system/init` 后即向本地会话存储登记 UUID。Claude 在支持的版本中使用 `--output-format stream-json --verbose`。若版本只能在最终 JSON 中报告 UUID，在该报告前被中断的初次执行无法恢复；即使如此也不会按“最近会话”恢复其他任务。取消会撤销动作令牌并终止进程树，重新执行必须领取新的执行编号。[Claude 流式输出](https://code.claude.com/docs/en/headless) · [Claude 会话初始化事件](https://code.claude.com/docs/en/agent-sdk/typescript#sdksystemmessage) · [Codex 非交互事件](https://developers.openai.com/codex/noninteractive/)

@@ -47,17 +47,36 @@ for (const family of ['claude','codex'] as const) {
       };
       const first = await collect({});
       const again = await collect({executionId:'two'});
+      const interrupted = runtime.run({...input,taskId:'interrupted',executionId:'interrupted',prompt:'interrupt'},()=>{});
+      const stopped=expect(interrupted).rejects.toThrow(/取消/);
+      await vi.waitFor(() => expect(sessions.size).toBe(4), {timeout:15_000,interval:20});
+      runtime.cancel('interrupted');await stopped;
+      const resumed=await collect({executionId:'after-interrupt',taskId:'interrupted'});
+      expect(resumed).toMatch(/^resumed /);
       const other = await collect({executionId:'three',taskId:'different'});
       expect(again).toBe(first.replace('new ', 'resumed '));
       expect(other).not.toBe(first);
       const member = await collect({executionId:'other-member',memberId:'second'});
       expect(member).not.toBe(first);
-      expect(sessions.size).toBe(6);
-      expect(calls).toHaveLength(4);
+      expect(sessions.size).toBe(8);
+      expect(calls).toHaveLength(5);
       expect(calls[0]).toEqual({type:'publish_artifact',slotId:'contract',content:'带空格的输入'});
       await expect(runtime.run({...input,permission:'worktree-write'}, () => {})).rejects.toThrow(/授权/);
       await runtime.run({...input,executionId:'four',permission:'worktree-write',authorizedWorktree:directory,prompt:'受控写'}, () => {});
       expect(calls.at(-1)).toEqual({type:'write_file', path:'src/demo.ts', content:'测试内容'});
+      const json=new CliAgentRuntime({ kind, executable:process.execPath, connectionId:'json-connection',actionChannel:'json',confirmUnmanaged:true },mcp,sessions);
+      await json.run({...input,executionId:'final-actions',prompt:'JSON 最终动作'},()=>{});
+      expect(calls.at(-1)).toEqual({type:'submit_result',summary:'JSON 最终动作'});
+      if (kind==='claude') {
+        const old = new CliAgentRuntime({kind,executable:process.execPath, connectionId:'old',confirmUnmanaged:true,
+          env:{...process.env, LANG:'synthetic-legacy'}},mcp,sessions);
+        await old.run({...input,executionId:'auto-json',prompt:'兼容格式'},()=>{});
+        expect(calls.at(-1)).toEqual({type:'submit_result',summary:'兼容格式'});
+      }
+      const planning:AgentRuntimeEvent[]=[];
+      await json.run({...input,executionId:'generate',prompt:'生成计划',outputOnly:true},e=>planning.push(e));
+      expect(planning).toContainEqual({type:'text_delta',text:'单次输出'});
+      expect(planning.some(e=>e.type==='action')).toBe(false);
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory,{force:true, recursive:true}); }
-  }, 90_000);
+  }, 120_000);
 }

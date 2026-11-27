@@ -15,6 +15,7 @@ export interface CliOptions {
   signal?: AbortSignal;
   confirmUnmanaged?: boolean;
   model?: string;
+  actionChannel?: 'mcp' | 'json';
 }
 
 const claudeArgs = [
@@ -97,7 +98,7 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   }
   const auth = await invoke(kind === 'claude' ? ['auth', 'status'] : ['login', 'status']);
   const diagnostic = {
-    kind, executable, version, billingEnvironment,
+    kind, executable, version, billingEnvironment, actionChannel: options.actionChannel ?? 'auto',
     cwd: options.cwd ?? '新建的空临时目录',
     ...(kind === 'claude' && { unmanagedConfirmed: options.confirmUnmanaged === true }),
     ...parseAuth(kind, auth.stdout, auth.stderr, auth.exitCode),

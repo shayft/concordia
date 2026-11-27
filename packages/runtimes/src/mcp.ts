@@ -52,6 +52,7 @@ export class ExecutionMcpServer {
     const parsed = rpc.safeParse(request.body);
     if (!parsed.success) return rpcError(null, -32600, '无效 JSON-RPC 请求', 400);
     const { id, method, params } = parsed.data;
+    if (typeof id === 'string' && id.toLowerCase().includes(lease.token.toString('hex'))) return rpcError(null,-32600,'请求编号包含凭证',400);
     if (request.protocolVersion && !versions.includes(request.protocolVersion)) {
       return rpcError(id ?? null, -32600, '不支持的 MCP 协议版本', 400);
     }
@@ -74,7 +75,7 @@ export class ExecutionMcpServer {
     if (!action.success) return rpcError(id, -32602, '动作参数无效');
     if (!lease.allowed.has(action.data.type)) return rpcError(id, -32602, '此动作不在执行授权范围内');
     const signature = JSON.stringify(action.data);
-    if (signature.includes(lease.token.toString('hex'))) return rpcError(id, -32602, '动作包含仅供传输层使用的凭证');
+    if (signature.toLowerCase().includes(lease.token.toString('hex'))) return rpcError(id, -32602, '动作包含仅供传输层使用的凭证');
     const previous = lease.calls.get(id);
     if (previous) return previous.signature === signature ? previous.result : rpcError(id, -32600, '请求编号重复');
     if (lease.calls.size >= 256) return rpcError(id, -32000, '单次执行的动作上限已达');
@@ -87,8 +88,10 @@ export class ExecutionMcpServer {
     try {
       const value = await this.dispatch(executionId, action);
       if (lease !== this.leases.get(executionId) || this.now() >= lease.expires) return { status: 401 };
+      const content=JSON.stringify(value ?? { accepted:true });
+      if (content.toLowerCase().includes(lease.token.toString('hex'))) return rpcError(id,-32603,'动作回复包含传输凭证');
       lease.observe?.(action);
-      return rpcReply(id, { content: [{ type: 'text', text: JSON.stringify(value ?? { accepted: true }) }] });
+      return rpcReply(id, { content: [{ type: 'text', text: content }] });
     } catch {
       return rpcReply(id, { isError: true, content: [{ type: 'text', text: '当前执行无权执行此动作或其状态已改变。' }] });
     }
