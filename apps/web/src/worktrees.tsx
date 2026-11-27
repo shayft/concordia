@@ -28,6 +28,8 @@ interface Approval {
   id: string;
   treeId: string;
   kind: 'command' | 'merge';
+  available: boolean;
+  diagnostic?: string;
   sha: string;
   name?: string;
   executable?: string;
@@ -266,12 +268,15 @@ export function WorktreesPage() {
           .map((a) => (
             <article className="record" key={a.id}>
               <div className="record-info">
-                <h3>{a.kind === 'merge' ? '合并联调分支' : '运行 ' + a.name}</h3>
+                <h3>{a.kind === 'merge' ? '合并联调分支' : a.name ? '运行 ' + a.name : '运行项目命令'}</h3>
                 <p>
                   {a.sha} · {a.treeId}
                 </p>
+                {a.diagnostic && <Notice error={a.diagnostic} />}
               </div>
-              <button onClick={() => setInspect(a)}>查看并审批</button>
+              <button disabled={a.available === false} onClick={() => setInspect(a)}>
+                查看并审批
+              </button>
             </article>
           ))}
         {state.data && !state.data.approvals.some((a) => trees.some((t) => t.id === a.treeId)) && (

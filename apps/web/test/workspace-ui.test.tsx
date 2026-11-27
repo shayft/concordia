@@ -445,3 +445,56 @@ it('活动页显示任务执行时价格、已知成本和未知用量，并随�
   await render(<HistoryPage events={1} />);
   expect(requests.filter((r) => r.path === '/api/execution-costs')).toHaveLength(2);
 });
+
+it('仓库暂时不可读的审批显示诊断并禁用，仍可审查同页其他票据', async () => {
+  const { WorktreesPage } = await import('../src/worktrees.tsx');
+  serve = (path) => {
+    if (path === '/api/worktrees/state')
+      return {
+        projects: [
+          { id: 'app', repository: 'fixture', targetBranch: 'main', writeEnabled: true, commands: [] },
+        ],
+        trees: [
+          {
+            id: 'tree',
+            projectId: 'app',
+            kind: 'member',
+            status: 'ready',
+            sha: null,
+            conflicts: [],
+            snapshot: [],
+          },
+        ],
+        approvals: [
+          {
+            id: 'blocked',
+            treeId: 'tree',
+            kind: 'merge',
+            sha: 'a',
+            available: false,
+            diagnostic: '登记仓库当前不可访问。',
+          },
+          {
+            id: 'valid',
+            treeId: 'tree',
+            kind: 'command',
+            sha: 'b',
+            available: true,
+            name: '测试',
+            executable: 'node',
+            args: ['--test'],
+          },
+        ],
+        issues: [],
+        results: [],
+      };
+    if (path === '/api/board') return { tasks: [] };
+    return { phase: 'idle' };
+  };
+  await render(<WorktreesPage />);
+  const buttons = [...container.querySelectorAll('button')].filter((b) => b.textContent === '查看并审批');
+  expect(container.textContent).toContain('登记仓库当前不可访问。');
+  expect(buttons.map((b) => b.disabled)).toEqual([true, false]);
+  await click(buttons[1]);
+  expect(container.querySelector('dialog')?.textContent).toContain('--test');
+});
