@@ -1,3 +1,4 @@
+import { captureLegacyWaits, recordWaits, waitTime } from './timing.ts';
 import { exhausted } from './budget.ts';
 import { platformActionSchema } from '@concordia/protocol';
 import { workflowSpecSchema, type WorkflowSpec } from '@concordia/protocol/workflow';
@@ -60,9 +61,13 @@ function validateInputs(state: State, spec: WorkflowSpec) {
 export class Scheduler {
   constructor(private readonly deps: CoreDependencies<WorkflowStorage>) {}
   private write<T>(callback: (state: State, append: Append) => T): T {
-    return this.deps.storage.transaction((state, append) =>
-      callback(state, (type, data) => append(type, { ...data, time: this.deps.now() })),
-    );
+    return this.deps.storage.transaction((state, append) => {
+      const now = this.deps.now();
+      captureLegacyWaits(state);
+      const result = callback(state, (type, data) => append(type, { ...data, time: now }));
+      recordWaits(state, now);
+      return result;
+    });
   }
   private switchState(s: State, id: string) {
     if (!s.spec || s.spec.id === id) return;
@@ -149,9 +154,13 @@ export class Scheduler {
       validateInputs(s, spec);
       s.spec = spec;
       s.tasks = [
-        ...spec.tasks.map(
-          (t) => (!revised.has(t.id) && s.tasks.find((old) => old.id === t.id)) || makeTask(t),
-        ),
+        ...spec.tasks.map((t) => {
+          const old = s.tasks.find((task) => task.id === t.id);
+          if (old && !revised.has(t.id)) return old;
+          const task = makeTask(t);
+          if (old) task.waitHistory = old.waitHistory;
+          return task;
+        }),
         ...s.tasks.filter((t) => t.replyFor),
       ];
       for (const task of s.tasks) if (task.status === 'ready' || task.status === 'waiting') refresh(task, s);
@@ -169,15 +178,19 @@ export class Scheduler {
   }
   board() {
     const s = this.deps.storage.read();
+    const now = this.deps.now();
     const tasks = [...s.tasks]
       .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
       .map((t) => {
         const inputs = inputsFor(t, s);
-        return {
+        const card = {
           ...t,
+          waitTime: waitTime(t, s, now),
           column: column(t),
           missing: t.consumes.filter((c) => !inputs[c.slotId]).map((c) => c.slotId),
         };
+        delete card.waitHistory;
+        return card;
       });
     const slots = (s.spec?.slots ?? []).map((slot) => ({
       ...slot,

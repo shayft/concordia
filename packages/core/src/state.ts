@@ -1,3 +1,4 @@
+import type { WaitHistory } from './timing.ts';
 import type { CallMeter } from './budget.ts';
 import type { TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
 
@@ -17,6 +18,7 @@ export type Failure = 'auth' | 'rate_limit' | 'budget' | 'transient' | 'fatal' |
 export interface Task extends TaskSpec {
   status: TaskStatus;
   previous: Column;
+  waitHistory?: WaitHistory;
   rework: number;
   retries: number;
   active?: string;
@@ -167,7 +169,14 @@ export function refresh(task: Task, state: State) {
   transition(task, complete ? 'ready' : 'waiting');
 }
 export function makeTask(spec: TaskSpec): Task {
-  return { ...spec, status: 'waiting', previous: 'waiting', rework: 0, retries: 0 };
+  return {
+    ...spec,
+    status: 'waiting',
+    previous: 'waiting',
+    rework: 0,
+    retries: 0,
+    waitHistory: { complete: true, intervals: [] },
+  };
 }
 export function activePlan(state: State): WorkflowSpec {
   if (!state.spec) throw new Error('请先批准工作流计划');
