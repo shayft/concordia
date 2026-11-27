@@ -25,6 +25,8 @@
 
 集成期间又单独运行 `./node_modules/.bin/vitest run apps/server/test/application-http.test.ts`，4 项通过，包含正式 Worker 从绑定树发布提交、下游按版本只读交接、同名跨工作区任务拒绝复用其他成员树。另运行 `./node_modules/.bin/vitest run apps/server/test/connection-privacy.test.ts`，回环错误回显用例 1 项通过。
 
+在云端 Linux 运行 `./node_modules/.bin/vitest run apps/server/test/backup-service.test.ts`，1 项模拟测试通过。独立服务进程创建第二个工作区、完成模拟验收并正常停服。测试用正式备份命令 `tsx apps/server/src/backup.ts create` 和 `restore` 把数据复制到新路径，移走临时源目录，再启动新的服务进程。恢复后的目录库、工作树库和两个看板的 SQLite 版本与源库相同。旧会话返回 401，新会话可以切换两个工作区，读取原验收快照、执行状态、事件和交付正文。未提交的工作树文件随备份保留，异地副本发布返回 409，外部临时仓库的目标分支和成员分支仍指向原提交。
+
 安装与卸载演练的源码记录为 `d16eedb`。在临时源码目录运行以下三个项目命令。安装从 pnpm 本地存储复用了 208 个包；构建生成了静态首页、CSS 和 JS。首次用普通输出管道启动时，程序按设计提示需要交互式终端；在伪终端重新启动后完成整套演练。
 
 ```sh
