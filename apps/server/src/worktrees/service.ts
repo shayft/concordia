@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { runProcess } from '@concordia/runtimes/process';
@@ -29,6 +29,14 @@ export const snapshotSchema = z
 type Project = z.infer<typeof projectSchema>;
 type Snapshot = z.infer<typeof snapshotSchema>;
 type Row = Record<string, unknown>;
+export interface WorktreeIssue {
+  id: string;
+  treeId: string;
+  projectId: string;
+  taskIds: string[];
+  paths: string[];
+  status: 'open';
+}
 type Kind = 'member' | 'integration';
 
 function within(parent: string, path: string) {
@@ -58,22 +66,33 @@ function target(project: Project) {
 export class WorktreeService {
   private db: DatabaseSync;
   private directory: string;
-  private running = new Map<string, AbortController>();
-  constructor(dataDirectory: string) {
+  private running = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private closing = false;
+  private closed = false;
+  private onConflict?: (issue: WorktreeIssue) => void;
+  constructor(dataDirectory: string, onConflict?: (issue: WorktreeIssue) => void) {
+    this.onConflict = onConflict;
     mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
     this.directory = join(realpathSync(dataDirectory), 'worktrees');
     mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     if (!lstatSync(this.directory).isDirectory()) throw new Error('工作区数据目录无效。');
     this.db = new DatabaseSync(join(dataDirectory, 'worktrees.sqlite'));
-    this.db.exec(
-      'PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; BEGIN IMMEDIATE',
-    );
+    this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
+    if (this.db.prepare('PRAGMA journal_mode=WAL').get()?.journal_mode !== 'wal') {
+      this.db.close();
+      throw new Error('工作区数据库需要支持 WAL 的本地文件系统。');
+    }
+    this.db.exec('BEGIN IMMEDIATE');
     try {
       const version = this.db.prepare('PRAGMA user_version').get()?.user_version;
       if (version === 0) {
         this.db.exec(readFileSync(new URL('./001-worktrees.sql', import.meta.url), 'utf8'));
         this.db.exec('PRAGMA user_version=1');
-      } else if (version !== 1) throw new Error('工作区数据库版本不受支持。');
+      }
+      if (version === 0 || version === 1) {
+        this.db.exec(readFileSync(new URL('./002-conflict-issues.sql', import.meta.url), 'utf8'));
+        this.db.exec('PRAGMA user_version=2');
+      } else if (version !== 2) throw new Error('工作区数据库版本不受支持。');
       this.db.exec(
         "UPDATE approvals SET status='interrupted' WHERE status='running'; UPDATE trees SET status='interrupted' WHERE status IN ('creating','integrating'); COMMIT",
       );
@@ -84,20 +103,30 @@ export class WorktreeService {
     }
   }
 
-  close() {
-    if (this.running.size) throw new Error('尚有正在运行的项目命令。');
-    this.db.close();
+  close(): void | Promise<void> {
+    this.closing = true;
+    const closeStore = () => {
+      if (!this.closed) {
+        this.closed = true;
+        this.db.close();
+      }
+    };
+    if (!this.running.size) return closeStore();
+    const active = [...this.running.values()];
+    for (const item of active) item.controller.abort();
+    return Promise.all(active.map((item) => item.done)).then(closeStore);
   }
   configure(input: Project) {
+    if (this.closing) throw new Error('服务正在关闭。');
     const config = projectSchema.parse(input);
     if (!isAbsolute(config.repository)) throw new Error('请指定仓库的绝对路径。');
     checkRepoLocation(resolve(config.repository), this.directory);
     const repo = realpathSync(config.repository);
     checkRepoLocation(repo, this.directory);
+    checkLocalConfig(repo);
     // Start from the actual repository root, never from a subdirectory or bare repository.
     if (realpathSync(git(repo, ['rev-parse', '--show-toplevel']).trimEnd()) !== repo)
       throw new Error('请选择 Git 工作副本根目录。');
-    checkLocalConfig(repo);
     git(repo, ['check-ref-format', target(config)]);
     git(repo, ['rev-parse', '--verify', target(config) + '^{commit}']);
     if (
@@ -120,7 +149,7 @@ export class WorktreeService {
     )
       throw new Error('此项目已有 Git 交付记录，请为其他仓库或目标分支新建项目。');
     for (const row of this.db.prepare('SELECT id FROM trees WHERE project=?').all(config.id))
-      this.running.get(String(row.id))?.abort();
+      this.running.get(String(row.id))?.controller.abort();
     this.db
       .prepare(
         'INSERT INTO projects VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET repository=excluded.repository,target=excluded.target,writable=excluded.writable,commands=excluded.commands',
@@ -171,6 +200,7 @@ export class WorktreeService {
     return this.view(row);
   }
   private verified(key: string, write = true) {
+    if (this.closing) throw new Error('服务正在关闭。');
     const tree = this.tree(key);
     const project = this.project(tree.projectId);
     if (tree.status === 'removed' || (write && !project.writeEnabled) || this.running.has(key))
@@ -205,6 +235,7 @@ export class WorktreeService {
     return tree;
   }
   private create(project: Project, kind: Kind, taskId: string | null, snapshot: Snapshot) {
+    if (this.closing) throw new Error('服务正在关闭。');
     if (!project.writeEnabled) throw new Error('项目写入尚未授权。');
     checkLocalConfig(project.repository);
     const key = randomUUID();
@@ -304,17 +335,55 @@ export class WorktreeService {
           .filter(Boolean);
         if (!conflicts.length) throw new Error('联调合并未完成。');
         git(tree.path, ['merge', '--abort']);
-        this.db
-          .prepare("UPDATE trees SET status='conflict',conflicts=? WHERE id=?")
-          .run(JSON.stringify(conflicts), tree.id);
-        return { tree: this.tree(tree.id), conflicts, ownerTaskId: this.tree(item.treeId).taskId };
+        const taskIds = snapshot
+          .slice(0, snapshot.indexOf(item) + 1)
+          .filter((v) => {
+            const owner = this.tree(v.treeId);
+            return git(project.repository, ['diff', '--name-only', '-z', owner.base, v.sha, '--'])
+              .split('\0')
+              .some((path) => conflicts.includes(path));
+          })
+          .map((v) => this.tree(v.treeId).taskId!);
+        const issue: WorktreeIssue = {
+          id: tree.id,
+          treeId: tree.id,
+          projectId,
+          taskIds,
+          paths: conflicts,
+          status: 'open',
+        };
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          this.db
+            .prepare("UPDATE trees SET status='conflict',conflicts=? WHERE id=?")
+            .run(JSON.stringify(conflicts), tree.id);
+          this.db.prepare('INSERT INTO conflict_issues VALUES (?,?)').run(tree.id, JSON.stringify(taskIds));
+          this.db.exec('COMMIT');
+        } catch (error) {
+          this.db.exec('ROLLBACK');
+          throw error;
+        }
+        this.onConflict?.(issue);
+        return { tree: this.tree(tree.id), conflicts, ownerTaskId: this.tree(item.treeId).taskId, issue };
       }
       this.db.prepare("UPDATE trees SET sha=?,status='ready' WHERE id=?").run(head(tree.path), tree.id);
       return { tree: this.tree(tree.id), conflicts: [], ownerTaskId: null };
     } catch (error) {
-      this.db.prepare("UPDATE trees SET status='interrupted' WHERE id=?").run(tree.id);
+      this.db
+        .prepare("UPDATE trees SET status='interrupted' WHERE id=? AND status='integrating'")
+        .run(tree.id);
       throw error;
     }
+  }
+  private commandEvidence(treeId: string, commit: string) {
+    const row = this.db
+      .prepare(
+        "SELECT id,name,status,result FROM approvals WHERE tree=? AND sha=? AND kind='command' AND status IN ('failed','complete','interrupted','running') ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(treeId, commit);
+    if (!row || row.status !== 'complete' || !JSON.parse(String(row.result)).passed)
+      throw new Error('当前联调版本需要一条已批准并通过的项目命令记录。');
+    return { id: String(row.id), name: String(row.name), result: JSON.parse(String(row.result)) };
   }
   private ticket(treeId: string, kind: 'merge' | 'command', name?: string) {
     const tree = this.verified(treeId);
@@ -324,15 +393,7 @@ export class WorktreeService {
     const targetSha = sha.parse(git(project.repository, ['rev-parse', '--verify', target(project)]).trim());
     if (kind === 'merge' && (tree.kind !== 'integration' || targetSha !== tree.base))
       throw new Error('需要针对当前目标分支重新联调。');
-    if (kind === 'merge') {
-      const checks = this.db
-        .prepare(
-          "SELECT status,result FROM approvals WHERE tree=? AND sha=? AND kind='command' AND status IN ('failed','complete','interrupted','running') ORDER BY rowid DESC LIMIT 1",
-        )
-        .get(treeId, tree.sha);
-      if (!checks || checks.status !== 'complete' || !JSON.parse(String(checks.result)).passed)
-        throw new Error('当前联调版本需要一条已批准并通过的项目命令记录。');
-    }
+    const evidence = kind === 'merge' ? this.commandEvidence(treeId, tree.sha) : undefined;
     const declaration = project.commands.find((c) => c.name === name);
     if (kind === 'command' && !declaration) throw new Error('项目未声明此命令。');
     const approvalId = randomUUID();
@@ -346,7 +407,7 @@ export class WorktreeService {
         kind,
         tree.sha,
         targetSha,
-        name ?? null,
+        name ?? evidence?.id ?? null,
         declaration ? JSON.stringify(declaration) : null,
       );
     return this.approval(approvalId);
@@ -367,6 +428,8 @@ export class WorktreeService {
       ...(declaration ?? {}),
       ...(row.kind === 'merge'
         ? {
+            checkId: String(row.name),
+            check: this.db.prepare('SELECT id,name,result FROM approvals WHERE id=?').get(String(row.name)),
             diff: git(this.project(tree.projectId).repository, [
               'diff',
               '--no-ext-diff',
@@ -413,6 +476,8 @@ export class WorktreeService {
       return result;
     };
     try {
+      if (this.commandEvidence(tree.id, approval.sha).id !== approval.checkId)
+        return finish(false, '联调记录已变更，请重新审查。');
       if (git(project.repository, ['rev-parse', '--verify', ref]).trim() !== approval.targetSha)
         return finish(false, '目标分支已更新，请重新联调。');
       git(project.repository, ['merge-base', '--is-ancestor', approval.targetSha, approval.sha]);
@@ -439,13 +504,19 @@ export class WorktreeService {
     )
       throw new Error('项目命令声明已改变。');
     const controller = new AbortController();
-    this.running.set(tree.id, controller);
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    this.running.set(tree.id, { controller, done });
     const start = performance.now();
     try {
       const output = await runProcess(declaration.executable, declaration.args, {
         cwd: tree.path,
         signal: controller.signal,
         timeoutMs: 60_000,
+        recoveryDir: join(dirname(this.directory), 'processes'),
+        executionId: 'command-' + key,
         maxOutputBytes: 256 * 1024,
         env: {
           PATH: process.env.PATH,
@@ -469,10 +540,11 @@ export class WorktreeService {
       throw new Error('项目命令启动失败、被取消或超出时间/输出限制。');
     } finally {
       this.running.delete(tree.id);
+      finish();
     }
   }
   cancelCommand(treeId: string) {
-    this.running.get(treeId)?.abort();
+    this.running.get(treeId)?.controller.abort();
   }
   remove(key: string) {
     const tree = this.verified(key, false);
@@ -492,6 +564,20 @@ export class WorktreeService {
         .prepare('SELECT * FROM trees ORDER BY rowid')
         .all()
         .map((r) => this.view(r)),
+      issues: this.db
+        .prepare('SELECT tree,recipients FROM conflict_issues')
+        .all()
+        .map((row) => {
+          const tree = this.tree(String(row.tree));
+          return {
+            id: tree.id,
+            treeId: tree.id,
+            projectId: tree.projectId,
+            taskIds: JSON.parse(String(row.recipients)) as string[],
+            paths: tree.conflicts,
+            status: 'open' as const,
+          };
+        }),
       approvals: this.db
         .prepare("SELECT id FROM approvals WHERE status='pending'")
         .all()
@@ -511,4 +597,5 @@ export class WorktreeService {
   }
 }
 
-export const openWorktrees = (dataDirectory: string) => new WorktreeService(dataDirectory);
+export const openWorktrees = (dataDirectory: string, onConflict?: (issue: WorktreeIssue) => void) =>
+  new WorktreeService(dataDirectory, onConflict);

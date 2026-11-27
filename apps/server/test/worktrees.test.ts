@@ -113,6 +113,9 @@ it('冲突保留原仓库并定位负责人；重开服务保留所有权与已�
   service = openWorktrees(data);
   const result = service.integrate('demo', versions);
   expect(result).toMatchObject({ ownerTaskId: 'two', conflicts: ['file.txt'], tree: { status: 'conflict' } });
+  expect(service.state().issues).toEqual([
+    expect.objectContaining({ taskIds: ['one', 'two'], paths: ['file.txt'] }),
+  ]);
   expect(() => service.reviewMerge(result.tree.id)).toThrow();
   expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('baseline');
 });
@@ -141,4 +144,21 @@ it('只允许成员树中的普通文件，拒绝父目录、元数据、链接�
   expect(readFileSync(join(outside, 'safe'), 'utf8')).toBe('keep');
   service.configure(config(false));
   expect(() => service.write(t.id, 'new.txt', 'no')).toThrow();
+});
+
+it('关闭服务时中止已获批的项目命令，并在关闭 SQLite 之前登记失败', async () => {
+  const project = config(true);
+  project.commands = [
+    { name: 'test', executable: process.execPath, args: ['-e', 'setInterval(()=>{},100)'] },
+  ];
+  service.configure(project);
+  const tree = service.member('demo', 'cancel');
+  const approval = service.requestCommand(tree.id, 'test');
+  const result = expect(service.approveCommand(approval.id)).rejects.toThrow('取消');
+  await service.close();
+  await result;
+  service = openWorktrees(data);
+  expect(service.state().results).toContainEqual(
+    expect.objectContaining({ treeId: tree.id, status: 'failed' }),
+  );
 });

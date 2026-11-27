@@ -11,7 +11,7 @@ import {
   openSync,
   readSync,
   renameSync,
-  unlinkSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -179,11 +179,7 @@ function windowsFile(root: string, parts: string[], text?: string): string {
       }
       renameSync(temp, path);
     } finally {
-      try {
-        unlinkSync(temp);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-      }
+      rmSync(temp, { force: true });
     }
     return '';
   } finally {

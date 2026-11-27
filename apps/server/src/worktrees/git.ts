@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { devNull } from 'node:os';
 
@@ -85,6 +85,7 @@ export function gitWorktrees(repo: string) {
 }
 
 export function checkLocalConfig(repo: string) {
+  if (realpathSync(repo) !== repo) throw new Error('仓库位置已改变。');
   const config = git(repo, ['config', '--local', '--no-includes', '--name-only', '--list']).split('\n');
   if (
     config.some((key) =>
