@@ -1,6 +1,8 @@
 # 模型协议连接
 
-服务端用 `createModelProvider` 为一个 Base URL、协议和模型建立连接。一次 `stream` 发送一次 POST。可传 `{stream:false}` 获取完整响应；两种模式都输出文本、用量、工具动作和明确的结束事件。普通文本模型可以接收带 JSON 动作说明的提示词；动作 schema 及修复次数由调度层控制。
+在「连接」中为 API 连接选择「任务与规划响应模式」。流式使用 SSE，非流式读取完整 JSON。已有连接省略设置时默认流式。健康检查固定发送一次非流式请求，页面显示实际 HTTP 状态、耗时和上游提供的 Token 用量，缺失项标为「未知」。
+
+服务端用 `createModelProvider` 为指定的 Base URL、协议和模型建立连接。每次 `stream` 发送一次 POST，调用方的 `options.stream` 优先于连接设置。两种响应模式都产生文本、用量、工具动作和结束事件。普通文本模型可以接收带 JSON 动作说明的提示词，动作 schema 和修复次数由调度层控制。
 
 ## Chat Completions
 

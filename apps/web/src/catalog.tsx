@@ -93,6 +93,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                   }
                 : {
                     baseUrl: text(fields, 'baseUrl'),
+                    stream: text(fields, 'stream') !== 'off',
                     credentialRef: ref || undefined,
                     endpoint: text(fields, 'endpoint') || undefined,
                     headerRefs: json('headerRefs'),
@@ -224,6 +225,12 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                         defaultValue={apiConnection?.baseUrl}
                         placeholder="https://gateway.example/v1"
                       />
+                    </Field>
+                    <Field name="stream" label="任务与规划响应模式">
+                      <select id="stream" name="stream" defaultValue={apiConnection?.stream === false ? 'off' : 'on'}>
+                        <option value="on">流式（SSE）</option>
+                        <option value="off">非流式（JSON）</option>
+                      </select>
                     </Field>
                     <Field name="credentialRef" label="系统凭据引用">
                       <input
@@ -443,6 +450,7 @@ interface TestResult {
   text?: string;
   httpStatus?: number;
   elapsedMs?: number;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   error?: string;
 }
 function TestConnection({
@@ -559,20 +567,23 @@ function TestConnection({
           </select>
         </Field>
         <p className="help">此操作向所选连接发送一次只读请求，可能产生费用或消耗订阅额度。</p>
-        <Notice
-          error={feedback.error || result?.error}
-          message={
-            result?.ok
-              ? [
-                  result.text,
-                  result.httpStatus && 'HTTP ' + result.httpStatus,
-                  result.elapsedMs != null && result.elapsedMs + ' ms',
-                ]
-                  .filter(Boolean)
-                  .join(' · ')
-              : ''
-          }
-        />
+        <Notice error={feedback.error || result?.error} message={result?.ok ? result.text : undefined} />
+        {result && (
+          <div>
+            <p>
+              {!isCli && ('HTTP ' + (result.httpStatus ?? '状态未知') + ' · ')}
+              耗时 {result.elapsedMs == null ? '未知' : result.elapsedMs + ' ms'}
+            </p>
+            {!isCli && (
+              <p>
+                Token 用量 · {result.usage
+                  ? '输入 ' + (result.usage.inputTokens ?? '未知') + ' · 输出 ' +
+                    (result.usage.outputTokens ?? '未知') + ' · 合计 ' + (result.usage.totalTokens ?? '未知')
+                  : '未知'}
+              </p>
+            )}
+          </div>
+        )}
         <div className="modal-actions">
           <button onClick={close}>关闭</button>
           <button

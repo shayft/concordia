@@ -90,7 +90,7 @@ export function providerConfig(connection: Connection, model: CatalogModel | nul
   return {
     protocol: connection.kind, baseUrl: connection.baseUrl, model: model.modelId,
     credentialRef: connection.credentialRef, headerRefs: connection.headerRefs, endpoint: connection.endpoint,
-    timeoutMs: connection.timeoutMs, maxOutputTokens: connection.maxOutputTokens,
+    timeoutMs: connection.timeoutMs, maxOutputTokens: connection.maxOutputTokens, stream: connection.stream,
     params: { ...connection.params, ...model.params },
   };
 }
@@ -230,7 +230,7 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
             const result = await provider.validateConnection(controller.signal);
             const elapsedMs = Math.round(performance.now() - start);
             return result.ok ? { ...result, elapsedMs } : { ok: false, error: result.error.message,
-              httpStatus: result.error.httpStatus, elapsedMs };
+              httpStatus: result.httpStatus ?? result.error.httpStatus, elapsedMs, ...(result.usage && { usage: result.usage }) };
           }
           const cli = { executable: connection.executable, cwd: connection.cwd, model: model?.modelId, actionChannel:connection.actionChannel,
             confirmUnmanaged: input.confirmUnmanaged, signal: controller.signal };

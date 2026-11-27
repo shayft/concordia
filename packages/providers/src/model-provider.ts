@@ -139,6 +139,7 @@ export function createModelProvider(
     messages: ModelMessage[],
     tools: ModelTool[] = [],
     options: StreamOptions = {},
+    reportStatus?: (status: number) => void,
   ): AsyncGenerator<ModelEvent> {
     let problem = failure('invalid', '连接参数、消息、工具或上下文大小无效。');
     let timeout: AbortSignal | undefined;
@@ -158,7 +159,7 @@ export function createModelProvider(
         Object.keys(config.params ?? {}).some((k) => owned.has(k))
       )
         throw new Error('config');
-      const useStream = options.stream ?? true;
+      const useStream = options.stream ?? config.stream ?? true;
       const adapters = {
         'chat-completions': { path: 'chat/completions', body: chatBody, events: chatEvents },
         responses: { path: 'responses', body: responsesBody, events: responsesEvents },
@@ -216,6 +217,7 @@ export function createModelProvider(
       signal.throwIfAborted();
       problem = failure('transport', '网关网络请求失败。');
       const response = await fetch(url, { method: 'POST', headers, body, redirect: 'manual', signal });
+      reportStatus?.(response.status);
       if (!response.ok) {
         yield statusError(response.status);
         return;
@@ -262,11 +264,13 @@ export function createModelProvider(
     getCapabilities: () => ({ nativeTools: true, streaming: true }),
     async validateConnection(signal) {
       let reply = '';
+      let httpStatus: number | undefined;
       let usage: ModelUsage | undefined;
       for await (const event of stream(
         [{ role: 'user', content: 'Reply with exactly CONCORDIA_OK.' }],
         [],
         { stream: false, signal },
+        status => { httpStatus = status; },
       )) {
         if (event.type === 'text_delta') reply += event.text;
         if (event.type === 'usage') {
@@ -275,13 +279,14 @@ export function createModelProvider(
           if (event.outputTokens !== undefined) usage.outputTokens = event.outputTokens;
           if (event.totalTokens !== undefined) usage.totalTokens = event.totalTokens;
         }
-        if (event.type === 'error') return { ok: false, error: event, ...(usage && { usage }) };
+        if (event.type === 'error') return { ok: false, error: event, httpStatus, ...(usage && { usage }) };
       }
       return reply.trim() === 'CONCORDIA_OK'
-        ? { ok: true, text: 'CONCORDIA_OK', ...(usage && { usage }) }
+        ? { ok: true, text: 'CONCORDIA_OK', httpStatus, ...(usage && { usage }) }
         : {
             ok: false,
-            error: failure('invalid', '网关返回的文本与公开校验短句不匹配。'),
+            httpStatus,
+            error: failure('invalid', '网关返回的文本与公开校验短句不匹配。', httpStatus),
             ...(usage && { usage }),
           };
     },

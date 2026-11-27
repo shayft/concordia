@@ -49,6 +49,7 @@ export const connectionSchema = z.union([
       credentialRef).refine(refs => Object.keys(refs).length <= 16).optional(),
     endpoint: z.string().max(2048).refine(isEndpointPath).optional(),
     timeoutMs: z.number().int().min(1).max(2147483647).optional(),
+    stream: z.boolean().optional(),
     maxOutputTokens: z.number().int().positive().max(65536).optional(),
     params: params.optional(),
   }),

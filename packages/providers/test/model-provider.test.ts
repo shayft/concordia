@@ -130,7 +130,7 @@ it('does not send a late request after a timeout waiting for a credential', asyn
 
 it.each(['CONCORDIA_OK', 'different'])('报告连接验证的用量，包括非约定回显', async (content) => {
   const baseUrl = await listen((_req, res) =>
-    res.end(
+    res.writeHead(201).end(
       JSON.stringify({
         choices: [{ message: { content }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
@@ -143,7 +143,30 @@ it.each(['CONCORDIA_OK', 'different'])('报告连接验证的用量，包括非�
     model: 'private',
   }).validateConnection();
   expect(result).toMatchObject({
-    ok: content === 'CONCORDIA_OK',
+    ok: content === 'CONCORDIA_OK', httpStatus:201,
     usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
   });
+});
+
+it('显式请求选项优先于连接中保存的响应模式', async () => {
+  const received: boolean[] = [];
+  const baseUrl = await listen(async (req, res) => {
+    let data = '';
+    for await (const part of req) data += part;
+    const { stream } = JSON.parse(data);
+    received.push(stream);
+    if (stream) res.end(frame({ content: 'SSE' }, 'stop') + 'data: [DONE]\r\n\r\n');
+    else res.end(JSON.stringify({ choices: [{ message: { content: 'JSON' }, finish_reason: 'stop' }] }));
+  });
+  for (const configured of [false, true]) {
+    const p = createModelProvider({
+      protocol: 'chat-completions',
+      baseUrl,
+      model: 'test',
+      stream: configured,
+    });
+    const events = await collect(p.stream(input, [], { stream: !configured }));
+    expect(events).toContainEqual({ type: 'text_delta', text: configured ? 'JSON' : 'SSE' });
+  }
+  expect(received).toEqual([true, false]);
 });

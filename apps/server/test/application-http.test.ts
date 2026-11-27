@@ -53,6 +53,7 @@ function finish(res: ServerResponse, content: unknown) {
 async function gateway() {
   const queue: Array<(res:ServerResponse)=>void> = [];
   const messages: unknown[] = [];
+  const mode = { jsonOnly:false };
   const statuses: number[] = [];
   const seen: Array<{stream:unknown; model:unknown; url:unknown; authorization:boolean}> = [];
   const srv = createServer(async (req,res) => {
@@ -60,17 +61,18 @@ async function gateway() {
     messages.push(input.messages);
     seen.push({ stream: input.stream, model:input.model, url:req.url, authorization:req.headers.authorization!==undefined });
     const status = statuses.shift() ?? 200;
-    if (status !== 200) { res.writeHead(status).end(); return; }
+    if (status < 200 || status >= 300) { res.writeHead(status).end(); return; }
+    if (mode.jsonOnly && input.stream !== false) {res.writeHead(406).end();return;}
     const dispatch = queue.shift();
     if (!dispatch) { res.writeHead(500).end();return; }
-    res.writeHead(200,{'content-type':'text/event-stream'});res.flushHeaders();
+    res.writeHead(status,{'content-type':input.stream === false ? 'application/json' : 'text/event-stream'});res.flushHeaders();
     dispatch(res);
   });
   srv.listen(0,'127.0.0.1');
   await once(srv,'listening');
   const addr = srv.address();
   if (!addr || typeof addr === 'string') throw new Error('缺少本地测试端口');
-  return {queue,seen,messages,statuses,baseUrl:'http://127.0.0.1:'+addr.port+'/custom/v1',close: async () => {
+  return {queue,seen,messages,statuses,mode,baseUrl:'http://127.0.0.1:'+addr.port+'/custom/v1',close: async () => {
     const closed=once(srv,'close');srv.close();srv.closeAllConnections();await closed;
   }};
 }
@@ -90,9 +92,9 @@ afterEach(async () => {
   try { await app?.close(); } finally { app=undefined;await api.close();await rm(directory,{recursive:true,force:true}); }
 });
 
-async function configure(ui: Client) {
+async function configure(ui: Client, stream?:boolean) {
   const responses = [
-    await ui.post('/api/connections',{id:'gateway',name:'临时本机网关',kind:'chat-completions',baseUrl:api.baseUrl}),
+    await ui.post('/api/connections',{id:'gateway',name:'临时本机网关',kind:'chat-completions',baseUrl:api.baseUrl,stream}),
     await ui.post('/api/models',{id:'custom',name:'自定义',connectionId:'gateway',modelId:'dev/任意模型',toolMode:'json'}),
     await ui.post('/api/members',{id:'lead',name:'负责人',role:'负责验收',connectionId:'gateway',modelId:'custom'}),
   ];
@@ -150,6 +152,46 @@ it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计
   expect(await (await ui.post('/api/accept',{})).json()).toEqual({snapshot:{sample:version.id}});
   expect(api.seen).toEqual(Array.from({length:2},()=>({stream:true,model:'dev/任意模型',url:'/custom/v1/chat/completions',authorization:false})));
 },20_000);
+
+it('仅支持 JSON 的网关从持久化配置完成连接验证、生成计划与执行任务', async () => {
+  api.mode.jsonOnly = true;
+  app = await startLocalServer(web, data);
+  let ui = await login(app);
+  await configure(ui, false);
+  await app.close();
+  app = await startLocalServer(web, data);
+  ui = await login(app);
+  const send = (content: string) => (res: ServerResponse) =>
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { content }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+      }),
+    );
+  api.statuses.push(201);
+  api.queue.push(send('CONCORDIA_OK'));
+  const health = await ui.post('/api/connections/gateway/test', { modelId: 'custom', approved: true });
+  expect(await health.json()).toMatchObject({
+    ok: true,
+    httpStatus: 201,
+    elapsedMs: expect.any(Number),
+    usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+  });
+  api.queue.push(send(JSON.stringify(spec)));
+  const generated = await ui.post('/api/plans/generate', {
+    goal: spec.goal,
+    agentId: 'lead',
+    approved: true,
+  });
+  expect(generated.status).toBe(200);
+  await apply(ui, (await generated.json()).spec);
+  api.queue.push(send(JSON.stringify({ actions })));
+  expect((await ui.post('/api/tasks/write/run', { mode: 'live', approved: true })).status).toBe(200);
+  await vi.waitFor(async () => expect((await board(ui)).tasks[0].status).toBe('review'));
+  expect(api.seen.map((x) => [x.stream, x.model])).toEqual(
+    Array.from({ length: 3 }, () => [false, 'dev/任意模型']),
+  );
+}, 20_000);
 
 it('阶段 5：取消正在接收的流；迟到的完整动作不能发布版本或改回成功',async () => {
   app=await startLocalServer(web,data);const ui=await login(app);

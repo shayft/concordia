@@ -5,6 +5,7 @@ export interface ProviderConfig {
   model: string;
   credentialRef?: string;
   endpoint?: string;
+  stream?: boolean;
   timeoutMs?: number;
   maxOutputTokens?: number;
   headers?: Record<string, string>;
@@ -60,7 +61,7 @@ export interface ModelProvider {
   stream(messages: ModelMessage[], tools?: ModelTool[], options?: StreamOptions): AsyncIterable<ModelEvent>;
   validateConnection(
     signal?: AbortSignal,
-  ): Promise<({ ok: true; text: string } | { ok: false; error: ModelFailure }) & { usage?: ModelUsage }>;
+  ): Promise<({ ok: true; text: string } | { ok: false; error: ModelFailure }) & { httpStatus?: number; usage?: ModelUsage }>;
   getCapabilities(): { nativeTools: boolean; streaming: boolean };
 }
 export type CredentialReader = (ref: string, signal?: AbortSignal) => Promise<string>;

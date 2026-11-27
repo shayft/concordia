@@ -101,13 +101,16 @@ it('修改计划只产生带预览修订号的显式批准', async () => {
       : path.endsWith('/demo')
         ? spec
         : path.endsWith('/preview')
-          ? { spec, revision: 3, added: ['a'], removed: [], changed: [] }
+          ? { spec, revision: 3, added: ['a'], removed: [], changed: [], taskChanges: [], settings: [{ field: 'maxTokens', before: 100, after: null }] }
           : {};
   await render(<PlansPage openBoard={openBoard} />);
   await click(button('载入模板'));
   await click(button('校验并预览差异'));
   expect(requests.some((r) => r.path.endsWith('/apply'))).toBe(false);
   expect(container.textContent).toContain('基于修订 3');
+  const budgetChange = [...container.querySelectorAll('details')].find(item => item.querySelector('summary')?.textContent === '总 token 上限');
+  expect(budgetChange?.textContent).toContain('当前100');
+  expect(budgetChange?.textContent).toContain('草案未设置');
   await click(button('批准并应用此版本'));
   expect(requests.at(-1)?.body).toEqual({ spec, expectedRevision: 3, approved: true });
   expect(openBoard).toHaveBeenCalledOnce();
@@ -280,16 +283,23 @@ it('在连接页添加、编辑、禁用并重新启用指定连接', async () =
   set('id', 'gateway-a');
   set('name', '研究网关');
   set('baseUrl', 'https://gateway.invalid/v1');
+  const mode=()=>container.querySelector<HTMLSelectElement>('dialog #stream')!;
+  expect(mode().value).toBe('on');
+  mode().value='off';
   await click(button('保存连接'));
   expect(connections[0]).toMatchObject({
     id: 'gateway-a',
     name: '研究网关',
+    stream:false,
     kind: 'chat-completions',
     enabled: true,
   });
   await click(button('编辑'));
+  expect(mode().value).toBe('off');
+  mode().value='on';
   set('name', '交付网关');
   await click(button('保存连接'));
+  expect(connections[0].stream).toBe(true);
   expect(container.textContent).toContain('交付网关');
   await click(button('禁用'));
   expect(connections[0].enabled).toBe(false);
@@ -497,4 +507,41 @@ it('仓库暂时不可读的审批显示诊断并禁用，仍可审查同页其�
   expect(buttons.map((b) => b.disabled)).toEqual([true, false]);
   await click(buttons[1]);
   expect(container.querySelector('dialog')?.textContent).toContain('--test');
+});
+
+it('API 连接验证展示实际 HTTP 状态、毫秒数和已知用量，缺失项显示未知', async () => {
+  const catalog = {
+    connections: [
+      {
+        id: 'api',
+        name: '测试网关',
+        kind: 'chat-completions',
+        baseUrl: 'https://example.invalid',
+        enabled: true,
+      },
+    ],
+    models: [{ id: 'm', name: '模型', connectionId: 'api', modelId: 'custom', enabled: true }],
+    members: [],
+    pools: [],
+  };
+  serve = (path) =>
+    path === '/api/catalog'
+      ? catalog
+      : {
+          ok: true,
+          text: 'CONCORDIA_OK',
+          httpStatus: 201,
+          elapsedMs: 0,
+          usage: { inputTokens: 0, outputTokens: 2 },
+        };
+  await render(<CatalogPage />);
+  await click(button('验证'));
+  await click(button('批准一次真实调用'));
+  expect(container.textContent).toContain('HTTP 201');
+  expect(container.textContent).toContain('耗时 0 ms');
+  expect(container.textContent).toContain('输入 0 · 输出 2 · 合计 未知');
+  serve = () => ({ ok: false, error: '认证失败', httpStatus: 401, elapsedMs: 22 });
+  await click(button('批准一次真实调用'));
+  expect(container.textContent).toContain('HTTP 401');
+  expect(container.textContent).toContain('Token 用量 · 未知');
 });
