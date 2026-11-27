@@ -41,10 +41,15 @@ export type ErrorKind =
   | 'invalid'
   | 'budget';
 export type ModelFailure = { type: 'error'; kind: ErrorKind; message: string; httpStatus?: number };
+export interface ModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+}
 export type ModelEvent =
   | { type: 'text_delta'; text: string }
   | ({ type: 'action' } & ModelAction)
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
+  | ({ type: 'usage' } & ModelUsage)
   | { type: 'completed' }
   | ModelFailure;
 export interface StreamOptions {
@@ -55,7 +60,7 @@ export interface ModelProvider {
   stream(messages: ModelMessage[], tools?: ModelTool[], options?: StreamOptions): AsyncIterable<ModelEvent>;
   validateConnection(
     signal?: AbortSignal,
-  ): Promise<{ ok: true; text: string } | { ok: false; error: ModelFailure }>;
+  ): Promise<({ ok: true; text: string } | { ok: false; error: ModelFailure }) & { usage?: ModelUsage }>;
   getCapabilities(): { nativeTools: boolean; streaming: boolean };
 }
 export type CredentialReader = (ref: string, signal?: AbortSignal) => Promise<string>;

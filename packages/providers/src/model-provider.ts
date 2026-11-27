@@ -11,6 +11,7 @@ import type {
   ModelFailure,
   ModelMessage,
   ModelProvider,
+  ModelUsage,
   ModelTool,
   ProviderConfig,
   StreamOptions,
@@ -261,17 +262,28 @@ export function createModelProvider(
     getCapabilities: () => ({ nativeTools: true, streaming: true }),
     async validateConnection(signal) {
       let reply = '';
+      let usage: ModelUsage | undefined;
       for await (const event of stream(
         [{ role: 'user', content: 'Reply with exactly CONCORDIA_OK.' }],
         [],
         { stream: false, signal },
       )) {
         if (event.type === 'text_delta') reply += event.text;
-        if (event.type === 'error') return { ok: false, error: event };
+        if (event.type === 'usage') {
+          usage ??= {};
+          if (event.inputTokens !== undefined) usage.inputTokens = event.inputTokens;
+          if (event.outputTokens !== undefined) usage.outputTokens = event.outputTokens;
+          if (event.totalTokens !== undefined) usage.totalTokens = event.totalTokens;
+        }
+        if (event.type === 'error') return { ok: false, error: event, ...(usage && { usage }) };
       }
       return reply.trim() === 'CONCORDIA_OK'
-        ? { ok: true, text: 'CONCORDIA_OK' }
-        : { ok: false, error: failure('invalid', '网关返回的文本与公开校验短句不匹配。') };
+        ? { ok: true, text: 'CONCORDIA_OK', ...(usage && { usage }) }
+        : {
+            ok: false,
+            error: failure('invalid', '网关返回的文本与公开校验短句不匹配。'),
+            ...(usage && { usage }),
+          };
     },
   };
 }

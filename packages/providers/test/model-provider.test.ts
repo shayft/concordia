@@ -127,3 +127,23 @@ it('does not send a late request after a timeout waiting for a credential', asyn
   expect(events).toEqual([expect.objectContaining({ type: 'error', kind: 'timeout' })]);
   expect(received).not.toHaveBeenCalled();
 });
+
+it.each(['CONCORDIA_OK', 'different'])('报告连接验证的用量，包括非约定回显', async (content) => {
+  const baseUrl = await listen((_req, res) =>
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { content }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+      }),
+    ),
+  );
+  const result = await createModelProvider({
+    protocol: 'chat-completions',
+    baseUrl,
+    model: 'private',
+  }).validateConnection();
+  expect(result).toMatchObject({
+    ok: content === 'CONCORDIA_OK',
+    usage: { inputTokens: 7, outputTokens: 3, totalTokens: 10 },
+  });
+});
