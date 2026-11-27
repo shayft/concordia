@@ -14,9 +14,10 @@ export function string(v: unknown): string {
   return v;
 }
 export function usage(input: unknown, output: unknown, total: unknown): ModelEvent[] {
-  const count = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
+  const count = (v: unknown) =>
+    typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 ? v : undefined;
   const [inputTokens, outputTokens, totalTokens] = [input, output, total].map(count);
-  if ([inputTokens, outputTokens, totalTokens].every(v => v === undefined)) return [];
+  if ([inputTokens, outputTokens, totalTokens].every((v) => v === undefined)) return [];
   return [{ type: 'usage', inputTokens, outputTokens, totalTokens }];
 }
 export function action(id: unknown, name: unknown, args: unknown): ModelAction {
@@ -27,19 +28,23 @@ export function action(id: unknown, name: unknown, args: unknown): ModelAction {
 async function* chunks(response: Response): AsyncGenerator<string> {
   if (!response.body) throw new Error('empty body');
   const reader = response.body.getReader();
-  const decoder = new TextDecoder('utf-8', {fatal:true});
+  const decoder = new TextDecoder('utf-8', { fatal: true });
   let bytes = 0;
   try {
     for (;;) {
-      const {done, value} = await reader.read();
+      const { done, value } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
       if (bytes > 2 * 1024 * 1024) throw new Error('oversize');
-      yield decoder.decode(value, {stream:true});
+      yield decoder.decode(value, { stream: true });
     }
     yield decoder.decode();
   } finally {
-    try { await reader.cancel(); } finally { reader.releaseLock(); }
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 export async function readJson(response: Response): Promise<Dictionary> {
@@ -51,11 +56,15 @@ export async function readJson(response: Response): Promise<Dictionary> {
 export async function* sse(response: Response): AsyncGenerator<string> {
   let tail = '';
   let data: string[] = [];
+  let previousCR = false;
   for await (const chunk of chunks(response)) {
-    tail += chunk;
+    if (!chunk) continue;
+    const normalized = (previousCR && chunk.startsWith('\n')) ? chunk.slice(1) : chunk;
+    previousCR = chunk.endsWith('\r');
+    tail += normalized.replace(/\r\n?/g, '\n');
     let end: number;
     while ((end = tail.indexOf('\n')) !== -1) {
-      const line = tail.slice(0, end).replace(/\r$/, '');
+      const line = tail.slice(0, end);
       tail = tail.slice(end + 1);
       if (!line) {
         if (data.length) yield data.join('\n');

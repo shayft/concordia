@@ -11,11 +11,14 @@ export interface ProviderConfig {
   headerRefs?: Record<string, string>;
   params?: Record<string, unknown>;
 }
+export type ResponseReasoning = { type: 'reasoning'; encrypted_content: string; summary: [] };
 export interface ModelAction {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
   thoughtSignature?: string;
+  generatedId?: boolean;
+  responseReasoning?: ResponseReasoning[];
 }
 export interface ModelMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -23,8 +26,20 @@ export interface ModelMessage {
   toolCallId?: string;
   toolCalls?: ModelAction[];
 }
-export interface ModelTool { name: string; description: string; inputSchema: Record<string, unknown> }
-export type ErrorKind = 'auth' | 'rate_limit' | 'server' | 'timeout' | 'cancelled' | 'transport' | 'invalid' | 'budget';
+export interface ModelTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+export type ErrorKind =
+  | 'auth'
+  | 'rate_limit'
+  | 'server'
+  | 'timeout'
+  | 'cancelled'
+  | 'transport'
+  | 'invalid'
+  | 'budget';
 export type ModelFailure = { type: 'error'; kind: ErrorKind; message: string; httpStatus?: number };
 export type ModelEvent =
   | { type: 'text_delta'; text: string }
@@ -32,10 +47,15 @@ export type ModelEvent =
   | { type: 'usage'; inputTokens?: number; outputTokens?: number; totalTokens?: number }
   | { type: 'completed' }
   | ModelFailure;
-export interface StreamOptions { stream?: boolean; signal?: AbortSignal }
+export interface StreamOptions {
+  stream?: boolean;
+  signal?: AbortSignal;
+}
 export interface ModelProvider {
   stream(messages: ModelMessage[], tools?: ModelTool[], options?: StreamOptions): AsyncIterable<ModelEvent>;
-  validateConnection(signal?: AbortSignal): Promise<{ok:true; text:string} | {ok:false; error:ModelFailure}>;
+  validateConnection(
+    signal?: AbortSignal,
+  ): Promise<{ ok: true; text: string } | { ok: false; error: ModelFailure }>;
   getCapabilities(): { nativeTools: boolean; streaming: boolean };
 }
 export type CredentialReader = (ref: string, signal?: AbortSignal) => Promise<string>;
