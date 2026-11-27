@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
+import { safeDatabasePath } from './paths.ts';
 import { DatabaseSync } from 'node:sqlite';
 
 const migrations = [
@@ -34,7 +36,8 @@ function migrate(db: DatabaseSync): void {
 
 /** 调用方负责选择私有数据目录、创建父目录，以及使用完毕时关闭数据库。 */
 export function openStore(databasePath: string): DatabaseSync {
-  const db = new DatabaseSync(databasePath);
+  const absolute = resolve(databasePath);
+  const db = new DatabaseSync(safeDatabasePath(dirname(absolute), basename(absolute)));
   try {
     db.exec('PRAGMA busy_timeout = 5000');
     const mode = db.prepare('PRAGMA journal_mode = WAL').get();
