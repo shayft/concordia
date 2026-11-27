@@ -64,5 +64,5 @@ export function waitTime(task: Task, state: State, now: number) {
     if (interval.kind === 'waiting') dependencyMs += duration;
     else queueMs += duration;
   }
-  return { ...history, dependencyMs, queueMs };
+  return { ...history, dependencyMs, queueMs, observedAt: now };
 }

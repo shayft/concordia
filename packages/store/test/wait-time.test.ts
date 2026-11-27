@@ -39,6 +39,7 @@ it('分别累计等待依赖及排队时长，暂停和执行时间排除，运�
   expect(waits('ui')).toMatchObject({
     complete: true,
     dependencyMs: 2500,
+    observedAt: 9000,
     queueMs: 500,
     intervals: [
       { kind: 'waiting', start: 1000, end: 3500, blockedBy: [{ slotId: 'contract', owner: 'backend' }] },
