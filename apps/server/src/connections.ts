@@ -20,6 +20,16 @@ type ResourceParams = { Params: { id: string } };
 export interface RunningFilter { connectionId?: string; memberId?: string; poolId?: string }
 export interface CatalogOptions {
   isRunning(filter: RunningFilter): boolean;
+  runningCount?(filter: RunningFilter): number;
+}
+
+interface Probe extends RunningFilter { controller: AbortController; modelId?: string }
+const currentProbes = new WeakMap<DatabaseSync, Set<Probe>>();
+export function probeCount(db: DatabaseSync, filter: RunningFilter): number {
+  const probes = currentProbes.get(db);
+  if (!probes) return 0;
+  return [...probes].filter(p => (!filter.memberId || p.memberId === filter.memberId) &&
+    (!filter.connectionId || p.connectionId === filter.connectionId) && (!filter.poolId || p.poolId === filter.poolId)).length;
 }
 
 class CatalogError extends Error {
@@ -106,21 +116,18 @@ function mutate(db: DatabaseSync, write: () => void) {
 }
 
 export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync, options: CatalogOptions): void {
-  const probes = new Map<string, AbortController>();
-  app.addHook('preClose', async () => { for (const controller of probes.values()) controller.abort(); });
-
-  const active = (connectionId: string) => probes.has(connectionId) || options.isRunning({ connectionId });
+  const probes = new Set<Probe>();
+  currentProbes.set(db, probes);
+  app.addHook('preClose', async () => { for (const probe of probes) probe.controller.abort(); });
+  const active = (filter: RunningFilter) => probeCount(db, filter) > 0 || options.isRunning(filter);
   function checkIdle(key: Resource, id: string) {
     let busy: boolean;
-    if (key === 'connections') busy = active(id);
-    else if (key === 'members') busy = options.isRunning({ memberId: id });
-    else if (key === 'models') {
-      const model = find(db, key, id);
+    if (key === 'connections') busy = active({ connectionId: id });
+    else if (key === 'members') busy = active({ memberId: id });
+    else if (key === 'pools') busy = active({ poolId: id });
+    else {
       const members = db.prepare('SELECT id FROM members WHERE model_id = ?').all(id);
-      busy = probes.has(model.connectionId) || members.some(m => options.isRunning({ memberId: String(m.id) }));
-    } else {
-      busy = options.isRunning({ poolId: id }) || db.prepare('SELECT id FROM connections WHERE pool_id = ?').all(id)
-        .some(c => probes.has(String(c.id)));
+      busy = [...probes].some(p => p.modelId === id) || members.some(m => options.isRunning({ memberId: String(m.id) }));
     }
     if (busy) throw new CatalogError(409, '配置正在使用，请先停止当前执行。');
   }
@@ -169,15 +176,27 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
       });
     }
 
-    for (const mode of ['inspect', 'test'] as const) {
-      api.post<ResourceParams>('/api/connections/:id/' + mode, async (request, reply) => {
-        const connection = find(db, 'connections', request.params.id);
+    function registerProbe(resource: 'connections' | 'members', mode: 'inspect' | 'test') {
+      api.post<ResourceParams>('/api/' + resource + '/:id/' + mode, async (request, reply) => {
         const input = mode === 'test' ? parse(testConnectionSchema, request.body) : parse(inspectConnectionSchema, request.body);
+        const member = resource === 'members' ? find(db, 'members', request.params.id) : undefined;
+        if (member && (!member.enabled || (input.modelId && input.modelId !== member.modelId)))
+          throw new CatalogError(409, '岗位已禁用或所选模型与绑定不符。');
+        const connection = find(db, 'connections', member?.connectionId ?? request.params.id);
         if (!connection.enabled) throw new CatalogError(409, '连接已禁用。');
-        if (active(connection.id)) throw new CatalogError(409, '连接正在使用。');
-        const model = selectedModel(db, connection, input.modelId);
+        const model = selectedModel(db, connection, member?.modelId ?? input.modelId);
+        const pool = connection.poolId ? find(db, 'pools', connection.poolId) : null;
+        const poolId = pool?.id ?? 'connection:' + connection.id;
+        function limitReached(filter: RunningFilter, limit: number) {
+          const used = options.runningCount?.(filter) ?? (options.isRunning(filter) ? limit : 0);
+          return used + probeCount(db, filter) >= limit;
+        }
+        if (limitReached({ connectionId: connection.id }, connection.maxConcurrent) ||
+            limitReached({ poolId }, pool?.maxConcurrent ?? connection.maxConcurrent))
+          throw new CatalogError(409, '连接或额度池并发已满。');
         const controller = new AbortController();
-        probes.set(connection.id, controller);
+        const probe = { controller, connectionId: connection.id, memberId: member?.id, modelId: model?.id, poolId };
+        probes.add(probe);
         const stop = () => controller.abort();
         reply.raw.once('close', stop);
         try {
@@ -198,9 +217,13 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
           return { ok: true, text: result.text, elapsedMs: Math.round(performance.now() - started) };
         } finally {
           reply.raw.off('close', stop);
-          probes.delete(connection.id);
+          probes.delete(probe);
         }
       });
+    }
+    for (const resource of ['connections', 'members'] as const) {
+      registerProbe(resource, 'inspect');
+      registerProbe(resource, 'test');
     }
   });
 }

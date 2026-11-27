@@ -7,7 +7,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from '@concordia/store';
-import { getCatalog, providerConfig, registerConnectionRoutes, resolveMember, type RunningFilter } from '../src/connections.ts';
+import { getCatalog, providerConfig, probeCount, registerConnectionRoutes, resolveMember, type RunningFilter } from '../src/connections.ts';
 
 let dir: string, app: FastifyInstance, db: DatabaseSync;
 let busy: RunningFilter | undefined;
@@ -97,6 +97,40 @@ describe('连接、独立模型、岗位与额度池', () => {
       expect(res.body.includes(marker)).toBe(false);
     }
     expect(getCatalog(db).connections).toHaveLength(0);
+  });
+
+  it('岗位验证占用共享池名额并锁定实际使用的配置，完成后释放', async () => {
+    let signalStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { signalStarted = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const mock = createServer(async (_req, res) => {
+      signalStarted();
+      await hold;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { content: 'CONCORDIA_OK' }, finish_reason: 'stop' }] }));
+    });
+    await new Promise<void>(resolve => mock.listen(0, '127.0.0.1', resolve));
+    try {
+      await setup();
+      await put('pools/shared',{...pool,maxConcurrent:1});
+      const local = { ...gateway, poolId: pool.id, baseUrl: 'http://127.0.0.1:' + (mock.address() as AddressInfo).port };
+      await put('connections/gateway', local);
+      await post('connections',{...local,id:'sibling'});
+      await post('models',{...model,id:'other',connectionId:'sibling'});
+      const pending = post('members/test/test', { approved: true }).then(res => res.json());
+      await started;
+      expect(probeCount(db, {poolId:'shared'})).toBe(1);
+      expect((await put('members/test',member)).statusCode).toBe(409);
+      expect((await put('connections/gateway',local)).statusCode).toBe(409);
+      expect((await post('connections/sibling/test',{approved:true,modelId:'other'})).statusCode).toBe(409);
+      release();
+      expect(await pending).toMatchObject({ok:true});
+      expect(probeCount(db, {connectionId:gateway.id})).toBe(0);
+    } finally {
+      release();
+      await new Promise<void>(resolve => mock.close(() => resolve()));
+    }
   });
 
   it('明确批准后只向指定本机模拟网关测试，模型选择和路径不串用', async () => {
