@@ -2,6 +2,18 @@
 
 2026-11-27。验收范围为三平台 monorepo 和已有连接验证。GitHub 托管作业使用 Node.js v24.19.0、pnpm 11.25.0，连接测试使用假 CLI 和回环模拟网关。原生 Codex 的账号预检及回显尝试发生在 Codex 云端 Linux 工作区。
 
+## 三平台官方 CLI 无账号预检
+
+2026-11-27，提交 `fef4571`。每台托管机执行 `node --use-env-proxy packages/runtimes/test-native/inspect.ts`。脚本从官方 npm 元数据核对平台包及 SHA-512，在临时用户目录启动两个 CLI 的正式 `verify inspect` 入口，分别核对版本、实际权限参数和原生未登录状态。每台机器得到两条 PASS，计费来源未知。这六次预检均未发送模型任务。[完整运行](https://github.com/shayft/concordia/actions/runs/45999845209)
+
+| 系统 | Claude Code 2.1.332 | Codex CLI 0.172.0 |
+| --- | --- | --- |
+| Ubuntu x64 | 真实 Linux 测试通过 | 真实 Linux 测试通过。[作业](https://github.com/shayft/concordia/actions/runs/45999845209/job/140508384029) |
+| macOS ARM64 | 真实 macOS 测试通过 | 真实 macOS 测试通过。[作业](https://github.com/shayft/concordia/actions/runs/45999845209/job/140508383704) |
+| Windows x64 | 真实 Windows 测试通过 | 真实 Windows 测试通过。[作业](https://github.com/shayft/concordia/actions/runs/45999845209/job/140508383984) |
+
+已登录账户的成功文本回显、实际扣费和两份净化样本仍为「尚未验证」。这项结果也不覆盖个人的桌面启动环境。以下两节保留 Linux 首次逐项核对参数的命令与结果。
+
 ## 官方 Codex 稳定版 0.172.0 的 Linux 补验
 
 2026-11-27，在 Linux x86_64 核对 npm 发布包 `@openai/codex@0.172.0` 的平台依赖。Linux x64 条目指向 `@openai/codex@0.172.0-linux-x64`。校验 tarball 与该包发布元数据的 SHA-512 完整性后，将其中 `vendor/x86_64-unknown-linux-musl/bin/codex` 解包到临时目录。进程使用独立的空 HOME、CODEX_HOME 和临时工作目录。表中 `<临时目录>` 代表本次创建的随机目录。[官方 npm 发布包](https://www.npmjs.com/package/@openai/codex/v/0.172.0) · [Codex 非交互模式](https://developers.openai.com/codex/noninteractive/)
@@ -21,7 +33,7 @@
 | 官方版本与参数解析 | **真实 Linux 测试通过** | `claude --version` 返回 `2.1.332 (Claude Code)`。`claude --help` 和 `claude auth status --help` 退出 0。根帮助省略 `--max-turns`。`claude --help --max-turns` 退出 1，对该选项报告缺少值。对照命令 `claude --help --concordia-probe-unknown` 退出 0 并打印普通帮助 |
 | 平台正式预检入口 | **真实 Linux 测试通过** | `node --import tsx apps/server/src/verify.ts inspect claude --executable <临时目录>/claude --pass-env CLAUDE_CONFIG_DIR` 退出 0。程序检查版本、帮助、隐藏选项与原生登录状态。结果为 2.1.332、未登录、认证方式和计费来源均未知。未确认受管策略 |
 | 隐藏选项与不支持版本的边界 | **模拟测试通过** | `pnpm exec vitest run packages/runtimes/test/claude-flags.test.ts packages/runtimes/test/capabilities.test.ts`，共 29 项通过。覆盖无效的退出码、附加内容、未知选项和缺少其他权限参数 |
-| 真实登录回显、计费及解析回放 | **尚未验证** | 本次没有个人账号，模型调用为 0，没有生成真实输出样本。macOS、Windows 的原生 CLI，以及三平台桌面启动、真实 MCP 交互和会话恢复，仍需个人环境实测 |
+| 真实登录回显、计费及解析回放 | **尚未验证** | 本次没有个人账号，模型调用为 0，没有生成真实输出样本。三平台桌面启动、登录后的任务、真实 MCP 交互和会话恢复，仍需个人环境实测 |
 
 ## GitHub 三平台复验
 
