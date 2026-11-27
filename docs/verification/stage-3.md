@@ -31,3 +31,7 @@ node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '通�
 ```
 
 用户真实混合演示时，应记录平台、CLI 路径／版本／实际参数、批准的连接和模型、任务与交付版本、联调 SHA、批准的测试退出码、diff 及最终合并 SHA。CLI 无法可靠报告的计费来源记“未知”。
+
+## 最终三平台回归
+
+2026-11-27，提交 `c110272`。三个托管系统均从冻结锁安装，并通过 `pnpm lint`、`pnpm test` 和含严格类型检查的 `pnpm build`。本阶段涉及模拟连接的用例为「模拟测试通过」。整仓在 Linux 和 macOS 各 201 项通过、2 项跳过，Windows 197 项通过、6 项跳过。个人账号、计费和桌面验收状态沿用上表。[逐系统作业、跳过原因及统一测试步骤](README.md) · [GitHub Actions](https://github.com/shayft/concordia/actions/runs/45996818506)

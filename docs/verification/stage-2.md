@@ -38,3 +38,7 @@ node_modules/.bin/vitest run packages/store/test/workflow.test.ts packages/provi
 | 系统凭据适配 | `4d6002e` | [凭据存取测试](../../packages/providers/test/credentials.test.ts) |
 
 真实环境下的 MCP 会话、第三方网关和凭据服务仍需对应系统、原生 CLI 登录及真实调用授权。此前阶段 1 的云端 Codex 尝试及三平台模拟运行结果见[阶段 1 验收记录](./stage-1.md)。
+
+## 最终三平台回归
+
+2026-11-27，提交 `c110272`。三个托管系统均从冻结锁安装，并通过 `pnpm lint`、`pnpm test` 和含严格类型检查的 `pnpm build`。本阶段涉及模拟连接的用例为「模拟测试通过」。整仓在 Linux 和 macOS 各 201 项通过、2 项跳过，Windows 197 项通过、6 项跳过。个人账号、计费和桌面验收状态沿用上表。[逐系统作业、跳过原因及统一测试步骤](README.md) · [GitHub Actions](https://github.com/shayft/concordia/actions/runs/45996818506)
