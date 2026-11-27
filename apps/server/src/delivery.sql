@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS delivery_runs (
+  id TEXT PRIMARY KEY,
+  details TEXT NOT NULL
+) STRICT;
