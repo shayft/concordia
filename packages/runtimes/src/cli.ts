@@ -85,6 +85,15 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   const helpText = help.stdout + '\n' + rootHelp.stdout;
   const flags = args.filter(arg => arg.startsWith('--'));
   const missing = flags.filter(flag => !new RegExp(flag + '(?=[\\s,=<]|$)').test(helpText));
+  // Claude Code 2.1.332 accepts --max-turns but hides it in root help.
+  // With help first and no value, its argument parser exits before any task.
+  if (kind === 'claude' && help.exitCode === 0 && missing.length === 1 && missing[0] === '--max-turns') {
+    const probe = await invoke(['--help', '--max-turns']);
+    const diagnostic = probe.stderr.replace(/\r?\n$/u, '');
+    if (probe.exitCode === 1 && probe.stdout === '' && diagnostic === "error: option '--max-turns <turns>' argument missing") {
+      missing.pop();
+    }
+  }
   if (help.exitCode !== 0 || rootHelp.exitCode !== 0 || missing.length) {
     throw new CliDiagnosticError('当前 CLI 帮助缺少校验所需参数，请核对版本。' + [...new Set(missing)].join(' '));
   }

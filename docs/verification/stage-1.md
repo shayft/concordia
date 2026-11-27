@@ -2,6 +2,17 @@
 
 2026-11-27。验收范围为三平台 monorepo 和已有连接验证。GitHub 托管作业使用 Node.js v24.19.0、pnpm 11.25.0，连接测试使用假 CLI 和回环模拟网关。原生 Codex 的账号预检及回显尝试发生在 Codex 云端 Linux 工作区。
 
+## 官方 Claude Code 2.1.332 的 Linux 补验
+
+2026-11-27，在 Linux x86_64 从官方 npm 包的 `optionalDependencies` 确认 `@anthropic-ai/claude-code-linux-x64@2.1.332`，下载平台包并对照发布元数据验证 tarball 的 SHA-512 完整性。只把独立程序解包到临时目录，用空的临时 HOME、CLI 配置目录和工作目录执行。以下命令用 `<临时目录>` 代表本次随机创建的目录。[官方 npm 包](https://www.npmjs.com/package/@anthropic-ai/claude-code/v/2.1.332) · [Claude CLI 参考](https://code.claude.com/docs/en/cli-reference)
+
+| 验收项 | 状态 | 命令和结果 |
+| --- | --- | --- |
+| 官方版本与参数解析 | **真实 Linux 测试通过** | `claude --version` 返回 `2.1.332 (Claude Code)`。`claude --help` 和 `claude auth status --help` 退出 0。根帮助省略 `--max-turns`。`claude --help --max-turns` 退出 1，对该选项报告缺少值。对照命令 `claude --help --concordia-probe-unknown` 退出 0 并打印普通帮助 |
+| 平台正式预检入口 | **真实 Linux 测试通过** | `node --import tsx apps/server/src/verify.ts inspect claude --executable <临时目录>/claude --pass-env CLAUDE_CONFIG_DIR` 退出 0。程序检查版本、帮助、隐藏选项与原生登录状态。结果为 2.1.332、未登录、认证方式和计费来源均未知。未确认受管策略 |
+| 隐藏选项与不支持版本的边界 | **模拟测试通过** | `pnpm exec vitest run packages/runtimes/test/claude-flags.test.ts packages/runtimes/test/capabilities.test.ts`，共 29 项通过。覆盖无效的退出码、附加内容、未知选项和缺少其他权限参数 |
+| 真实登录回显、计费及解析回放 | **尚未验证** | 本次没有个人账号，模型调用为 0，没有生成真实输出样本。macOS、Windows 的原生 CLI，以及三平台桌面启动、真实 MCP 交互和会话恢复，仍需个人环境实测 |
+
 ## GitHub 三平台复验
 
 2026-11-27 在公开仓库 `shayft/concordia` 的提交 `3e73f4998dc9618572bd94f304d383b50ad30e1f` 上完成复验。三个系统均从冻结锁文件安装依赖，依次运行 `pnpm lint`、`pnpm test`、`pnpm build`。构建命令包含严格类型检查。三个作业均成功退出。[GitHub Actions 运行记录](https://github.com/shayft/concordia/actions/runs/45991637358)
@@ -57,7 +68,7 @@ Linux 精简 PATH 用例在实际 Linux 内核上运行，所调用的 CLI 和�
 ["--no-daemon","--disable","shell_tool","--disable","shell_snapshot","--disable","apps","--disable","hooks","--disable","plugins","--disable","multi_agent","--disable","computer_use","--disable","browser_use","--disable","code_mode","--disable","image_generation","-c","notify=[]","-c","web_search=\"disabled\"","-c","mcp_servers={}","--ask-for-approval","on-request","exec","--sandbox","read-only","--ephemeral","--skip-git-repo-check","--json","Reply with exactly CONCORDIA_OK. Do not use tools or access files."]
 ```
 
-Claude 参数按官方参考核对，当前机器没有真实版本号，计划参数与安全前提见 [CLI 说明](../cli.md)。两个假 CLI 报告的 1.2.3 仅为测试数据。真实 Claude 任务和真实网关请求次数均为 0。云端 Codex 的 CLI 启动次数不能用于推算上游 HTTP 次数或扣费。
+首轮云端运行时未安装 Claude。后续在隔离目录中完成官方原生二进制预检，见上表。计划参数与安全前提见 [CLI 说明](../cli.md)。两个假 CLI 报告的 1.2.3 仅为测试数据。真实 Claude 任务和真实网关请求次数均为 0。云端 Codex 的 CLI 启动次数不能用于推算上游 HTTP 次数或扣费。
 
 ## 下一次验收
 
