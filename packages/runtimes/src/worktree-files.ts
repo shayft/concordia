@@ -14,7 +14,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join, toNamespacedPath } from 'node:path';
+import { isAbsolute, join, parse, sep, toNamespacedPath } from 'node:path';
 import koffi from 'koffi';
 
 const limit = 512 * 1024;
@@ -59,20 +59,32 @@ function posixTools() {
   return {
     open: lib.func('int openat(int, const char *, int, ...)'),
     mkdir: lib.func('int mkdirat(int, const char *, uint32_t)'),
+    publishNew(parent: number, source: string, destination: string): number {
+      if (process.platform === 'darwin') {
+        const rename = lib.func('int renameatx_np(int, const char *, int, const char *, unsigned int)');
+        return rename(parent, source, parent, destination, 4); // RENAME_EXCL
+      }
+      const rename = lib.func('int renameat2(int, const char *, int, const char *, unsigned int)');
+      return rename(parent, source, parent, destination, 1); // RENAME_NOREPLACE
+    },
     rename: lib.func('int renameat(int, const char *, int, const char *)'),
     unlink: lib.func('int unlinkat(int, const char *, int)'),
   };
 }
 let posix: ReturnType<typeof posixTools> | undefined;
 
-function posixFile(root: string, parts: string[], text?: string): string {
+// A recording pins the entire canonical package path from the filesystem root.
+interface ExclusiveCreate { existingParents: string[] }
+function posixFile(root: string, parts: string[], text?: string, create?: ExclusiveCreate): string {
   const api = (posix ??= posixTools());
   const directory = flags.O_RDONLY | flags.O_DIRECTORY | flags.O_NOFOLLOW;
   let parent = openSync(root, directory);
   try {
-    for (const part of parts.slice(0, -1)) {
+    const existing = create?.existingParents ?? [];
+    const parents = [...existing, ...parts.slice(0, -1)];
+    for (const [index, part] of parents.entries()) {
       let next: number = api.open(parent, part, directory);
-      if (next < 0 && koffi.errno() === 2 && text !== undefined) {
+      if (next < 0 && koffi.errno() === 2 && text !== undefined && index >= existing.length) {
         api.mkdir(parent, part, 0o700); // Another writer may have created it.
         next = api.open(parent, part, directory);
       }
@@ -81,16 +93,18 @@ function posixFile(root: string, parts: string[], text?: string): string {
       parent = next;
     }
     const name = parts.at(-1)!;
-    const fd: number = api.open(parent, name, flags.O_RDONLY | flags.O_NONBLOCK | flags.O_NOFOLLOW);
-    let mode = 0o644;
-    if (fd >= 0) {
-      try {
-        if (text === undefined) return readText(fd);
-        mode = checkFile(fd).mode & 0o777;
-      } finally {
-        closeSync(fd);
-      }
-    } else if (text === undefined || koffi.errno() !== 2) throw invalid();
+    let mode = create ? 0o600 : 0o644;
+    if (!create) {
+      const fd: number = api.open(parent, name, flags.O_RDONLY | flags.O_NONBLOCK | flags.O_NOFOLLOW);
+      if (fd >= 0) {
+        try {
+          if (text === undefined) return readText(fd);
+          mode = checkFile(fd).mode & 0o777;
+        } finally {
+          closeSync(fd);
+        }
+      } else if (text === undefined || koffi.errno() !== 2) throw invalid();
+    }
 
     const temp = '.concordia-' + randomUUID();
     const out: number = api.open(
@@ -108,6 +122,12 @@ function posixFile(root: string, parts: string[], text?: string): string {
       } finally {
         closeSync(out);
       }
+      // Publishing with an exclusive rename leaves either a complete recording or no recording.
+      if (create) {
+        if (api.publishNew(parent, temp, name) === 0) return 'created';
+        if (koffi.errno() === 17) return 'exists'; // EEXIST
+        throw invalid();
+      }
       if (api.rename(parent, temp, parent, name) !== 0) throw invalid();
     } finally {
       api.unlink(parent, temp, 0);
@@ -124,13 +144,14 @@ function windowsTools() {
     open: lib.func(
       'void * __stdcall CreateFileW(str16, uint32_t, uint32_t, void *, uint32_t, uint32_t, void *)',
     ),
+    moveNew: lib.func('int __stdcall MoveFileW(str16, str16)'),
     attributes: lib.func('int __stdcall GetFileInformationByHandleEx(void *, int, void *, uint32_t)'),
     close: lib.func('int __stdcall CloseHandle(void *)'),
   };
 }
 let windows: ReturnType<typeof windowsTools> | undefined;
 
-function windowsFile(root: string, parts: string[], text?: string): string {
+function windowsFile(root: string, parts: string[], text?: string, create?: ExclusiveCreate): string {
   const api = (windows ??= windowsTools());
   const pins: bigint[] = [];
   function pin(path: string, directory: boolean) {
@@ -146,9 +167,11 @@ function windowsFile(root: string, parts: string[], text?: string): string {
   try {
     let parent = root;
     pin(parent, true);
-    for (const part of parts.slice(0, -1)) {
+    const existing = create?.existingParents ?? [];
+    const parents = [...existing, ...parts.slice(0, -1)];
+    for (const [index, part] of parents.entries()) {
       parent = join(parent, part);
-      if (text !== undefined) {
+      if (text !== undefined && index >= existing.length) {
         try {
           mkdirSync(parent);
         } catch (err) {
@@ -158,7 +181,7 @@ function windowsFile(root: string, parts: string[], text?: string): string {
       pin(parent, true);
     }
     const path = join(parent, parts.at(-1)!);
-    if (lstatSync(path, { throwIfNoEntry: false })) {
+    if (!create && lstatSync(path, { throwIfNoEntry: false })) {
       pin(path, false);
       const fd = openSync(path, 'r');
       try {
@@ -177,6 +200,12 @@ function windowsFile(root: string, parts: string[], text?: string): string {
       } finally {
         closeSync(out);
       }
+      if (create) {
+        // MoveFileW never replaces an existing name, including a junction or link.
+        if (api.moveNew(toNamespacedPath(temp), toNamespacedPath(path))) return 'created';
+        if (lstatSync(path, { throwIfNoEntry: false })) return 'exists';
+        throw invalid();
+      }
       renameSync(temp, path);
     } finally {
       rmSync(temp, { force: true });
@@ -192,6 +221,20 @@ export function worktreeFile(root: string, path: string, text?: string): string 
   const parts = worktreePathParts(path);
   try {
     return process.platform === 'win32' ? windowsFile(root, parts, text) : posixFile(root, parts, text);
+  } catch {
+    throw invalid();
+  }
+}
+
+/** Publish a complete recording once. The caller supplies a canonical, existing package root. */
+export function createExclusiveFile(root: string, path: string, text: string): boolean {
+  if (!isAbsolute(root) || Buffer.byteLength(text) > limit) throw invalid();
+  const volume = parse(root).root;
+  const create = { existingParents: root.slice(volume.length).split(sep).filter(Boolean) };
+  const parts = worktreePathParts(path);
+  const access = process.platform === 'win32' ? windowsFile : posixFile;
+  try {
+    return access(volume, parts, text, create) === 'created';
   } catch {
     throw invalid();
   }

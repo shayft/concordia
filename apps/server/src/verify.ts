@@ -1,5 +1,5 @@
-import { writeFile } from 'node:fs/promises';
-import { safeDataDirectory } from '@concordia/store/paths';
+import { createExclusiveFile } from '@concordia/runtimes/worktree-files';
+import { existingDataDirectory } from '@concordia/store/paths';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -33,18 +33,21 @@ function argumentsFor(argv: string[]) {
   }
 }
 
-async function saveRecording(kind: 'claude' | 'codex', version: string, content: string) {
+function saveRecording(kind: 'claude' | 'codex', version: string, content: string) {
   const numeric = version.match(/\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?/u)?.[0];
   if (!numeric) throw new UsageError('真实调用已结束，但无法识别版本号以保存回放。');
-  const root = fileURLToPath(new URL('../../../packages/runtimes/fixtures/recorded/', import.meta.url));
+  const packageRoot = fileURLToPath(new URL('../../../packages/runtimes/', import.meta.url));
   const name = numeric + (kind === 'claude' ? '.json' : '.jsonl');
   try {
-    const dir = safeDataDirectory(root, kind);
-    await writeFile(join(dir, name), content.trimEnd() + '\n', { flag: 'wx', mode: 0o600 });
-    return '已保存 ' + join('packages', 'runtimes', 'fixtures', 'recorded', kind, name);
-  } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'EEXIST')
-      return '此 CLI 版本已有回放，已保留原文件。';
+    const created = createExclusiveFile(
+      existingDataDirectory(packageRoot),
+      ['fixtures', 'recorded', kind, name].join('/'),
+      content.trimEnd() + '\n',
+    );
+    return created
+      ? '已保存 ' + join('packages', 'runtimes', 'fixtures', 'recorded', kind, name)
+      : '该版本的目标路径已存在，未写入。请运行回放测试核对。';
+  } catch {
     throw new UsageError('真实调用已结束，但回放文件写入失败。请检查项目目录权限。');
   }
 }
@@ -98,7 +101,7 @@ async function main(signal: AbortSignal) {
     ...options, approved: true, inspectionId: values.inspection,
   });
   print(result);
-  if (values.record) process.stdout.write(await saveRecording(target, result.version, recording) + '\n');
+  if (values.record) process.stdout.write(saveRecording(target, result.version, recording) + '\n');
 }
 
 const controller = new AbortController();
