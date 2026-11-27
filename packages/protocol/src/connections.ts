@@ -45,6 +45,8 @@ export const connectionSchema = z.union([
     cwd: z.string().min(1).max(4096).optional(),
   }),
 ]);
+// Existing records from an older catalog remain readable for migration and deletion.
+export const writableConnectionSchema = connectionSchema.refine(c => !c.id.startsWith('mock-'), 'mock- 为模拟连接保留前缀');
 export const catalogModelSchema = z.strictObject({
   ...common, connectionId: id, modelId: z.string().trim().min(1).max(512), params: params.optional(),
   toolMode: z.enum(['native', 'json']).default('native'),

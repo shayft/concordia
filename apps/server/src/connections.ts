@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { FastifyInstance } from 'fastify';
 import { type z } from 'zod';
 import {
-  catalogModelSchema, connectionSchema, inspectConnectionSchema, memberSchema, quotaPoolSchema, testConnectionSchema,
+  catalogModelSchema, connectionSchema, writableConnectionSchema, inspectConnectionSchema, memberSchema, quotaPoolSchema, testConnectionSchema,
   type Catalog, type CatalogModel, type Connection, type Member, type QuotaPool,
 } from '@concordia/protocol/connections';
 import { createModelProvider, type ProviderConfig } from '@concordia/providers';
@@ -21,10 +21,14 @@ export interface RunningFilter { connectionId?: string; memberId?: string; poolI
 export interface CatalogOptions {
   isRunning(filter: RunningFilter): boolean;
   runningCount?(filter: RunningFilter): number;
+  assertCanExecute?(): void;
 }
 
 interface Probe extends RunningFilter { controller: AbortController; modelId?: string }
 const currentProbes = new WeakMap<DatabaseSync, Set<Probe>>();
+export function cancelCatalogProbes(db: DatabaseSync): void {
+  for (const probe of currentProbes.get(db) ?? []) probe.controller.abort();
+}
 export function probeCount(db: DatabaseSync, filter: RunningFilter): number {
   const probes = currentProbes.get(db);
   if (!probes) return 0;
@@ -70,6 +74,7 @@ function selectedModel(db: DatabaseSync, connection: Connection, id?: string) {
 export function resolveMember(db: DatabaseSync, memberId: string) {
   const member = find(db, 'members', memberId);
   const connection = find(db, 'connections', member.connectionId);
+  if (connection.id.startsWith('mock-')) throw new CatalogError(409, '此旧连接标识为模拟系统保留，请新建连接并重新绑定成员。');
   if (!member.enabled || !connection.enabled) throw new CatalogError(409, '成员或连接已禁用。');
   const model = selectedModel(db, connection, member.modelId);
   const pool = connection.poolId ? find(db, 'pools', connection.poolId) : null;
@@ -89,6 +94,9 @@ export function providerConfig(connection: Connection, model: CatalogModel | nul
 }
 
 function checkConfig(db: DatabaseSync, key: Resource, data: Connection | CatalogModel | Member | QuotaPool, editing: boolean) {
+  if (key === 'connections' && !writableConnectionSchema.safeParse(data).success) {
+    throw new CatalogError(400, 'mock- 标识供模拟使用，请为真实连接选择其他标识。');
+  }
   if (key === 'members' && 'role' in data) {
     const connection = find(db, 'connections', data.connectionId);
     if (!data.modelId && 'baseUrl' in connection) throw new CatalogError(400, 'API 成员必须选择模型。');
@@ -118,7 +126,7 @@ function mutate(db: DatabaseSync, write: () => void) {
 export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync, options: CatalogOptions): void {
   const probes = new Set<Probe>();
   currentProbes.set(db, probes);
-  app.addHook('preClose', async () => { for (const probe of probes) probe.controller.abort(); });
+  app.addHook('preClose', async () => { cancelCatalogProbes(db); });
   const active = (filter: RunningFilter) => probeCount(db, filter) > 0 || options.isRunning(filter);
   function checkIdle(key: Resource, id: string) {
     let busy: boolean;
@@ -179,10 +187,12 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
     function registerProbe(resource: 'connections' | 'members', mode: 'inspect' | 'test') {
       api.post<ResourceParams>('/api/' + resource + '/:id/' + mode, async (request, reply) => {
         const input = mode === 'test' ? parse(testConnectionSchema, request.body) : parse(inspectConnectionSchema, request.body);
+        options.assertCanExecute?.();
         const member = resource === 'members' ? find(db, 'members', request.params.id) : undefined;
         if (member && (!member.enabled || (input.modelId && input.modelId !== member.modelId)))
           throw new CatalogError(409, '岗位已禁用或所选模型与绑定不符。');
         const connection = find(db, 'connections', member?.connectionId ?? request.params.id);
+        if (connection.id.startsWith('mock-')) throw new CatalogError(409, '此旧连接标识为模拟系统保留，请重新配置。');
         if (!connection.enabled) throw new CatalogError(409, '连接已禁用。');
         const model = selectedModel(db, connection, member?.modelId ?? input.modelId);
         const pool = connection.poolId ? find(db, 'pools', connection.poolId) : null;

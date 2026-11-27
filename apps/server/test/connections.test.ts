@@ -7,10 +7,11 @@ import type { DatabaseSync } from 'node:sqlite';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openStore } from '@concordia/store';
-import { getCatalog, providerConfig, probeCount, registerConnectionRoutes, resolveMember, type RunningFilter } from '../src/connections.ts';
+import { cancelCatalogProbes, getCatalog, providerConfig, probeCount, registerConnectionRoutes, resolveMember, type RunningFilter } from '../src/connections.ts';
 
 let dir: string, app: FastifyInstance, db: DatabaseSync;
 let busy: RunningFilter | undefined;
+let recovered: boolean;
 const gateway = { id: 'gateway', name: '网关', kind: 'chat-completions', baseUrl: 'https://one.invalid/v1' };
 const cli = { id: 'local', name: '原生 CLI', kind: 'codex' };
 const model = { id: 'custom', name: '自定义模型', connectionId: gateway.id, modelId: 'third-party/甲:v2' };
@@ -22,7 +23,8 @@ beforeEach(async () => {
   db = openStore(join(dir, 'application.sqlite'));
   app = Fastify();
   busy = undefined;
-  registerConnectionRoutes(app, db, { isRunning: filter => busy !== undefined && Object.entries(filter).every(
+  recovered = true;
+  registerConnectionRoutes(app, db, { assertCanExecute: () => { if (!recovered) throw new Error('待核对'); }, isRunning: filter => busy !== undefined && Object.entries(filter).every(
     ([key, value]) => busy?.[key as keyof RunningFilter] === value,
   ) });
 });
@@ -97,6 +99,37 @@ describe('连接、独立模型、岗位与额度池', () => {
       expect(res.body.includes(marker)).toBe(false);
     }
     expect(getCatalog(db).connections).toHaveLength(0);
+  });
+
+  it('保留模拟命名空间；旧连接可列出、删除，不能实跑或误充模拟成员', async () => {
+    const legacy = { ...gateway, id: 'mock-old' };
+    expect((await post('connections', legacy)).statusCode).toBe(400);
+    db.prepare('INSERT INTO connections(id,document) VALUES (?,?)').run(legacy.id, JSON.stringify(legacy));
+    expect(getCatalog(db).connections[0].id).toBe(legacy.id);
+    expect((await post('connections/mock-old/test', {approved:true})).statusCode).toBe(409);
+    expect((await del('connections/mock-old')).statusCode).toBe(204);
+  });
+
+  it('全局停止能取消健康检查；恢复未核对时不发送请求', async () => {
+    let signalStarted!: () => void;
+    const started = new Promise<void>(resolve => { signalStarted = resolve; });
+    let calls = 0;
+    const mock = createServer(() => { calls++; signalStarted(); });
+    await new Promise<void>(resolve => mock.listen(0, '127.0.0.1', resolve));
+    try {
+      await post('connections',{...gateway,baseUrl:'http://127.0.0.1:'+(mock.address() as AddressInfo).port});
+      await post('models',model);
+      const verify = () => post('connections/gateway/test',{approved:true,modelId:model.id});
+      recovered = false;
+      expect((await verify()).statusCode).toBeGreaterThanOrEqual(400);
+      expect(calls).toBe(0);
+      recovered = true;
+      const pending = verify().then(res=>res.json());
+      await started;
+      cancelCatalogProbes(db);
+      expect(await pending).toMatchObject({ok:false});
+      expect(probeCount(db,{})).toBe(0);
+    } finally { mock.closeAllConnections(); await new Promise<void>(resolve => mock.close(() => resolve())); }
   });
 
   it('岗位验证占用共享池名额并锁定实际使用的配置，完成后释放', async () => {
