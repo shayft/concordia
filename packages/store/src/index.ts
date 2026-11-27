@@ -5,6 +5,7 @@ const migrations = [
   { version: 1, name: '001-bootstrap.sql' },
   { version: 2, name: '002-connections.sql' },
   { version: 3, name: '003-workflow.sql' },
+  { version: 4, name: '004-application.sql' },
 ] as const;
 
 /** 在写事务内再次读取版本，允许多个启动进程先后尝试迁移。 */
