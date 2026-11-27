@@ -1,0 +1,2 @@
+# Concordia uses this empty configuration instead of host-wide Git settings.
+# A regular file also cannot contain hook executables.

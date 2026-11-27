@@ -1,7 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
-import { devNull } from 'node:os';
+import { fileURLToPath } from 'node:url';
+
+// Git for Windows uses its own pathname layer. A regular file works on all
+// platforms and cannot be traversed as an executable hook directory.
+const defaults = fileURLToPath(new URL('./git.defaults', import.meta.url)).replaceAll('\\', '/');
 
 const candidates =
   process.platform === 'win32'
@@ -22,7 +26,13 @@ export function gitResult(cwd: string, args: string[]) {
     TMP: process.env.TMP,
     TEMP: process.env.TEMP,
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_GLOBAL: defaults,
+    GIT_ATTR_NOSYSTEM: '1',
+    SystemDrive: process.env.SystemDrive,
+    WINDIR: process.env.WINDIR,
+    ComSpec: process.env.ComSpec,
+    USERPROFILE: process.env.USERPROFILE,
+    ProgramFiles: process.env.ProgramFiles,
     GIT_TERMINAL_PROMPT: '0',
     GIT_ALLOW_PROTOCOL: 'none',
     GIT_OPTIONAL_LOCKS: '0',
@@ -33,7 +43,11 @@ export function gitResult(cwd: string, args: string[]) {
     gitExecutable,
     [
       '-c',
-      'core.hooksPath=' + devNull,
+      'core.hooksPath=' + defaults,
+      '-c',
+      'core.attributesFile=' + defaults,
+      '-c',
+      'core.excludesFile=' + defaults,
       '-c',
       'core.fsmonitor=false',
       '-c',
@@ -62,12 +76,43 @@ export function gitResult(cwd: string, args: string[]) {
     },
   );
   if (result.error || result.status === null) throw new Error('Git 操作超时、输出超限或程序不可用。');
-  return { code: result.status, output: result.stdout };
+  const stderr = result.stderr;
+  const reason = /dubious ownership|safe.directory/i.test(stderr)
+    ? '仓库归属不受信任'
+    : /config|unable to access|permission denied/i.test(stderr)
+      ? '配置或路径不可访问'
+      : /unknown option|usage:|unsupported|invalid argument/i.test(stderr)
+        ? '路径或参数不受支持'
+        : /home not set|home directory/i.test(stderr)
+          ? '运行环境不完整'
+          : '仓库或工作副本状态不允许操作';
+  return { code: result.status, output: result.stdout, reason };
 }
 
 export function git(cwd: string, args: string[]) {
   const result = gitResult(cwd, args);
-  if (result.code !== 0) throw new Error('Git 操作未完成，请检查仓库、分支及工作副本状态。');
+  if (result.code !== 0) {
+    const fixedNames = [
+      'config',
+      'init',
+      'status',
+      'worktree',
+      'rev-parse',
+      'commit',
+      'merge',
+      'add',
+      'diff',
+      'branch',
+      'ls-tree',
+      'cat-file',
+      'symbolic-ref',
+      'merge-base',
+      'check-ref-format',
+      'update-ref',
+    ];
+    const verb = args.find((arg) => fixedNames.includes(arg)) ?? 'command';
+    throw new Error(`Git ${verb} 未完成（退出码 ${result.code}，${result.reason}）。`);
+  }
   return result.output;
 }
 
