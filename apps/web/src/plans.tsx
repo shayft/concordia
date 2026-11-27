@@ -1,15 +1,46 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
-import type { WorkflowSpec } from '@concordia/protocol/workflow';
+import type { PlanPreview, WorkflowSpec } from '@concordia/protocol/workflow';
 import { api, useAction, useResource } from './api.ts';
 import { Field, Notice } from './ui.tsx';
 
-interface Preview {
-  spec: WorkflowSpec;
-  revision: number;
-  added: string[];
-  changed: string[];
-  removed: string[];
+const planLabels: Partial<Record<keyof WorkflowSpec, string>> = {
+  id: '工作流标识',
+  title: '标题',
+  goal: '目标',
+  acceptance: '验收条件',
+  requiredSlots: '必需交付物',
+  requiredTasks: '必需审查任务',
+  agents: '岗位、连接与权限',
+  slots: '交付物槽位',
+  maxCalls: '调用上限',
+  maxConcurrent: '并发上限',
+  maxTokens: '总 token 上限',
+  maxContextTokens: '上下文上限',
+  estimatedTokensPerCall: '每次预计 token',
+  maxHops: '提问跳数',
+  poolLimits: '额度池并发',
+};
+function displayValue(value: unknown) {
+  if (value == null) return '未设置';
+  return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+}
+function ShowChange({ title, before, after }: { title: string; before: unknown; after: unknown }) {
+  return (
+    <details>
+      <summary>{title}</summary>
+      <div className="diff-grid">
+        <div>
+          <strong>当前</strong>
+          <pre>{displayValue(before)}</pre>
+        </div>
+        <div>
+          <strong>草案</strong>
+          <pre>{displayValue(after)}</pre>
+        </div>
+      </div>
+    </details>
+  );
 }
 export function PlansPage({ openBoard }: { openBoard: () => void }) {
   const catalog = useResource<Catalog>('catalog');
@@ -25,11 +56,16 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
     billing: string;
     login: string;
   }>();
-  const [preview, setPreview] = useState<Preview>();
+  const [preview, setPreview] = useState<PlanPreview>();
   const action = useAction();
+  const draftRevision = useRef(0);
+  function invalidatePreview() {
+    draftRevision.current++;
+    setPreview(undefined);
+  }
   function edit(value: string) {
     setDraft(value);
-    setPreview(undefined);
+    invalidatePreview();
   }
   const enabled = catalog.data?.members.filter((m) => m.enabled) ?? [];
   const member = enabled.find((m) => m.id === agent);
@@ -37,13 +73,15 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
   const cli = connection && !('baseUrl' in connection);
   const group = ['meeting', 'review', 'parallel'].includes(source);
   async function load() {
+    const revision = draftRevision.current;
     if (source === 'lead') {
-      const result = await api<{ spec: WorkflowSpec; preview: Preview }>('plans/generate', 'POST', {
+      const result = await api<{ spec: WorkflowSpec; preview: PlanPreview }>('plans/generate', 'POST', {
         goal,
         agentId: agent,
         approved: true,
         ...(cli && { inspectionId: inspection?.inspectionId, confirmUnmanaged: unmanaged }),
       });
+      if (revision !== draftRevision.current) return;
       edit(JSON.stringify(result.spec, null, 2));
       setPreview(result.preview);
     } else {
@@ -51,6 +89,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
         source === 'demo'
           ? await api<WorkflowSpec>('templates/demo')
           : await api<WorkflowSpec>('templates/' + source, 'POST', { goal, members });
+      if (revision !== draftRevision.current) return;
       edit(JSON.stringify(spec, null, 2));
     }
   }
@@ -89,7 +128,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
               value={goal}
               onChange={(e) => {
                 setGoal(e.target.value);
-                setPreview(undefined);
+                invalidatePreview();
               }}
             />
           </Field>
@@ -108,9 +147,10 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
                 <input
                   type="checkbox"
                   checked={members.includes(m.id)}
-                  onChange={(e) =>
-                    setMembers(e.target.checked ? [...members, m.id] : members.filter((id) => id !== m.id))
-                  }
+                  onChange={(e) => {
+                    setMembers(e.target.checked ? [...members, m.id] : members.filter((id) => id !== m.id));
+                    invalidatePreview();
+                  }}
                 />
                 {m.name} {members.includes(m.id) && '· 第 ' + (members.indexOf(m.id) + 1) + ' 位'}
               </label>
@@ -125,7 +165,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
                 value={agent}
                 onChange={(e) => {
                   setAgent(e.target.value);
-                  setPreview(undefined);
+                  invalidatePreview();
                   setInspection(undefined);
                   setUnmanaged(false);
                 }}
@@ -228,7 +268,9 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
               } catch {
                 throw new Error('草案 JSON 语法有误。');
               }
-              setPreview(await api<Preview>('spec/preview', 'POST', { spec }));
+              const revision = draftRevision.current;
+              const result = await api<PlanPreview>('spec/preview', 'POST', { spec });
+              if (revision === draftRevision.current) setPreview(result);
             })
           }
         >
@@ -265,6 +307,27 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
               </div>
             ))}
           </div>
+          {preview.settings.length > 0 && (
+            <section>
+              <h3>计划设置变更</h3>
+              {preview.settings.map((change) => (
+                <ShowChange
+                  key={change.field}
+                  title={planLabels[change.field] ?? change.field}
+                  before={change.before}
+                  after={change.after}
+                />
+              ))}
+            </section>
+          )}
+          {preview.taskChanges.map((change) => (
+            <ShowChange
+              key={change.id}
+              title={'任务变更 · ' + change.after.title}
+              before={change.before}
+              after={change.after}
+            />
+          ))}
           <button
             className="primary"
             disabled={action.busy}

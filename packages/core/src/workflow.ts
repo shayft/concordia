@@ -2,7 +2,7 @@ import { captureLegacyWaits, recordWaits, waitTime } from './timing.ts';
 import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import { exhausted } from './budget.ts';
 import { platformActionSchema } from '@concordia/protocol';
-import { workflowSpecSchema, type WorkflowSpec } from '@concordia/protocol/workflow';
+import { workflowSpecSchema, type PlanPreview, type WorkflowSpec } from '@concordia/protocol/workflow';
 import type { CoreDependencies } from './index.ts';
 import {
   activePlan,
@@ -27,24 +27,29 @@ import { applyAction, scheduleReply } from './workflow-actions.ts';
 export * from './state.ts';
 export * from './templates.ts';
 
-function planDiff(state: State, spec: WorkflowSpec) {
+function planDiff(state: State, spec: WorkflowSpec): PlanPreview {
   const prior = state.spec?.tasks ?? [];
   const before = new Map(prior.map((task) => [task.id, task]));
   const after = new Set(spec.tasks.map((task) => task.id));
-  const settings = (Object.keys(spec) as (keyof WorkflowSpec)[])
+  const fields = new Set([...Object.keys(state.spec ?? {}), ...Object.keys(spec)] as (keyof WorkflowSpec)[]);
+  const settings = [...fields]
     .filter(
       (field) => field !== 'tasks' && JSON.stringify(state.spec?.[field]) !== JSON.stringify(spec[field]),
     )
-    .map((field) => ({ field, before: state.spec?.[field] ?? null, after: spec[field] }));
+    .map((field) => ({ field, before: state.spec?.[field] ?? null, after: spec[field] ?? null }));
+  const taskChanges = spec.tasks.flatMap((task) => {
+    const previous = before.get(task.id);
+    if (!previous || JSON.stringify(task) === JSON.stringify(previous)) return [];
+    return [{ id: task.id, before: previous, after: task }];
+  });
   return {
     spec,
     settings,
     revision: state.revision,
     added: spec.tasks.filter((task) => !before.has(task.id)).map((task) => task.id),
     removed: prior.filter((task) => !after.has(task.id)).map((task) => task.id),
-    changed: spec.tasks
-      .filter((task) => before.has(task.id) && JSON.stringify(task) !== JSON.stringify(before.get(task.id)))
-      .map((task) => task.id),
+    changed: taskChanges.map((change) => change.id),
+    taskChanges,
   };
 }
 

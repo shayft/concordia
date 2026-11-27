@@ -335,6 +335,20 @@ describe('真实 SQLite 与脚本化成员', () => {
     const row = db.prepare('SELECT data FROM workflow_state').get()!;
     expect(String(row.data)).not.toContain('已绑定的内容');
   });
+  it('批准前显示移除的预算上限以及任务从哪个岗位转给哪个岗位', () => {
+    const prior = { ...demoSpec(), maxTokens: 12000 };
+    scheduler.apply(prior);
+    const changed = demoSpec();
+    const task = changed.tasks.find(task => task.id === 'api')!;
+    const original = task.owner;
+    task.owner = changed.agents.find(agent => agent.id !== original)!.id;
+    const diff = scheduler.preview(changed);
+    expect(diff.settings).toContainEqual({ field: 'maxTokens', before: 12000, after: null });
+    expect(diff.taskChanges).toContainEqual({
+      id: task.id, before: expect.objectContaining({ owner: original }), after: expect.objectContaining({ owner: task.owner })
+    });
+    expect(scheduler.board().spec?.maxTokens).toBe(12000);
+  });
   it('不足以覆盖估算时禁止下一次调用，完整用量可结算估算，同一轮累计用量不会重复计算', () => {
     const spec = demoSpec();
     spec.maxTokens = 15;

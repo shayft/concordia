@@ -26,7 +26,7 @@ beforeEach(async () => {
     vi.fn(async (path: string, options: RequestInit) => {
       const body = options.body ? JSON.parse(String(options.body)) : undefined;
       requests.push({ path, method: options.method ?? 'GET', body });
-      const reply = serve(path, body);
+      const reply = await serve(path, body);
       return reply instanceof Response ? reply : Response.json(reply);
     }),
   );
@@ -114,6 +114,30 @@ it('修改计划只产生带预览修订号的显式批准', async () => {
   await click(button('批准并应用此版本'));
   expect(requests.at(-1)?.body).toEqual({ spec, expectedRevision: 3, approved: true });
   expect(openBoard).toHaveBeenCalledOnce();
+});
+
+it('切换草案来源后，较早返回的预览不能恢复批准按钮', async () => {
+  let finishPreview!: (value: unknown) => void;
+  const pending = new Promise<unknown>((resolve) => { finishPreview = resolve; });
+  const spec = { title: '旧计划', goal: '旧目标', maxCalls: 3, tasks: [], agents: [], acceptance: [] };
+  serve = (path) => {
+    if (path.endsWith('/catalog')) return { connections: [], models: [], members: [], pools: [] };
+    if (path.endsWith('/preview')) return pending;
+    return spec;
+  };
+  await render(<PlansPage openBoard={() => {}} />);
+  await click(button('载入模板'));
+  await click(button('校验并预览差异'));
+  const source = container.querySelector<HTMLSelectElement>('[aria-label="草案来源"]')!;
+  await act(async () => {
+    source.value = 'manual';
+    source.dispatchEvent(new window.Event('change', { bubbles: true }));
+  });
+  await act(async () => {
+    finishPreview({ spec, revision: 1, added: [], changed: [], removed: [], taskChanges: [], settings: [] });
+  });
+  expect(container.textContent).not.toContain('批准并应用此版本');
+  expect(requests.some((request) => request.path.endsWith('/apply'))).toBe(false);
 });
 
 it('交付演练呈现命令和 diff 并分别绑定审批票据', async () => {

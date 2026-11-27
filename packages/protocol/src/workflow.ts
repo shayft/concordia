@@ -123,3 +123,17 @@ export const workflowSpecSchema = z
 export type WorkflowSpec = z.infer<typeof workflowSpecSchema>;
 export type TaskSpec = z.infer<typeof taskSchema>;
 export type Agent = z.infer<typeof agentSchema>;
+
+export interface PlanPreview {
+  spec: WorkflowSpec;
+  revision: number;
+  added: string[];
+  changed: string[];
+  removed: string[];
+  settings: {
+    field: keyof WorkflowSpec;
+    before: WorkflowSpec[keyof WorkflowSpec] | null;
+    after: WorkflowSpec[keyof WorkflowSpec] | null;
+  }[];
+  taskChanges: { id: string; before: TaskSpec; after: TaskSpec }[];
+}
