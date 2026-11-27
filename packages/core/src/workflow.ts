@@ -1,4 +1,5 @@
 import { captureLegacyWaits, recordWaits, waitTime } from './timing.ts';
+import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import { exhausted } from './budget.ts';
 import { platformActionSchema } from '@concordia/protocol';
 import { workflowSpecSchema, type WorkflowSpec } from '@concordia/protocol/workflow';
@@ -250,7 +251,7 @@ export class Scheduler {
           (!filter.poolId || e.pool === filter.poolId),
       );
   }
-  claim(taskId: string): Execution {
+  claim(taskId: string, model?: ModelSnapshot): Execution {
     const result = this.write((s, log) => {
       const task = entity(s.tasks, taskId),
         plan = activePlan(s),
@@ -296,6 +297,12 @@ export class Scheduler {
       if (new TextEncoder().encode(encoded).byteLength > (plan.maxContextTokens ?? 128_000))
         throw new Error('输入超过上下文限制');
       const execution: Execution = {
+        ...(model && {
+          modelSnapshot: {
+            modelId: model.modelId,
+            ...(model.pricing && { pricing: { ...model.pricing } }),
+          },
+        }),
         id,
         taskId,
         owner: agent.id,

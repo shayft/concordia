@@ -1,4 +1,5 @@
 import type { WaitHistory } from './timing.ts';
+import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import type { CallMeter } from './budget.ts';
 import type { TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
 
@@ -28,6 +29,7 @@ export interface Task extends TaskSpec {
   replyFor?: string;
 }
 export interface Execution {
+  modelSnapshot?: ModelSnapshot;
   id: string;
   taskId: string;
   owner: string;
