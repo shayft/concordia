@@ -29,6 +29,17 @@ function safeBaseUrl(raw: string) {
   return (url.protocol === 'https:' || (url.protocol === 'http:' && local)) &&
     !url.username && !url.password && !url.search && !url.hash;
 }
+export function isEndpointPath(value: string): boolean {
+  if (!value || value.startsWith('//') || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value) || /[?#\\]/u.test(value)) return false;
+  try {
+    return value.split('/').every(part => {
+      const decoded = decodeURIComponent(part);
+      return decoded.split(/[\\/]/u).every(segment => segment !== '.' && segment !== '..');
+    });
+  } catch {
+    return false;
+  }
+}
 export const connectionSchema = z.union([
   z.strictObject({
     ...base, kind: z.enum(apiKinds), baseUrl: z.string().max(2048).refine(safeBaseUrl),
@@ -36,7 +47,7 @@ export const connectionSchema = z.union([
     headerRefs: z.record(z.string().regex(/^x-[a-z0-9-]+$/iu).refine(name =>
       !/forwarded|host|url/i.test(name) && !['x-api-key', 'x-goog-api-key'].includes(name.toLowerCase())),
       credentialRef).refine(refs => Object.keys(refs).length <= 16).optional(),
-    endpoint: z.string().min(1).max(2048).regex(/^[^?#\\]+$/u).optional(),
+    endpoint: z.string().max(2048).refine(isEndpointPath).optional(),
     timeoutMs: z.number().int().min(1).max(2147483647).optional(),
     maxOutputTokens: z.number().int().positive().max(65536).optional(),
     params: params.optional(),

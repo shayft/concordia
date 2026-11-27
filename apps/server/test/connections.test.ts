@@ -93,7 +93,8 @@ describe('连接、独立模型、岗位与额度池', () => {
     const marker = crypto.randomUUID();
     for (const extra of [{ credentialRef: marker }, { apiKey: marker },
       { baseUrl: 'https://user:' + marker + '@example.invalid/api' }, { params: { token: marker } },
-      { headers: { Authorization: marker } }, { headerRefs: { 'X-Private': marker } }]) {
+      { endpoint: 'https://user:' + marker + '@example.invalid' }, { endpoint:'//example.invalid/api' },
+      { endpoint:'%2E%2E/path' }, { headers: { Authorization: marker } }, { headerRefs: { 'X-Private': marker } }]) {
       const res = await post('connections', { ...gateway, ...extra });
       expect(res.statusCode).toBe(400);
       expect(res.body.includes(marker)).toBe(false);
