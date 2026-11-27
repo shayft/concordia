@@ -28,7 +28,7 @@ export function serveWorktrees(
       }
     });
   }
-  app.get('/api/worktrees/state', async () => service.state());
+  app.get('/api/worktrees/state', async () => ({ ...service.state(), activeScope: getScope?.() ?? null }));
   post('projects', projectSchema, (value) => service.configure(value));
   post('member', z.strictObject({ projectId: z.string(), taskId: z.string() }), (v) =>
     service.member(v.projectId, v.taskId, getScope?.()),

@@ -12,6 +12,7 @@ type Project = {
   commands: Command[];
 };
 export interface Tree {
+  scope: string | null;
   id: string;
   projectId: string;
   taskId: string | null;
@@ -37,6 +38,7 @@ interface Approval {
   diff?: string;
 }
 export interface Worktrees {
+  activeScope: string | null;
   projects: Project[];
   trees: Tree[];
   approvals: Approval[];

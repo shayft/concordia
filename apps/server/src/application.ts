@@ -56,29 +56,34 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   function openBoard(id: string) {
     const dir = safeDataDirectory(directory, 'boards', id);
     const boardDb = openStore(safeDatabasePath(dir, 'workspace.sqlite'));
-    const scheduler = new Scheduler({
-      storage: new WorkflowStore(boardDb, dir),
-      now: Date.now,
-      nextId: randomUUID,
-    });
-    const worker = new Worker(scheduler, db, trees, directory, id, () => {
-      const address = app.server.address();
-      if (!address || typeof address === 'string') throw new Error('本地服务未监听');
-      return 'http://127.0.0.1:' + address.port;
-    });
-    scheduler.recover();
-    // A user may have resumed a shared account from a different workspace.
-    const board = scheduler.board();
-    const shared = pausedPools(db);
-    for (const pool of board.stoppedPools) {
-      if (
-        !shared.includes(pool) &&
-        board.agents.some((agent) => !agent.connection.startsWith('mock-') && agent.pool === pool)
-      ) {
-        scheduler.resumePool(pool);
+    try {
+      const scheduler = new Scheduler({
+        storage: new WorkflowStore(boardDb, dir),
+        now: Date.now,
+        nextId: randomUUID,
+      });
+      const worker = new Worker(scheduler, db, trees, directory, id, () => {
+        const address = app.server.address();
+        if (!address || typeof address === 'string') throw new Error('本地服务未监听');
+        return 'http://127.0.0.1:' + address.port;
+      });
+      scheduler.recover();
+      // A user may have resumed a shared account from a different workspace.
+      const board = scheduler.board();
+      const shared = pausedPools(db);
+      for (const pool of board.stoppedPools) {
+        if (
+          !shared.includes(pool) &&
+          board.agents.some((agent) => !agent.connection.startsWith('mock-') && agent.pool === pool)
+        ) {
+          scheduler.resumePool(pool);
+        }
       }
+      return { id, scheduler, worker, close: () => boardDb.close() };
+    } catch (error) {
+      boardDb.close();
+      throw error;
     }
-    return { id, scheduler, worker, close: () => boardDb.close() };
   }
   let current = openBoard(String(db.prepare('SELECT id FROM workspaces WHERE active=1').get()!.id));
   const feeds = new Set<() => void>();
@@ -138,13 +143,14 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   serveExecutionCosts(app, () => current.scheduler.board().executions);
   const delivery = serveDelivery(app, directory, assertRecovered);
 
-  function switchBoard(id: string) {
+  function switchBoard(id: string, newName?: string) {
     if (current.id === id) return;
     if (current.worker.occupied()) throw new Error('工作区仍有执行或已授权批次');
-    if (!workspaces().some((w) => w.id === id)) throw new Error('工作区不存在');
+    if (!newName && !workspaces().some((w) => w.id === id)) throw new Error('工作区不存在');
     const next = openBoard(id);
     try {
       db.exec('BEGIN IMMEDIATE');
+      if (newName) db.prepare('INSERT INTO workspaces(id,name,active) VALUES(?,?,0)').run(id, newName);
       db.prepare('UPDATE workspaces SET active=0 WHERE active=1').run();
       db.prepare('UPDATE workspaces SET active=1 WHERE id=?').run(id);
       db.exec('COMMIT');
@@ -254,8 +260,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   post('/api/workspaces', z.strictObject({ name: text.max(120) }), ({ name }) => {
     if (current.worker.occupied()) throw new Error('工作区正在运行');
     const id = randomUUID();
-    db.prepare('INSERT INTO workspaces(id,name,active) VALUES(?,?,0)').run(id, name);
-    switchBoard(id);
+    switchBoard(id, name);
     return { active: id };
   });
   post('/api/workspaces/:id/select', empty, (_, p) => {

@@ -105,7 +105,10 @@ function TaskDetails({
     : undefined;
   const simulation = agent?.connection.startsWith('mock-');
   const isCli = connection?.kind === 'claude' || connection?.kind === 'codex';
-  const tree = work.data?.trees.find((t) => t.id === treeId);
+  const eligibleTrees = work.data?.trees.filter((t) =>
+    t.scope === work.data?.activeScope && t.taskId === task.id && t.kind === 'member' && t.status === 'ready'
+  ) ?? [];
+  const tree = eligibleTrees.find((t) => t.id === treeId);
   const needsUnmanaged = connection?.kind === 'claude';
   const id = 'tasks/' + encodeURIComponent(task.id) + '/';
   const perform = (name: ControlName) =>
@@ -196,9 +199,7 @@ function TaskDetails({
                   }}
                 >
                   <option value="">仅文本</option>
-                  {work.data?.trees
-                    .filter((t) => t.taskId === task.id && t.kind === 'member' && t.status !== 'removed')
-                    .map((t) => (
+                  {eligibleTrees.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.projectId} · {t.branch}
                       </option>
@@ -269,6 +270,7 @@ function TaskDetails({
               disabled={
                 action.busy ||
                 !connection?.enabled ||
+                Boolean(treeId && !tree) ||
                 !Number.isInteger(maxCalls) ||
                 maxCalls < 1 ||
                 maxCalls > Math.min(50, task.maxCalls) ||
