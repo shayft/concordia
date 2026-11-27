@@ -27,3 +27,8 @@ node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '阶�
 ## 最终三平台回归
 
 2026-11-27，提交 `c110272`。三个托管系统均从冻结锁安装，并通过 `pnpm lint`、`pnpm test` 和含严格类型检查的 `pnpm build`。本阶段涉及模拟连接的用例为「模拟测试通过」。整仓在 Linux 和 macOS 各 201 项通过、2 项跳过，Windows 197 项通过、6 项跳过。个人账号、计费和桌面验收状态沿用上表。[逐系统作业、跳过原因及统一测试步骤](README.md) · [GitHub Actions](https://github.com/shayft/concordia/actions/runs/45996818506)
+
+## 网关响应模式与计划差异
+
+- **模拟测试通过。** `11cd5a9` 的仅 JSON 回环网关在重启后共收到三次非流式请求，分别来自连接验证、计划生成和任务执行。连接验证界面显示实际 HTTP 状态、耗时与上游可提供的用量。对应命令为 `pnpm exec vitest run apps/server/test/application-http.test.ts apps/web/test/workspace-ui.test.tsx`。[协议说明](../providers.md)
+- **模拟测试通过。** `4611fb4` 在批准前显示草案移除的预算及岗位变化。切换草案来源后，即使旧的预览返回，页面也不会重新出现旧计划的批准按钮。Linux 执行 `pnpm exec vitest run apps/web/test/workspace-ui.test.tsx packages/store/test/workflow.test.ts`，36 项通过。

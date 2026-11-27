@@ -11,7 +11,7 @@
 | Chat Completions 覆盖成功、流式和错误响应 | 模拟测试通过 | 回环服务返回普通 JSON 和分块 SSE，文本在流结束前送达，跨数据块的工具参数可重组。对不完整的流、401、429、503 和重定向均检查错误状态及实际请求次数。 |
 | 两个 Base URL 可同时使用，同一网关可手填多个模型 ID | 模拟测试通过 | 两个回环端口同时接收请求，分别收到任意模型 ID `any/0`、`any/1`，请求保留配置的 API 根路径和自定义 endpoint。连接目录的复测在网关 A、B 上各验证一个模型，再在 A 上验证另一手填模型。模拟服务实际收到 A、B、A 三个预期路径和对应的三个模型 ID。 |
 | Claude Code、Codex CLI 共用事件格式，各自保留会话，并通过本机 MCP 发出动作 | 模拟测试通过 | 两种假 CLI 均经本机 TCP 完成工具调用。同一成员的同一任务恢复已记录的会话，换任务使用独立会话。针对错绑、重发、到期、撤销及动作参数分别做了断言。 |
-| 密钥保存在各自系统的凭据存储中 | 模拟测试通过 | 注入凭据库验证写入、读取、拒绝非法引用、取消和拒绝访问。配置 API 拒绝明文凭据字段，持久化连接只保存引用。Linux Secret Service、macOS Keychain 和 Windows Credential Manager 在真实用户会话下的存取均为**尚未验证**。 |
+| 密钥保存在各自系统的凭据存储中 | 模拟测试通过 | 注入凭据库验证写入、读取、拒绝非法引用、取消和拒绝访问。配置 API 拒绝明文凭据字段，持久化连接只保存引用。三种系统凭据库的托管账户存取均已实测，见下文。个人桌面账户解锁仍为**尚未验证**。 |
 
 ## 命令与证据
 
@@ -37,8 +37,18 @@ node_modules/.bin/vitest run packages/store/test/workflow.test.ts packages/provi
 | 统一动作、MCP 和两款 CLI 的会话 | `a238e08`、`b7d37a2`、`4cb24be` | [MCP 验证](../../packages/runtimes/test/mcp.test.ts) · [CLI 运行时](../../packages/runtimes/test/agent-runtime.test.ts) |
 | 系统凭据适配 | `4d6002e` | [凭据存取测试](../../packages/providers/test/credentials.test.ts) |
 
-真实环境下的 MCP 会话、第三方网关和凭据服务仍需对应系统、原生 CLI 登录及真实调用授权。此前阶段 1 的云端 Codex 尝试及三平台模拟运行结果见[阶段 1 验收记录](./stage-1.md)。
+真实模型的 MCP 会话和第三方网关仍需原生 CLI 登录、对应系统凭据与实际调用授权。此前阶段 1 的云端 Codex 尝试及三平台模拟运行结果见[阶段 1 验收记录](./stage-1.md)。
 
 ## 最终三平台回归
 
 2026-11-27，提交 `c110272`。三个托管系统均从冻结锁安装，并通过 `pnpm lint`、`pnpm test` 和含严格类型检查的 `pnpm build`。本阶段涉及模拟连接的用例为「模拟测试通过」。整仓在 Linux 和 macOS 各 201 项通过、2 项跳过，Windows 197 项通过、6 项跳过。个人账号、计费和桌面验收状态沿用上表。[逐系统作业、跳过原因及统一测试步骤](README.md) · [GitHub Actions](https://github.com/shayft/concordia/actions/runs/45996818506)
+
+## 三种原生凭据库
+
+2026-11-27，源码 `73e2670`。托管系统在独立账户内运行 `node packages/providers/test-native/vault.ts`，经正式应用接口写入与读回内存生成的一次性值，再通过原生接口删除。原生接口与 Concordia 均确认删除后查无此项。Linux 使用私有 D-Bus 会话的 GNOME Keyring，macOS 使用 Keychain，Windows 使用 Credential Manager。每项操作使用随机条目标识。该用例不发送模型请求。个人账户的锁屏、授权弹窗和登录后解锁仍为「尚未验证」。
+
+| 系统 | 状态与命令结果 |
+| --- | --- |
+| Ubuntu 26.04 | 真实 Linux 测试通过，原生凭据脚本退出 0。[作业](https://github.com/shayft/concordia/actions/runs/45998469897/job/140503749838) |
+| macOS 26 ARM64 | 真实 macOS 测试通过，原生凭据脚本退出 0。[作业](https://github.com/shayft/concordia/actions/runs/45998469897/job/140503749154) |
+| Windows Server 2025 | 真实 Windows 测试通过，原生凭据脚本退出 0。[作业](https://github.com/shayft/concordia/actions/runs/45998469897/job/140503749619) |
