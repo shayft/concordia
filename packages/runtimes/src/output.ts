@@ -1,4 +1,4 @@
-import { CliDiagnosticError, nativeErrorCategory } from './errors.ts';
+import { CliDiagnosticError, nativeCliFailure } from './errors.ts';
 import { z } from 'zod';
 import type { CliKind } from './environment.ts';
 
@@ -28,7 +28,7 @@ function checkReply(text?: string) {
 export function parseProbeOutput(kind: CliKind, stdout: string): { text: string; recording: string } {
   if (kind === 'claude') {
     const parsed = claudeResult.safeParse(decode(stdout));
-    if (!parsed.success) throw new CliDiagnosticError('Claude Code 未返回成功的 result 事件（' + nativeErrorCategory(stdout) + '）。');
+    if (!parsed.success) throw nativeCliFailure(stdout);
     const text = checkReply(parsed.data.result);
     // Reconstruct from an allowlist. Never serialize arbitrary CLI metadata.
     return { text, recording: JSON.stringify({ ...parsed.data, result: text }) + '\n' };
@@ -62,7 +62,7 @@ export function parseProbeOutput(kind: CliKind, stdout: string): { text: string;
       }
       continue;
     } else if (type === 'turn.failed' || type === 'error') {
-      throw new CliDiagnosticError('Codex CLI 报告执行失败（' + nativeErrorCategory(line) + '）。');
+      throw nativeCliFailure(line);
     } else if (type !== 'thread.started') {
       throw new CliDiagnosticError('Codex CLI 返回失败或未识别的事件。');
     }

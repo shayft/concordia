@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { prepareEnvironment, resolveExecutable, type CliKind } from './environment.ts';
-import { CliDiagnosticError, nativeErrorCategory } from './errors.ts';
+import { CliDiagnosticError, nativeCliFailure } from './errors.ts';
 import { parseAuth, parseProbeOutput, probePrompt } from './output.ts';
 import { runProcess, type ProcessResult } from './process.ts';
 
@@ -130,11 +130,10 @@ export async function runCliProbe(kind: CliKind, options: CliOptions & { approve
     if (kind === 'claude' && !diagnostic.unmanagedConfirmed) {
       throw new CliDiagnosticError('请先在 Claude Code 的 /status 核对 Setting sources。仅在没有 Managed settings 时按说明确认并重新预检。');
     }
-    if (diagnostic.login === '未登录') throw new CliDiagnosticError('CLI 报告未登录，请在官方程序中完成登录。');
+    if (diagnostic.login === '未登录') throw new CliDiagnosticError('CLI 报告未登录，请在官方程序中完成登录。','auth');
     const result = await invoke(diagnostic.arguments, 60_000);
     if (result.exitCode !== 0) {
-      const category = nativeErrorCategory(result.stderr + '\n' + result.stdout);
-      throw new CliDiagnosticError('CLI 最小调用失败（退出码 ' + (result.exitCode ?? '未知') + '，' + category + '）。');
+      throw nativeCliFailure(result.stderr + '\n' + result.stdout, result.exitCode);
     }
     return { ...diagnostic, ...parseProbeOutput(kind, result.stdout) };
   });

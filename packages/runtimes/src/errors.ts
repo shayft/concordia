@@ -27,7 +27,7 @@ export function nativeErrorCategory(message: string) {
   return nativeErrorPatterns.find(([pattern]) => pattern.test(evidence))?.[1] ?? '原因未知';
 }
 
-export function nativeCliFailure(evidence: string) {
+export function nativeCliFailure(evidence: string, exitCode?: number | null) {
   const category = nativeErrorCategory(evidence);
   let kind: CliFailure;
   if (/insufficient[_ -](?:quota|credits|balance)|credit balance is too low|billing[_ -]hard[_ -]limit/i.test(evidence)) {
@@ -41,5 +41,6 @@ export function nativeCliFailure(evidence: string) {
       default: kind = 'fatal';
     }
   }
-  return new CliDiagnosticError('CLI 执行失败（' + category + '）。', kind);
+  const status = exitCode === undefined ? '' : '退出码 ' + (exitCode ?? '未知') + '，';
+  return new CliDiagnosticError('CLI 执行失败（' + status + category + '）。', kind);
 }

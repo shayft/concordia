@@ -13,6 +13,7 @@ let mcp: string;
 let activeShell: boolean;
 let login: string;
 let exitCode: number;
+let failureText: string;
 let modelCalls: number;
 
 beforeEach(() => {
@@ -21,6 +22,7 @@ beforeEach(() => {
   activeShell = false;
   login = 'Logged in using ChatGPT';
   exitCode = 1;
+  failureText = 'discard-me';
   modelCalls = 0;
   vi.mocked(runProcess).mockImplementation(async (_file, args) => {
     if (args.includes('--version')) return { stdout: 'codex-cli 1.2.3', stderr: '', exitCode: 0 };
@@ -36,7 +38,7 @@ beforeEach(() => {
     if (args.includes('mcp')) return { stdout: mcp, stderr: '', exitCode: 0 };
     if (args.includes('status')) return { stdout: '', stderr: login, exitCode: login === 'Not logged in' ? 1 : 0 };
     modelCalls++;
-    return { stdout: 'discard-me', stderr: 'discard-me', exitCode };
+    return { stdout: '', stderr: failureText, exitCode };
   });
 });
 
@@ -71,9 +73,11 @@ it('未登录时仅探测，不开始模型调用', async () => {
 
 it('调用失败仅保留退出码，只调用一次', async () => {
   exitCode = 3;
+  failureText = 'discard-me HTTP 429';
   const { inspectionId } = await inspectCli('codex', options);
   const result = runCliProbe('codex', { ...options, approved: true, inspectionId });
   await expect(result).rejects.toThrow(/退出码 3/);
+  await expect(result).rejects.toMatchObject({kind:'rate_limit'});
   await expect(result).rejects.not.toThrow(/discard-me/);
   expect(modelCalls).toBe(1);
 });
@@ -102,4 +106,10 @@ it.each([
   const error = nativeCliFailure(raw + ' OMIT_THIS');
   expect(error.kind).toBe(kind);
   expect(error.message).not.toContain('OMIT_THIS');
+});
+
+it.each(['claude','codex'] as const)('%s 成功退出中的用量错误仍传递预算分类', kind => {
+  const failure = kind === 'codex' ? {type:'turn.failed',error:{message:'insufficient_quota'}}
+    : {type:'result',subtype:'error_during_execution',is_error:true,result:'insufficient_quota'};
+  expect(() => parseProbeOutput(kind,JSON.stringify(failure))).toThrow(expect.objectContaining({kind:'budget'}));
 });
