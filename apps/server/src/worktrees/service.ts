@@ -103,6 +103,11 @@ export class WorktreeService {
     }
   }
 
+  async cancelAll(): Promise<void> {
+    const active = [...this.running.values()];
+    for (const item of active) item.controller.abort();
+    await Promise.all(active.map((item) => item.done));
+  }
   close(): void | Promise<void> {
     this.closing = true;
     const closeStore = () => {
@@ -112,9 +117,7 @@ export class WorktreeService {
       }
     };
     if (!this.running.size) return closeStore();
-    const active = [...this.running.values()];
-    for (const item of active) item.controller.abort();
-    return Promise.all(active.map((item) => item.done)).then(closeStore);
+    return this.cancelAll().then(closeStore);
   }
   configure(input: Project) {
     if (this.closing) throw new Error('服务正在关闭。');

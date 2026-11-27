@@ -26,9 +26,9 @@ export function worktreePathParts(path: string) {
   for (const part of parts) {
     if (
       !/^[\p{L}\p{N}\p{M}_. ()@+-]{1,200}$/u.test(part) ||
-      /[. ]$/.test(part) ||
+      /[. ]$|\p{Default_Ignorable_Code_Point}/u.test(part) ||
       /^(\.git|\.claude|\.codex)$/i.test(part) ||
-      /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(part)
+      /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]) *(\.|$)/i.test(part)
     )
       throw invalid();
   }

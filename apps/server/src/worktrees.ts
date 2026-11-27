@@ -4,7 +4,11 @@ import { projectSchema, snapshotSchema, type WorktreeService } from './worktrees
 export { openWorktrees, WorktreeService } from './worktrees/service.ts';
 
 /** Register only on the user-session server, never on the execution MCP channel. */
-export function serveWorktrees(app: FastifyInstance, service: WorktreeService) {
+export function serveWorktrees(
+  app: FastifyInstance,
+  service: WorktreeService,
+  assertCanExecute?: () => void,
+) {
   const treeId = z.uuid();
   const tree = z.strictObject({ treeId });
   const approval = z.strictObject({ id: z.uuid() });
@@ -33,7 +37,10 @@ export function serveWorktrees(app: FastifyInstance, service: WorktreeService) {
     service.integrate(v.projectId, v.snapshot),
   );
   post('request-command', tree.extend({ name: z.string() }), (v) => service.requestCommand(v.treeId, v.name));
-  post('approve-command', approval, (v) => service.approveCommand(v.id));
+  post('approve-command', approval, (v) => {
+    assertCanExecute?.();
+    return service.approveCommand(v.id);
+  });
   post('cancel-command', tree, (v) => {
     service.cancelCommand(v.treeId);
     return { cancelled: true };

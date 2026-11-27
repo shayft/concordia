@@ -137,6 +137,8 @@ it('只允许成员树中的普通文件，拒绝父目录、元数据、链接�
     'x:y',
     'dir\\..\\outside',
     '../.codex',
+    '.git\ufe0f',
+    'COM¹.txt',
   ]) {
     expect(() => service.read(t.id, path)).toThrow();
     expect(() => service.write(t.id, path, 'bad')).toThrow();
