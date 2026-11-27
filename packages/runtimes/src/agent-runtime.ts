@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { resolveCliDirectory } from './cli-path.ts';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { actionTools, type ActionName, type PlatformAction } from '@concordia/protocol';
@@ -75,9 +75,10 @@ export class CliAgentRuntime {
     if (!memberId || !taskId || !prompt || !isAbsolute(input.cwd) || !['read-only','worktree-write'].includes(permission)) {
       throw new CliDiagnosticError('执行输入不完整。');
     }
-    const cwd = await realpath(input.cwd);
+    const envForPaths = this.config.env ?? process.env;
+    const cwd = await resolveCliDirectory(input.cwd,envForPaths);
     const write = permission === 'worktree-write';
-    const bound = !!input.authorizedWorktree && isAbsolute(input.authorizedWorktree) && await realpath(input.authorizedWorktree) === cwd;
+    const bound = !!input.authorizedWorktree && isAbsolute(input.authorizedWorktree) && await resolveCliDirectory(input.authorizedWorktree,envForPaths) === cwd;
     if ((input.authorizedWorktree || write) && !bound) throw new CliDiagnosticError('缺少当前工作树的授权。','permission');
     const allowed = new Set(actionTools.map(tool => tool.name).filter(name => {
       if (input.outputOnly) return false;

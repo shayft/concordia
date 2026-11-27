@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { resolveCliDirectory } from './cli-path.ts';
 import { prepareEnvironment, resolveExecutable, type CliKind } from './environment.ts';
 import { CliDiagnosticError, nativeCliFailure } from './errors.ts';
 import { parseAuth, parseProbeOutput, probePrompt } from './output.ts';
@@ -49,18 +50,19 @@ export function modelArgs(model?: string): string[] {
 }
 
 async function inWorkspace<T>(options: CliOptions, work: (cwd: string) => Promise<T>) {
+  const env = options.env ?? process.env;
   if (options.cwd !== undefined) {
     if (!isAbsolute(options.cwd)) throw new CliDiagnosticError('CLI 工作目录必须是绝对路径。');
-    return work(options.cwd);
+    return work(await resolveCliDirectory(options.cwd, env));
   }
-  const cwd = await mkdtemp(join(tmpdir(), 'concordia-probe-'));
+  const cwd = await mkdtemp(join(await resolveCliDirectory(tmpdir(), env), 'concordia-probe-'));
   try { return await work(cwd); } finally { await rm(cwd, { recursive: true, force: true }); }
 }
 
 async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   if (kind !== 'claude' && kind !== 'codex') throw new CliDiagnosticError('不支持的 CLI 类型。');
   const { childEnv, billingEnvironment } = prepareEnvironment(options.env ?? process.env, options.passEnv);
-  const executable = await resolveExecutable(kind, childEnv, options.executable);
+  const executable = await resolveExecutable(kind, childEnv, options.executable, options.env ?? process.env);
   const invoke = async (args: string[], timeoutMs = 15_000) => {
     try {
       return await runProcess(executable, args, { cwd, env: childEnv, signal: options.signal, timeoutMs });
@@ -99,7 +101,7 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   const auth = await invoke(kind === 'claude' ? ['auth', 'status'] : ['login', 'status']);
   const diagnostic = {
     kind, executable, version, billingEnvironment, actionChannel: options.actionChannel ?? 'auto',
-    cwd: options.cwd ?? '新建的空临时目录',
+    cwd: options.cwd === undefined ? '新建的空临时目录' : cwd,
     ...(kind === 'claude' && { unmanagedConfirmed: options.confirmUnmanaged === true }),
     ...parseAuth(kind, auth.stdout, auth.stderr, auth.exitCode),
     arguments: [...args],

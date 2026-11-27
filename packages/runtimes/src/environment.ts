@@ -1,4 +1,5 @@
 import { CliDiagnosticError } from './errors.ts';
+import { resolveCliDirectory, resolveCliPath } from './cli-path.ts';
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
@@ -45,24 +46,39 @@ export function prepareEnvironment(env: NodeJS.ProcessEnv, passEnv: readonly str
   return { childEnv, billingEnvironment };
 }
 
-export async function resolveExecutable(kind: CliKind, env: NodeJS.ProcessEnv, configured?: string) {
+export async function resolveExecutable(kind: CliKind, env: NodeJS.ProcessEnv, configured?: string, privateEnv = env) {
   if (configured !== undefined && !isAbsolute(configured)) throw new CliDiagnosticError('请为 CLI 配置绝对路径。');
   const windows = process.platform === 'win32';
   if (windows && configured && !/\.exe$/i.test(configured)) {
     throw new CliDiagnosticError('Windows 需要官方原生 .exe 路径，命令脚本无法直接启动。');
   }
   const basename = windows ? kind + '.exe' : kind;
-  const candidates = configured ? [configured] : (env.PATH ?? '').split(delimiter)
-    .filter(dir => isAbsolute(dir)).map(dir => join(dir, basename));
-  for (const candidate of candidates) {
+  const search = configured ? [configured] : (env.PATH ?? '').split(delimiter).filter(dir => isAbsolute(dir));
+  let excludedPath = false;
+  for (const entry of search) {
+    let candidate = entry;
+    if (!configured) {
+      // PATH may contain the CLI's private aliases directory. Never enter it.
+      try { candidate = join(await resolveCliDirectory(entry, privateEnv), basename); }
+      catch (error) {
+        if (error instanceof CliDiagnosticError && error.kind === 'permission') excludedPath = true;
+        continue;
+      }
+    }
     try {
-      if (!(await stat(candidate)).isFile()) continue;
-      await access(candidate, windows ? constants.F_OK : constants.X_OK);
-      return candidate;
-    } catch {
+      const physical = await resolveCliPath(candidate, privateEnv);
+      const info = await stat(physical);
+      if (!info.isFile()) continue;
+      if (info.nlink !== 1) throw new CliDiagnosticError('CLI 可执行文件有多个硬链接，无法确认其与认证文件分开。请选择官方独立可执行文件。','permission');
+      if (windows && !/\.exe$/i.test(physical)) throw new CliDiagnosticError('Windows 需要官方原生 .exe 路径。');
+      await access(physical, windows ? constants.F_OK : constants.X_OK);
+      return physical;
+    } catch (error) {
+      if (error instanceof CliDiagnosticError) throw error;
       // Missing and inaccessible entries are both possible in desktop PATHs.
     }
   }
   if (configured) throw new CliDiagnosticError('指定的 CLI 路径不存在、不可执行或不是文件。请检查配置的绝对路径。');
+  if (excludedPath) throw new CliDiagnosticError('当前 PATH 在排除 CLI 私有目录后找不到程序。请配置官方可执行文件的绝对路径。','permission');
   throw new CliDiagnosticError('当前 PATH 中找不到 ' + basename + '。请安装官方 CLI 或配置其可执行文件的绝对路径。');
 }

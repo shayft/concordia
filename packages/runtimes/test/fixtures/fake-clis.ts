@@ -5,7 +5,7 @@ import { compileWindowsFixture } from './compile-windows.ts';
 
 export async function installFakeClis() {
   const windows = process.platform === 'win32';
-  const directory = await mkdtemp(join(tmpdir(), 'concordia-fake-cli-'));
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'concordia-fake-cli-')));
   const cwd = join(directory, 'working dir');
   const executable = (name: string) => join(directory, windows ? name + '.exe' : name);
   const dispose = () => rm(directory, { recursive: true, force: true });

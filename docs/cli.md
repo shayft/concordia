@@ -39,3 +39,5 @@ Codex 使用单次 `-c mcp_servers=...` 注入唯一的本机服务器，`bearer
 连接可显式选 JSON 动作通道。对于帮助中缺少单次 MCP 注入参数、但可验证只读与禁用外部工具的 Claude 版本，预检后直接选择 JSON；运行时的 MCP 故障不会触发第二次模型请求。JSON 模式使用同一动作 schema 生成说明，先校验完整动作列表，再逐项检查当前执行和权限。该模式只在 CLI 结束后交付动作，不向子进程提供执行令牌。负责人生成计划时只取文本并关闭动作。平台拒绝在动作参数、请求编号或回复中携带当前执行的 MCP 凭证。
 
 CLI 协作运行时在收到 Codex `thread.started` 或 Claude `system/init` 后即向本地会话存储登记 UUID。Claude 在支持的版本中使用 `--output-format stream-json --verbose`。若版本只能在最终 JSON 中报告 UUID，在该报告前被中断的初次执行无法恢复；即使如此也不会按“最近会话”恢复其他任务。取消会撤销动作令牌并终止进程树，重新执行必须领取新的执行编号。[Claude 流式输出](https://code.claude.com/docs/en/headless) · [Claude 会话初始化事件](https://code.claude.com/docs/en/agent-sdk/typescript#sdksystemmessage) · [Codex 非交互事件](https://developers.openai.com/codex/noninteractive/)
+
+可执行文件和工作目录在预检前逐段解析。Concordia 排除 `.claude`、`.codex`、`.claude.json` 及其备份，也识别通过 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 指定的私有目录。PATH 自动查找会跳过这些目录。链接或 Windows 联接一旦进入私有路径就停止。程序有多个硬链接时须选用能独立验证的可执行文件。预检绑定实际执行文件的物理路径，支持 Claude 当前原生安装从 `~/.local/bin/claude` 指向版本文件的方式。[Claude Code 安装位置](https://code.claude.com/docs/en/setup)
