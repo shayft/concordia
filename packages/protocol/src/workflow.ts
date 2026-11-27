@@ -41,6 +41,8 @@ export const workflowSpecSchema = z
     goal: z.string().trim().min(1).max(8000),
     acceptance: list(title).min(1),
     requiredSlots: list(id).default([]),
+    requiredTasks: list(id).optional(),
+    maxContextTokens: z.number().int().min(32).max(128_000).optional(),
     agents: list(agentSchema).min(1),
     slots: list(z.strictObject({ id, title })).default([]),
     tasks: list(taskSchema).min(1),
@@ -67,6 +69,8 @@ export const workflowSpecSchema = z
       '任务',
     );
     unique(spec.requiredSlots, '必需槽位');
+    for (const taskId of unique(spec.requiredTasks ?? [], '必需任务'))
+      if (!spec.tasks.some((t) => t.id === taskId)) issue('未知必需任务 ' + taskId);
     const producers = new Map<string, string>();
     for (const task of spec.tasks) {
       if (!agents.has(task.owner)) issue('未知负责人 ' + task.owner);

@@ -28,8 +28,14 @@ function planDiff(state: State, spec: WorkflowSpec) {
   const prior = state.spec?.tasks ?? [];
   const before = new Map(prior.map((task) => [task.id, task]));
   const after = new Set(spec.tasks.map((task) => task.id));
+  const settings = (Object.keys(spec) as (keyof WorkflowSpec)[])
+    .filter(
+      (field) => field !== 'tasks' && JSON.stringify(state.spec?.[field]) !== JSON.stringify(spec[field]),
+    )
+    .map((field) => ({ field, before: state.spec?.[field] ?? null, after: spec[field] }));
   return {
     spec,
+    settings,
     revision: state.revision,
     added: spec.tasks.filter((task) => !before.has(task.id)).map((task) => task.id),
     removed: prior.filter((task) => !after.has(task.id)).map((task) => task.id),
@@ -158,7 +164,13 @@ export class Scheduler {
       producer: tasks.find((t) => t.produces.includes(slot.id))?.id,
       waiting: tasks.filter((t) => t.missing.includes(slot.id)).map((t) => t.id),
     }));
-    return { ...s, tasks, slots, agents: s.spec?.agents ?? [] };
+    const versions = s.versions.map((v) => ({
+      ...v,
+      outdatedInputs: Object.entries(v.basedOn)
+        .filter(([slot, id]) => latest(s, slot)?.id !== id)
+        .map(([slot]) => slot),
+    }));
+    return { ...s, tasks, slots, versions, agents: s.spec?.agents ?? [] };
   }
   events(after = 0) {
     return this.deps.storage.events(after);
@@ -211,6 +223,7 @@ export class Scheduler {
       }
       const id = this.deps.nextId(),
         inputs = inputsFor(task, s);
+      if (Object.keys(inputs).length !== task.consumes.length) throw new Error('依赖尚未满足');
       const context = {
         goal: plan.goal,
         acceptance: plan.acceptance,
@@ -221,11 +234,15 @@ export class Scheduler {
             this.deps.storage.getContent(entity(s.versions, ver).contentRef),
           ]),
         ),
-        questions: s.questions.filter((q) => q.to === agent.id && q.status === 'open'),
+        questions: s.questions.filter(
+          (q) => q.to === agent.id && q.status === 'open' && (!task.replyFor || q.taskId === task.replyFor),
+        ),
         messages: s.messages.filter((m) => m.to === agent.id),
       };
       const encoded = JSON.stringify(context);
-      if (encoded.length > 128_000) throw new Error('输入超过上下文限制');
+      // Byte count conservatively bounds byte-level tokenizer input even for non-ASCII text.
+      if (new TextEncoder().encode(encoded).byteLength > (plan.maxContextTokens ?? 128_000))
+        throw new Error('输入超过上下文限制');
       const execution: Execution = {
         id,
         taskId,
@@ -260,7 +277,10 @@ export class Scheduler {
         return s.receipts[key].result;
       }
       if (task.active !== exec.id || exec.status !== 'running') {
+        const previousStatus = exec.status;
+        if (exec.status !== 'success') exec.status = 'obsolete';
         log('execution.late', {
+          previousStatus,
           id: executionId,
           action: action.type,
           contentRef: this.deps.storage.putContent(JSON.stringify(action)),
@@ -372,6 +392,32 @@ export class Scheduler {
       return task;
     });
   }
+  answerAsUser(questionId: string, answer: string) {
+    if (!answer.trim() || answer.length > 32_768) throw new Error('答复长度无效');
+    return this.write((s, log) => {
+      const q = entity(s.questions, questionId);
+      if (q.status !== 'open' || q.to !== 'user') throw new Error('该问题未等待用户答复');
+      q.answer = answer;
+      q.status = 'answered';
+      s.messages.push({
+        id: this.deps.nextId(),
+        taskId: q.taskId,
+        from: 'user',
+        to: q.from,
+        message: answer,
+      });
+      log('question.answered', { id: q.id, to: q.from });
+      return q;
+    });
+  }
+  sendAsUser(taskId: string, message: string) {
+    if (!message.trim() || message.length > 32_768) throw new Error('消息长度无效');
+    return this.write((s, log) => {
+      const task = entity(s.tasks, taskId);
+      s.messages.push({ id: this.deps.nextId(), taskId, from: 'user', to: task.owner, message });
+      log('message.sent', { taskId, to: task.owner });
+    });
+  }
   stopAll() {
     return this.write((s, log) => {
       for (const task of s.tasks)
@@ -406,6 +452,13 @@ export class Scheduler {
           throw new Error('必需交付物未验收或已过期');
         snapshot[slot] = v.id;
       }
+      const requiredTasks = plan.requiredTasks?.length
+        ? plan.requiredTasks
+        : plan.requiredSlots.length
+          ? []
+          : plan.tasks.map((t) => t.id);
+      if (requiredTasks.some((id) => entity(s.tasks, id).status !== 'done'))
+        throw new Error('必需任务尚未完成审查');
       if (s.questions.some((q) => q.status === 'open' && q.blocking)) throw new Error('尚有未答复的阻塞问题');
       s.acceptance = snapshot;
       log('plan.accepted', { snapshot, revision: s.revision });

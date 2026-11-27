@@ -137,6 +137,58 @@ describe('真实 SQLite 与脚本化成员', () => {
     expect(scheduler.events().filter((e) => e.type === 'execution.late')).toHaveLength(2);
     expect(task('ui').status).toBe('cancelled');
   });
+  it('传递上游失效会让尚未领取的孙任务重新等待，不会调用缺输入的成员', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    const ui = scheduler.claim('ui');
+    pub(ui.id, 'frontend-code', 'v1 实现');
+    expect(task('guide').status).toBe('ready');
+    pub(api.id, 'contract', 'v2', true);
+    expect(task('guide')).toMatchObject({ status: 'waiting', missing: ['frontend-code'] });
+    expect(() => scheduler.claim('guide')).toThrow('尚未就绪');
+  });
+  it('兼容变更仅提示旧输入，审核途中重启能按同一组输出继续验收', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', '原版');
+    const ui = scheduler.claim('ui');
+    pub(ui.id, 'frontend-code', '控件');
+    scheduler.act(ui.id, { type: 'submit_result', summary: '提交审查' });
+    pub(api.id, 'contract', '兼容版');
+    expect(scheduler.board().versions.find((v) => v.slotId === 'frontend-code')).toMatchObject({
+      stale: false,
+      outdatedInputs: ['contract'],
+    });
+    db.close();
+    connect();
+    scheduler.recover();
+    expect(task('ui').status).toBe('review');
+    scheduler.control('ui', 'accept');
+    expect(task('ui').status).toBe('done');
+  });
+  it('成员结束执行时仍有阻塞问题会安排一次答复，用户消息进入指定成员的下次输入', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', '约定');
+    const ui = scheduler.claim('ui');
+    scheduler.act(ui.id, { type: 'ask_question', to: 'backend', question: '未分配的值？', blocking: true });
+    pub(api.id, 'backend-code', '服务');
+    submit(api.id, 'api');
+    const reply = scheduler.board().tasks.find((t) => t.replyFor === 'ui')!;
+    expect(reply.owner).toBe('backend');
+    scheduler.sendAsUser(reply.id, '按之前约定答复');
+    const run = scheduler.claim(reply.id);
+    expect(scheduler.context(run.id).messages[0].from).toBe('user');
+    const q = scheduler.act(run.id, {
+      type: 'ask_question',
+      to: 'user',
+      question: '是否沿用？',
+      blocking: true,
+    }) as Question;
+    scheduler.answerAsUser(q.id, '沿用');
+    expect(scheduler.board().questions.find((item) => item.id === q.id)?.status).toBe('answered');
+  });
   it('钉住旧版的任务可继续运行，但基于不兼容旧输入的快照不能验收', () => {
     const spec = demoSpec();
     scheduler.apply(spec);

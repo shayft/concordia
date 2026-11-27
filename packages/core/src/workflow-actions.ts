@@ -17,6 +17,33 @@ import {
   type WorkflowStorage,
 } from './state.ts';
 
+function scheduleReply(state: State, q: Question, log: Append, deps: CoreDependencies<WorkflowStorage>) {
+  if (
+    !q.blocking ||
+    q.to === 'user' ||
+    q.status !== 'open' ||
+    state.tasks.some(
+      (t) =>
+        t.owner === q.to && (t.status === 'running' || (t.replyFor === q.taskId && t.status === 'ready')),
+    )
+  )
+    return;
+  const reply = makeTask({
+    id: 'reply-' + deps.nextId(),
+    title: '答复 · ' + entity(state.tasks, q.taskId).title,
+    owner: q.to,
+    consumes: [],
+    produces: [],
+    maxCalls: 3,
+    maxRework: 1,
+    maxRetries: 1,
+  });
+  reply.replyFor = q.taskId;
+  refresh(reply, state);
+  state.tasks.push(reply);
+  log('reply.scheduled', { taskId: reply.id, to: q.to });
+}
+
 export function applyAction(
   s: State,
   exec: Execution,
@@ -87,11 +114,11 @@ export function applyAction(
           log('task.stale', { taskId: downstream.id, versionId: version.id });
           continue;
         }
+        if (downstream.status === 'ready' || downstream.status === 'waiting') refresh(downstream, s);
         if (!downstream.consumes.some((c) => c.slotId === action.slotId)) continue;
         const key = JSON.stringify([downstream.id, version.id]);
         if (!s.wakeups.includes(key)) {
           s.wakeups.push(key);
-          if (downstream.status === 'waiting' || downstream.status === 'ready') refresh(downstream, s);
           log('dependency.updated', {
             taskId: downstream.id,
             versionId: version.id,
@@ -104,7 +131,9 @@ export function applyAction(
     case 'read_artifact': {
       if (!task.consumes.some((c) => c.slotId === action.slotId) && !task.produces.includes(action.slotId))
         throw new Error('无权读取此槽位');
-      const id = action.versionId ?? exec.inputs[action.slotId] ?? exec.outputs[action.slotId];
+      const bound = exec.inputs[action.slotId] ?? exec.outputs[action.slotId];
+      if (action.versionId && action.versionId !== bound) throw new Error('执行只能读取绑定的版本');
+      const id = bound;
       const v = id ? entity(s.versions, id) : undefined;
       if (!v || v.slotId !== action.slotId) throw new Error('版本不存在');
       return { ...v, content: deps.storage.getContent(v.contentRef) };
@@ -134,27 +163,7 @@ export function applyAction(
       };
       s.questions.push(q);
       log('question.asked', { id: q.id, to, taskId: q.taskId, hops });
-      if (q.blocking && to !== 'user' && !s.tasks.some((t) => t.owner === to && t.status === 'running')) {
-        const existing = s.tasks.find(
-          (t) => t.replyFor === q.taskId && t.owner === to && ['ready', 'running'].includes(t.status),
-        );
-        if (!existing) {
-          const reply = makeTask({
-            id: 'reply-' + deps.nextId(),
-            owner: to,
-            title: '答复 · ' + entity(s.tasks, q.taskId).title,
-            consumes: [],
-            produces: [],
-            maxCalls: 3,
-            maxRework: 1,
-            maxRetries: 1,
-          });
-          reply.replyFor = q.taskId;
-          refresh(reply, s);
-          s.tasks.push(reply);
-          log('reply.scheduled', { taskId: reply.id, to });
-        }
-      }
+      scheduleReply(s, q, log, deps);
       return q;
     }
     case 'answer_question': {
@@ -202,6 +211,8 @@ export function applyAction(
       fence(s, task, 'success', deps.now());
       transition(task, 'review');
       log('execution.submitted', { id: exec.id, taskId: task.id });
+      for (const question of s.questions.filter((q) => q.to === exec.owner))
+        scheduleReply(s, question, log, deps);
       return { status: 'review' };
     case 'create_task':
     case 'assign_task':

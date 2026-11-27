@@ -14,6 +14,7 @@ export function demoSpec(): WorkflowSpec {
     goal: '让用户按负责人筛选任务板',
     acceptance: ['可筛选指定成员', '可查看未分配任务', '可清除筛选恢复全部'],
     requiredSlots: ['contract', 'backend-code', 'frontend-code', 'integration'],
+    requiredTasks: ['accept'],
     agents: members.map(([id, name]) => ({
       id,
       name,
