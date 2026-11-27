@@ -1,0 +1,220 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { DatabaseSync } from 'node:sqlite';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { demoSpec, meetingSpec, Scheduler, type Version, type Question } from '@concordia/core/workflow';
+import { runDemo } from '@concordia/core/demo';
+import { openStore } from '../src/index.ts';
+import { WorkflowStore } from '../src/workflow.ts';
+
+let db: DatabaseSync;
+let root: string;
+let storage: WorkflowStore;
+let scheduler: Scheduler;
+let ids = 0;
+const clock = () => 12345;
+const nextId = () => 'id-' + ++ids;
+function connect() {
+  db = openStore(join(root, 'db.sqlite'));
+  storage = new WorkflowStore(db);
+  scheduler = new Scheduler({ storage, now: clock, nextId });
+}
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'concordia-workflow-'));
+  ids = 0;
+  connect();
+});
+afterEach(() => {
+  db.close();
+  rmSync(root, { force: true, recursive: true });
+});
+const task = (id: string) => scheduler.board().tasks.find((task) => task.id === id)!;
+const pub = (executionId: string, slotId: string, content: string, incompatible = false) =>
+  scheduler.act(executionId, { type: 'publish_artifact', slotId, content, incompatible }) as Version;
+function submit(id: string, taskId: string) {
+  scheduler.act(id, { type: 'submit_result', summary: '已完成' });
+  scheduler.control(taskId, 'accept');
+}
+
+describe('真实 SQLite 与脚本化成员', () => {
+  it('固定流程在后端完成前并行执行前端和测试，普通进度零次派发，非必需说明不阻塞', () => {
+    const board = runDemo(scheduler);
+    expect(board.acceptance).toHaveProperty('integration');
+    expect(task('guide').status).toBe('ready');
+    const e = scheduler.events();
+    const api = board.executions.find((x) => x.taskId === 'api')!;
+    const finished = e.find((x) => x.type === 'execution.submitted' && x.data.id === api.id)!.seq;
+    expect(
+      e
+        .filter((x) => x.type === 'execution.started' && ['tests', 'ui'].includes(String(x.data.taskId)))
+        .every((x) => x.seq < finished),
+    ).toBe(true);
+    expect(board.executions.length).toBe(5);
+    expect(board.questions[0]).toMatchObject({ from: 'frontend', to: 'backend', status: 'answered' });
+  });
+  it('输入包和发布内容按哈希回读，重开后保留执行与事件游标', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api'),
+      v = pub(api.id, 'contract', '接口 v1');
+    const ui = scheduler.claim('ui');
+    expect(scheduler.context(ui.id).inputs.contract).toBe('接口 v1');
+    const seq = scheduler.events().at(-1)!.seq;
+    db.close();
+    connect();
+    expect(scheduler.readVersion(v.id).content).toBe('接口 v1');
+    expect(scheduler.recover()).toBe(2);
+    expect(scheduler.recover()).toBe(0);
+    expect(task('ui')).toMatchObject({ status: 'decision', column: 'doing' });
+    expect(scheduler.events(seq).map((e) => e.type)).toEqual([
+      'execution.interrupted',
+      'execution.interrupted',
+    ]);
+  });
+  it('事务失败时回滚状态及事件，两个连接不能重复领取同一卡', () => {
+    scheduler.apply(demoSpec());
+    expect(() =>
+      storage.transaction((s, append) => {
+        s.tasks = [];
+        append('doomed', {});
+        throw new Error('rollback');
+      }),
+    ).toThrow('rollback');
+    expect(scheduler.events().map((e) => e.type)).toEqual(['plan.applied']);
+    const other = openStore(join(root, 'db.sqlite'));
+    try {
+      const b = new Scheduler({ storage: new WorkflowStore(other), now: clock, nextId });
+      scheduler.claim('api');
+      expect(() => b.claim('api')).toThrow('尚未就绪');
+    } finally {
+      other.close();
+    }
+  });
+  it('同一交付事件或重复投递只发布一个版本，重用消息号改变内容会被拒绝', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    const action = { type: 'publish_artifact', slotId: 'contract', content: 'v1' };
+    scheduler.act(api.id, action, 'one');
+    scheduler.act(api.id, action, 'one');
+    scheduler.act(api.id, action);
+    expect(() => scheduler.act(api.id, { ...action, content: 'v2' }, 'one')).toThrow();
+    expect(scheduler.board().versions).toHaveLength(1);
+    expect(db.prepare('SELECT count(*) AS n FROM workflow_wakeups').get()?.n).toBe(2);
+  });
+  it('拒绝循环、越权、过期预览和错误的计划，既有状态保持不变', () => {
+    const spec = demoSpec();
+    const bad = structuredClone(spec);
+    bad.tasks[0].consumes = [{ slotId: 'frontend-code', policy: 'latest' }];
+    expect(() => scheduler.preview(bad)).toThrow('环');
+    expect(scheduler.board().revision).toBe(0);
+    expect(scheduler.preview(spec).added).toContain('api');
+    scheduler.apply(spec, 0);
+    expect(() => scheduler.apply({ ...spec, title: '另一个标题' }, 0)).toThrow('版本');
+    const api = scheduler.claim('api');
+    expect(() => pub(api.id, 'frontend-code', '越权')).toThrow();
+    expect(() => scheduler.act(api.id, { type: 'assign_task', taskId: 'ui', assignee: 'qa' })).toThrow();
+    expect(() => scheduler.act(api.id, { type: 'read_file', path: 'unknown' })).toThrow();
+    expect(() => scheduler.act(api.id, { type: 'submit_result', summary: '空交付' })).toThrow();
+  });
+  it('不兼容变更使正在运行和已产出的下游过期，取消后的迟到交付保留记录', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    const ui = scheduler.claim('ui');
+    pub(ui.id, 'frontend-code', '基于 v1');
+    submit(ui.id, 'ui');
+    const qa = scheduler.claim('tests');
+    pub(api.id, 'contract', 'v2', true);
+    expect(task('ui')).toMatchObject({ status: 'ready', rework: 1 });
+    expect(task('tests')).toMatchObject({ status: 'ready', rework: 1 });
+    expect(scheduler.act(qa.id, { type: 'publish_artifact', slotId: 'cases', content: '迟到' })).toEqual({
+      obsolete: true,
+    });
+    expect(scheduler.board().versions.some((v) => v.slotId === 'cases')).toBe(false);
+    const ui2 = scheduler.claim('ui');
+    scheduler.control('ui', 'cancel');
+    scheduler.act(ui2.id, { type: 'submit_result', summary: '迟到' });
+    expect(scheduler.events().filter((e) => e.type === 'execution.late')).toHaveLength(2);
+    expect(task('ui').status).toBe('cancelled');
+  });
+  it('钉住旧版的任务可继续运行，但基于不兼容旧输入的快照不能验收', () => {
+    const spec = demoSpec();
+    scheduler.apply(spec);
+    const api = scheduler.claim('api'),
+      v = pub(api.id, 'contract', 'v1');
+    scheduler.control('api', 'pause');
+    const uiSpec = spec.tasks.find((t) => t.id === 'ui')!;
+    uiSpec.consumes = [{ slotId: 'contract', policy: 'pinned', version: v.id }];
+    spec.requiredSlots = ['frontend-code'];
+    scheduler.apply(spec);
+    scheduler.control('api', 'resume');
+    const api2 = scheduler.claim('api'),
+      ui = scheduler.claim('ui');
+    pub(api2.id, 'contract', 'v2', true);
+    expect(task('ui').status).toBe('running');
+    pub(ui.id, 'frontend-code', '旧版输入');
+    submit(ui.id, 'ui');
+    expect(() => scheduler.accept()).toThrow('过期');
+  });
+  it('共享池限流只暂停本池，预算用尽转等待用户，用户增额后手动恢复', () => {
+    const spec = demoSpec();
+    spec.agents.find((a) => a.id === 'qa')!.pool = 'shared';
+    spec.agents.find((a) => a.id === 'frontend')!.pool = 'shared';
+    spec.tasks[0].maxCalls = 1;
+    scheduler.apply(spec);
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    const ui = scheduler.claim('ui');
+    expect(() => scheduler.claim('tests')).toThrow('额度池');
+    scheduler.fail(ui.id, 'rate_limit');
+    expect(() => scheduler.claim('tests')).toThrow('额度池');
+    expect(() => scheduler.reserveCall(api.id)).toThrow('预算');
+    expect(task('api').status).toBe('decision');
+    spec.tasks[0].maxCalls = 3;
+    scheduler.apply(spec);
+    scheduler.control('api', 'resume');
+    const retried = scheduler.claim('api');
+    expect(retried.connection).toBe('mock-backend');
+    scheduler.recordUsage(retried.id, { inputTokens: 3 });
+    expect(scheduler.board().executions.at(-1)?.usage).toEqual({ input: 3 });
+    scheduler.resumePool('shared');
+    expect(scheduler.claim('tests').pool).toBe('shared');
+  });
+  it('同一卡同一收件人的阻塞问题合并为一次答复执行，跳数超限交给负责人', () => {
+    const spec = demoSpec();
+    spec.maxHops = 1;
+    scheduler.apply(spec);
+    const api = scheduler.claim('api');
+    const ask = (id: string, to: string, replyTo?: string) =>
+      scheduler.act(id, {
+        type: 'ask_question',
+        to,
+        question: '请澄清',
+        blocking: true,
+        replyTo,
+      }) as Question;
+    const q = ask(api.id, 'frontend');
+    ask(api.id, 'frontend');
+    const replies = scheduler.board().tasks.filter((t) => t.replyFor === 'api');
+    expect(replies).toHaveLength(1);
+    const answer = scheduler.claim(replies[0].id);
+    expect(scheduler.context(answer.id).questions).toHaveLength(2);
+    expect(ask(answer.id, 'backend', q.id).to).toBe('lead');
+    expect(() =>
+      scheduler.act(api.id, { type: 'answer_question', questionId: q.id, answer: '越权' }),
+    ).toThrow();
+  });
+  it('会议使用同一调度器，新计划保留既有工作区与快照', () => {
+    const previous = runDemo(scheduler);
+    const plan = meetingSpec('讨论版本', ['a', 'b']);
+    scheduler.apply(plan);
+    expect(scheduler.board().tasks[0].status).toBe('ready');
+    const a = scheduler.claim('turn-0');
+    pub(a.id, 'statement-0', '第一条发言');
+    submit(a.id, 'turn-0');
+    expect(task('turn-1').status).toBe('ready');
+    scheduler.switchWorkspace(previous.spec!.id);
+    expect(scheduler.board().acceptance).toEqual(previous.acceptance);
+    expect(scheduler.board().archives[0].id).toBe('meeting');
+  });
+});
