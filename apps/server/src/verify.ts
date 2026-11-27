@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { safeDataDirectory } from '@concordia/store/paths';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -36,10 +37,9 @@ async function saveRecording(kind: 'claude' | 'codex', version: string, content:
   const numeric = version.match(/\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?/u)?.[0];
   if (!numeric) throw new UsageError('真实调用已结束，但无法识别版本号以保存回放。');
   const root = fileURLToPath(new URL('../../../packages/runtimes/fixtures/recorded/', import.meta.url));
-  const dir = join(root, kind);
   const name = numeric + (kind === 'claude' ? '.json' : '.jsonl');
   try {
-    await mkdir(dir, { recursive: true });
+    const dir = safeDataDirectory(root, kind);
     await writeFile(join(dir, name), content.trimEnd() + '\n', { flag: 'wx', mode: 0o600 });
     return '已保存 ' + join('packages', 'runtimes', 'fixtures', 'recorded', kind, name);
   } catch (error) {
