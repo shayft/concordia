@@ -35,3 +35,13 @@ node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '通�
 ## 最终三平台回归
 
 2026-11-27，提交 `c110272`。三个托管系统均从冻结锁安装，并通过 `pnpm lint`、`pnpm test` 和含严格类型检查的 `pnpm build`。本阶段涉及模拟连接的用例为「模拟测试通过」。整仓在 Linux 和 macOS 各 201 项通过、2 项跳过，Windows 197 项通过、6 项跳过。个人账号、计费和桌面验收状态沿用上表。[逐系统作业、跳过原因及统一测试步骤](README.md) · [GitHub Actions](https://github.com/shayft/concordia/actions/runs/45996818506)
+
+## 三平台真实浏览器验收
+
+2026-11-27，提交 `73e2670d7cc8457e3fd47fe019867216a3c06dda`。每台 runner 均实际执行 `pnpm build` 和 `pnpm test:browser`。测试使用独立临时配置和启用原生沙箱的 Chrome，通过一次性启动链接建立会话并连上事件流。在页面点击载入固定模板、预览六项新增任务、批准、运行模拟，核对五张已交付卡和主卡所引用的四个交付版本。切换到活动记录再刷新后仍能查看验收事件。三台机器均通过页面错误、HTTP 状态和提交操作检查。模拟成员未产生供应商调用。[完整运行](https://github.com/shayft/concordia/actions/runs/45998469973)
+
+| 托管系统 | 浏览器验收 | 整仓 Vitest | 已核对的作业日志 |
+| --- | --- | --- | --- |
+| Ubuntu 26.04.1 LTS | 真实 Linux 测试通过 | 202 通过，2 跳过 | [Ubuntu 作业](https://github.com/shayft/concordia/actions/runs/45998469973/job/140503749463) |
+| macOS 26.7.2 | 真实 macOS 测试通过 | 202 通过，2 跳过 | [macOS 作业](https://github.com/shayft/concordia/actions/runs/45998469973/job/140503749765) |
+| Windows Server 2025 | 真实 Windows 测试通过 | 198 通过，6 跳过 | [Windows 作业](https://github.com/shayft/concordia/actions/runs/45998469973/job/140503749580) |
