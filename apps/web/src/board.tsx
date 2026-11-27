@@ -24,6 +24,51 @@ export function filteredTasks(tasks: Task[], owner: string) {
   return owner === '' ? tasks : tasks.filter((t) => (owner === '(none)' ? !t.owner : t.owner === owner));
 }
 
+function waitDuration(ms: number, complete: boolean) {
+  if (!complete && ms === 0) return '未知';
+  const seconds = Math.floor(ms / 1000);
+  const prefix = complete ? '' : '至少 ';
+  if (ms > 0 && seconds === 0) return complete ? '不足 1 秒' : '已记录不足 1 秒';
+  if (seconds < 60) return prefix + seconds + ' 秒';
+  return prefix + Math.floor(seconds / 60) + ' 分 ' + (seconds % 60) + ' 秒';
+}
+
+function waitSummary(task: Task) {
+  const wait = task.waitTime;
+  if (!wait || (!wait.complete && !wait.dependencyMs && !wait.queueMs)) return '等待耗时未知';
+  return '等待依赖 ' + waitDuration(wait.dependencyMs, wait.complete) +
+    ' · 就绪排队 ' + waitDuration(wait.queueMs, wait.complete);
+}
+
+function TaskProgress({ taskId }: { taskId: string }) {
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch('/api/tasks/' + encodeURIComponent(taskId) + '/progress', {
+          credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+        });
+        if (!response.ok) throw new Error('无法读取任务进度（HTTP ' + response.status + '）');
+        const latest = await response.text();
+        if (!controller.signal.aborted) setText(latest);
+      } catch (error) {
+        if (!controller.signal.aborted) setError(error instanceof Error ? error.message : '无法读取任务进度。');
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [taskId]);
+  return (
+    <section>
+      <h3>最新进度</h3>
+      <Notice error={error} />
+      {text && <pre>{text}</pre>}
+    </section>
+  );
+}
+
 function TaskDetails({
   task,
   board,
@@ -83,6 +128,25 @@ function TaskDetails({
         </span>
       </div>
       {task.reason && <p className="notice">{task.reason}</p>}
+      <p>{waitSummary(task)}</p>
+      {task.waitTime?.intervals.length > 0 && (
+        <details>
+          <summary>等待记录</summary>
+          <ul>
+            {task.waitTime.intervals.map((period, index) => (
+              <li key={index}>
+                {period.kind === 'waiting' ? '等待依赖' : '就绪排队'} ·{' '}
+                {period.start === null ? '开始时间未知' : new Date(period.start).toLocaleString()}
+                {' 至 '}{period.end === null ? '现在' : new Date(period.end).toLocaleString()}
+                {period.blockedBy.map(({ slotId, owner }) => (
+                  <span key={slotId}> · {slotName(slotId)}（{board.agents.find(a => a.id === owner)?.name ?? owner ?? '负责人未知'}）</span>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {task.progressRef && <TaskProgress key={task.progressRef} taskId={task.id} />}
       <div className="diff-grid">
         <div>
           <strong>输入</strong>
@@ -463,6 +527,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
                       <span className={'tag status-' + t.status}>{labels[t.status]}</span>
                       <strong>{t.title}</strong>
                       <small>{board.agents.find((a) => a.id === t.owner)?.name || '未分配'}</small>
+                      {(t.status === 'waiting' || t.status === 'ready') && <small>{waitSummary(t)}</small>}
                       {t.missing.length > 0 && (
                         <small>
                           等待{' '}

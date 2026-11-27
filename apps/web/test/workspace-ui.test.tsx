@@ -26,7 +26,8 @@ beforeEach(async () => {
     vi.fn(async (path: string, options: RequestInit) => {
       const body = options.body ? JSON.parse(String(options.body)) : undefined;
       requests.push({ path, method: options.method ?? 'GET', body });
-      return Response.json(serve(path, body));
+      const reply = serve(path, body);
+      return reply instanceof Response ? reply : Response.json(reply);
     }),
   );
 });
@@ -179,6 +180,42 @@ it('看板按负责人、未分配和全部筛选，保留后端计算的阻塞�
   expect(container.querySelector('.card')?.textContent).toContain('等待认领');
   await click(button('清除筛选'));
   expect(container.querySelectorAll('.card')).toHaveLength(3);
+});
+
+it('任务详情区分依赖等待和排队，旧记录保留未知，普通进度按需加载', async () => {
+  const { BoardPage } = await import('../src/board.tsx');
+  const task = {
+    id: 'draft', title: '编写说明', owner: 'docs', status: 'waiting', column: 'waiting',
+    consumes: [], produces: [], missing: ['sample'], progressRef: 'first',
+    waitTime: {
+      complete: false, dependencyMs: 65000, queueMs: 0,
+      intervals: [{ kind: 'waiting', start: null, end: null, blockedBy: [{slotId: 'sample', owner: 'qa'}] }],
+    },
+  };
+  const board = {
+    spec: {title: '交付', goal: '试用记录', acceptance: [], maxCalls: 5}, revision: 1, tasks: [task],
+    agents: [{id: 'qa', name: '测试成员'}, {id: 'docs', name: '文档成员', connection: 'mock-docs'}],
+    slots: [{id: 'sample', title: '可运行样例'}], executions: [], versions: [], messages: [], questions: [], stoppedPools: [],
+  };
+  const progress = '/api/tasks/draft/progress';
+  const openPlans = () => {};
+  serve = path => {
+    if (path === '/api/board') return board;
+    if (path === progress) return new Response(task.progressRef === 'first' ? '正在整理样例' : '样例已整理');
+    return {connections: [], members: [], trees: []};
+  };
+  await render(<BoardPage openPlans={openPlans} events={0} />);
+  expect(requests.some(r => r.path === progress)).toBe(false);
+  const card = container.querySelector<HTMLElement>('.card')!;
+  expect(card.textContent).toContain('等待依赖 至少 1 分 5 秒 · 就绪排队 未知');
+  await click(card);
+  expect(container.textContent).toContain('开始时间未知 至 现在');
+  expect(container.textContent).toContain('可运行样例（测试成员）');
+  expect(container.textContent).toContain('正在整理样例');
+  task.progressRef = 'second';
+  await render(<BoardPage openPlans={openPlans} events={1} />);
+  expect(container.textContent).toContain('样例已整理');
+  expect(requests.filter(r => r.path === progress).map(r => r.method)).toEqual(['GET', 'GET']);
 });
 
 it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
