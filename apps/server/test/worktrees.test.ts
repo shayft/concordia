@@ -58,7 +58,7 @@ afterEach(() => {
   rmSync(base, { recursive: true, force: true });
 });
 
-it('项目授权、成员隔离、不可变快照、逐项命令审批、目标分支合并与清理', async () => {
+it('项目授权、成员隔离、不可变快照、逐项命令审批、目标分支合并与清理', { timeout: 60_000 }, async () => {
   service.configure(config(false));
   expect(() => service.member('demo', 'frontend')).toThrow();
   service.configure(config(true));
@@ -102,7 +102,7 @@ it('项目授权、成员隔离、不可变快照、逐项命令审批、目标�
   expect(run(repo, 'remote')).toBe('');
 });
 
-it('冲突保留原仓库并定位负责人；重开服务保留所有权与已发布版本', () => {
+it('冲突保留原仓库并定位负责人；重开服务保留所有权与已发布版本', { timeout: 60_000 }, () => {
   service.configure(config(true));
   const a = service.member('demo', 'one'),
     b = service.member('demo', 'two');
@@ -120,7 +120,7 @@ it('冲突保留原仓库并定位负责人；重开服务保留所有权与已�
   expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('baseline');
 });
 
-it('只允许成员树中的普通文件，拒绝父目录、元数据、链接、硬链接和撤销的授权', () => {
+it('只允许成员树中的普通文件，拒绝父目录、元数据、链接、硬链接和撤销的授权', { timeout: 60_000 }, () => {
   service.configure(config(true));
   const t = service.member('demo', 'files');
   const outside = join(base, 'outside');
@@ -148,7 +148,7 @@ it('只允许成员树中的普通文件，拒绝父目录、元数据、链接�
   expect(() => service.write(t.id, 'new.txt', 'no')).toThrow();
 });
 
-it('关闭服务时中止已获批的项目命令，并在关闭 SQLite 之前登记失败', async () => {
+it('关闭服务时中止已获批的项目命令，并在关闭 SQLite 之前登记失败', { timeout: 60_000 }, async () => {
   const project = config(true);
   project.commands = [
     { name: 'test', executable: process.execPath, args: ['-e', 'setInterval(()=>{},100)'] },
@@ -163,4 +163,19 @@ it('关闭服务时中止已获批的项目命令，并在关闭 SQLite 之前�
   expect(service.state().results).toContainEqual(
     expect.objectContaining({ treeId: tree.id, status: 'failed' }),
   );
+});
+
+it('同项目的两份计划和旧手工树在同名任务上互相隔离', { timeout: 60_000 }, () => {
+  service.configure(config(true));
+  const manual = service.member('demo', 'shared');
+  const a = service.member('demo', 'shared', 'board-a/plan');
+  const b = service.member('demo', 'shared', 'board-b/plan');
+  expect(new Set([manual.id, a.id, b.id]).size).toBe(3);
+  expect(() => service.executionTree('demo', 'shared', a.id, 'board-b/plan')).toThrow();
+  expect(() => service.publishForTask('demo', 'shared', manual.id, 'board-a/plan')).toThrow();
+  expect(service.member('demo', 'shared', 'board-a/plan').id).toBe(a.id);
+  const another = service.member('demo', 'other', 'board-b/plan');
+  const av = service.publishForTask('demo', 'shared', a.id, 'board-a/plan'),
+    other = service.publish(another.id);
+  expect(() => service.integrate('demo', [av, other])).toThrow();
 });

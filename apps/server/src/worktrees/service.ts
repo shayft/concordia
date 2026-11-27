@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
+import { safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 import { runProcess } from '@concordia/runtimes/process';
 import { worktreeFile, worktreePathParts } from '@concordia/runtimes/worktree-files';
 import { checkLocalConfig, git, gitResult, gitWorktrees } from './git.ts';
@@ -78,11 +79,8 @@ export class WorktreeService {
   ) {
     this.recoveryDir = recoveryDir;
     this.onConflict = onConflict;
-    mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
-    this.directory = join(realpathSync(dataDirectory), 'worktrees');
-    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    if (!lstatSync(this.directory).isDirectory()) throw new Error('工作区数据目录无效。');
-    this.db = new DatabaseSync(join(dataDirectory, 'worktrees.sqlite'));
+    this.directory = safeDataDirectory(dataDirectory, 'worktrees');
+    this.db = new DatabaseSync(safeDatabasePath(dataDirectory, 'worktrees.sqlite'));
     this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
     if (this.db.prepare('PRAGMA journal_mode=WAL').get()?.journal_mode !== 'wal') {
       this.db.close();
@@ -98,7 +96,11 @@ export class WorktreeService {
       if (version === 0 || version === 1) {
         this.db.exec(readFileSync(new URL('./002-conflict-issues.sql', import.meta.url), 'utf8'));
         this.db.exec('PRAGMA user_version=2');
-      } else if (version !== 2) throw new Error('工作区数据库版本不受支持。');
+      }
+      if (version === 0 || version === 1 || version === 2) {
+        this.db.exec(readFileSync(new URL('./003-task-scope.sql', import.meta.url), 'utf8'));
+        this.db.exec('PRAGMA user_version=3');
+      } else if (version !== 3) throw new Error('工作区数据库版本不受支持。');
       this.db.exec(
         "UPDATE approvals SET status='interrupted' WHERE status='running'; UPDATE trees SET status='interrupted' WHERE status IN ('creating','integrating'); COMMIT",
       );
@@ -192,6 +194,7 @@ export class WorktreeService {
     return {
       id: String(row.id),
       projectId: String(row.project),
+      scope: row.scope === null ? null : String(row.scope),
       taskId: row.task === null ? null : String(row.task),
       kind: row.kind as Kind,
       path: join(this.directory, String(row.id)),
@@ -232,10 +235,11 @@ export class WorktreeService {
     }
     return tree;
   }
-  executionTree(projectId: string, taskId: string, treeId: string) {
+  executionTree(projectId: string, taskId: string, treeId: string, scope?: string) {
     const tree = this.verified(treeId);
     if (
       tree.projectId !== projectId ||
+      tree.scope !== (scope ?? null) ||
       tree.taskId !== taskId ||
       tree.kind !== 'member' ||
       tree.status !== 'ready'
@@ -243,7 +247,13 @@ export class WorktreeService {
       throw new Error('工作区与执行任务不匹配。');
     return tree;
   }
-  private create(project: Project, kind: Kind, taskId: string | null, snapshot: Snapshot) {
+  private create(
+    project: Project,
+    kind: Kind,
+    taskId: string | null,
+    snapshot: Snapshot,
+    scope: string | null,
+  ) {
     if (this.closing) throw new Error('服务正在关闭。');
     if (!project.writeEnabled) throw new Error('项目写入尚未授权。');
     checkLocalConfig(project.repository);
@@ -256,9 +266,9 @@ export class WorktreeService {
     if (existsSync(path)) throw new Error('工作区目录已存在。');
     this.db
       .prepare(
-        "INSERT INTO trees(id,project,task,kind,branch,base,status,snapshot) VALUES (?,?,?,?,?,?,'creating',?)",
+        "INSERT INTO trees(id,project,task,kind,branch,base,status,snapshot,scope) VALUES (?,?,?,?,?,?,'creating',?,?)",
       )
-      .run(key, project.id, taskId, kind, branch, base, JSON.stringify(snapshot));
+      .run(key, project.id, taskId, kind, branch, base, JSON.stringify(snapshot), scope);
     try {
       git(project.repository, ['worktree', 'add', '-b', branch, '--', path, base]);
       this.db
@@ -270,13 +280,18 @@ export class WorktreeService {
     }
     return this.verified(key);
   }
-  member(projectId: string, taskId: string) {
+  member(projectId: string, taskId: string, scope?: string) {
     id.parse(taskId);
     const existing = this.db
-      .prepare("SELECT id FROM trees WHERE project=? AND task=? AND status!='removed'")
-      .get(projectId, taskId);
-    if (existing) return this.executionTree(projectId, taskId, String(existing.id));
-    return this.create(this.project(projectId), 'member', taskId, []);
+      .prepare("SELECT id FROM trees WHERE project=? AND task=? AND scope IS ? AND status!='removed'")
+      .get(projectId, taskId, scope ?? null);
+    if (existing) {
+      const tree = this.tree(String(existing.id));
+      if (tree.status !== 'interrupted' || existsSync(tree.path))
+        return this.executionTree(projectId, taskId, tree.id, scope);
+      this.remove(tree.id);
+    }
+    return this.create(this.project(projectId), 'member', taskId, [], scope ?? null);
   }
   read(treeId: string, path: string) {
     const tree = this.verified(treeId, false);
@@ -287,8 +302,8 @@ export class WorktreeService {
     if (tree.kind !== 'member' || tree.status !== 'ready') throw new Error('只能写入成员自己的工作区。');
     worktreeFile(tree.path, path, text);
   }
-  publishForTask(projectId: string, taskId: string, treeId: string) {
-    this.executionTree(projectId, taskId, treeId);
+  publishForTask(projectId: string, taskId: string, treeId: string, scope?: string) {
+    this.executionTree(projectId, taskId, treeId, scope);
     return this.publish(treeId);
   }
   publish(treeId: string) {
@@ -298,8 +313,15 @@ export class WorktreeService {
     if (!clean(tree.path)) git(tree.path, ['commit', '-m', 'Concordia task delivery']);
     const commit = head(tree.path);
     git(tree.path, ['merge-base', '--is-ancestor', tree.base, commit]);
-    this.db.prepare('INSERT OR IGNORE INTO publications VALUES (?,?)').run(treeId, commit);
-    this.db.prepare('UPDATE trees SET sha=? WHERE id=?').run(commit, treeId);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('INSERT OR IGNORE INTO publications VALUES (?,?)').run(treeId, commit);
+      this.db.prepare('UPDATE trees SET sha=? WHERE id=?').run(commit, treeId);
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
     return { treeId, taskId: tree.taskId!, sha: commit };
   }
   readPublication(projectId: string, treeId: string, version: string, path: string) {
@@ -321,11 +343,13 @@ export class WorktreeService {
   integrate(projectId: string, input: Snapshot) {
     const snapshot = snapshotSchema.parse(input);
     const project = this.project(projectId);
+    const scope = this.tree(snapshot[0]!.treeId).scope;
     const tasks = new Set<string>();
     for (const item of snapshot) {
       const member = this.tree(item.treeId);
       if (
         member.projectId !== projectId ||
+        member.scope !== scope ||
         member.kind !== 'member' ||
         !member.taskId ||
         tasks.has(member.taskId) ||
@@ -334,7 +358,7 @@ export class WorktreeService {
         throw new Error('版本快照含未发布、重复或不属于此项目的交付。');
       tasks.add(member.taskId);
     }
-    const tree = this.create(project, 'integration', null, snapshot);
+    const tree = this.create(project, 'integration', null, snapshot, scope);
     try {
       for (const item of snapshot) {
         if (!gitResult(tree.path, ['merge', '--no-ff', '--no-edit', '--no-overwrite-ignore', item.sha]).code)
@@ -494,6 +518,7 @@ export class WorktreeService {
       if (copies.length > 1) return finish(false, '目标分支被多个工作副本同时检出，仅交付待合并分支。');
       const checkedOut = copies[0];
       if (checkedOut) {
+        checkLocalConfig(realpathSync(checkedOut.path));
         if (!clean(checkedOut.path)) return finish(false, '目标工作副本有未提交改动，仅交付待合并分支。');
         git(checkedOut.path, ['merge', '--ff-only', '--no-overwrite-ignore', approval.sha]);
       } else git(project.repository, ['update-ref', ref, approval.sha, approval.targetSha]);
@@ -556,9 +581,22 @@ export class WorktreeService {
     this.running.get(treeId)?.controller.abort();
   }
   remove(key: string) {
-    const tree = this.verified(key, false);
-    // Git refuses to remove a dirty tree. Never force-delete a directory.
-    git(this.project(tree.projectId).repository, ['worktree', 'remove', '--', tree.path]);
+    const tree = this.tree(key);
+    if (tree.status === 'removed') return { branch: tree.branch };
+    const repo = this.project(tree.projectId).repository;
+    checkLocalConfig(repo);
+    if (lstatSync(tree.path, { throwIfNoEntry: false })) {
+      this.verified(key, false);
+      // Git refuses to remove a dirty tree. Never force-delete a directory.
+      git(repo, ['worktree', 'remove', '--', tree.path]);
+    } else if (
+      gitWorktrees(repo).some(
+        (w) => resolve(w.path) === tree.path || w.branch === 'refs/heads/' + tree.branch,
+      )
+    ) {
+      throw new Error('登记路径丢失或工作区已移动，请先核对 Git 工作区。');
+    }
+    // An absent path AND registration also covers a crash after git remove.
     this.db.prepare("UPDATE trees SET status='removed' WHERE id=?").run(key);
     this.db.prepare("UPDATE approvals SET status='revoked' WHERE tree=? AND status='pending'").run(key);
     return { branch: tree.branch };

@@ -8,6 +8,7 @@ export function serveWorktrees(
   app: FastifyInstance,
   service: WorktreeService,
   assertCanExecute?: () => void,
+  getScope?: () => string | undefined,
 ) {
   const treeId = z.uuid();
   const tree = z.strictObject({ treeId });
@@ -30,7 +31,7 @@ export function serveWorktrees(
   app.get('/api/worktrees/state', async () => service.state());
   post('projects', projectSchema, (value) => service.configure(value));
   post('member', z.strictObject({ projectId: z.string(), taskId: z.string() }), (v) =>
-    service.member(v.projectId, v.taskId),
+    service.member(v.projectId, v.taskId, getScope?.()),
   );
   post('publish', tree, (v) => service.publish(v.treeId));
   post('integrate', z.strictObject({ projectId: z.string(), snapshot: snapshotSchema }), (v) =>

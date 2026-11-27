@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { devNull } from 'node:os';
 
 const candidates =
@@ -84,11 +84,57 @@ export function gitWorktrees(repo: string) {
     });
 }
 
+function checkedGitDirectory(path: string) {
+  const privateCliPath = /(?:^|[\\/])\.(?:claude|codex)(?:[\\/]|$)/i;
+  if (privateCliPath.test(path)) throw new Error('仓库管理目录指向 CLI 私有目录。');
+  const canonical = realpathSync(path);
+  if (privateCliPath.test(canonical) || !lstatSync(canonical).isDirectory())
+    throw new Error('仓库管理目录无效。');
+  return canonical;
+}
+
+function checkMetadata(path: string, max: number) {
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size > max)
+    throw new Error('Git 元数据不是受支持的普通文件。');
+}
+function readMetadata(path: string, max: number) {
+  checkMetadata(path, max);
+  return readFileSync(path, 'utf8');
+}
+
 export function checkLocalConfig(repo: string) {
-  if (realpathSync(repo) !== repo) throw new Error('仓库位置已改变。');
-  const config = git(repo, ['config', '--local', '--no-includes', '--name-only', '--list']).split('\n');
+  if (checkedGitDirectory(repo) !== repo) throw new Error('仓库位置已改变。');
+  const marker = join(repo, '.git');
+  const type = lstatSync(marker);
+  let gitDir = marker;
+  if (!type.isDirectory()) {
+    const pointer = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(readMetadata(marker, 8192));
+    if (!pointer) throw new Error('Git 工作区标识无效。');
+    gitDir = resolve(repo, pointer[1]!);
+  }
+  gitDir = checkedGitDirectory(gitDir);
+  const sharedPointer = join(gitDir, 'commondir');
+  const shared = existsSync(sharedPointer)
+    ? checkedGitDirectory(resolve(gitDir, readMetadata(sharedPointer, 8192).trimEnd()))
+    : gitDir;
+  const config = join(shared, 'config');
+  checkMetadata(config, 1024 * 1024);
+  if (existsSync(join(shared, 'objects', 'info', 'alternates')))
+    throw new Error('仓库使用外部对象存储，需要先自行审查。');
+  if (!gitExecutable) throw new Error('找不到系统 Git。');
+  // Inspect names only in this exact file before allowing Git to discover
+  // the repository. Config values or external include files are not needed.
+  const keys = git(dirname(gitExecutable), [
+    'config',
+    '--file',
+    config,
+    '--no-includes',
+    '--name-only',
+    '--list',
+  ]).split('\n');
   if (
-    config.some((key) =>
+    keys.some((key) =>
       /^(include(if)?\.|filter\.|merge\..*\.driver$|diff\..*\.(textconv|command)$|extensions\.worktreeconfig$|core\.worktree$)/i.test(
         key,
       ),

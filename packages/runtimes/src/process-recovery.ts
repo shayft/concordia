@@ -24,7 +24,8 @@ interface RecordData {
 
 function directory(path: string) {
   const privateCliPath = /(?:^|[\\/])\.(?:claude|codex)(?:[\\/]|$)/i;
-  if (!isAbsolute(path) || privateCliPath.test(path)) throw new Error('无效的进程登记目录。');
+  if (!isAbsolute(path) || privateCliPath.test(path) || (existsSync(path) && !lstatSync(path).isDirectory()))
+    throw new Error('无效的进程登记目录。');
   let ancestor = path;
   const missing: string[] = [];
   while (!existsSync(ancestor)) {
@@ -104,7 +105,7 @@ export async function recoverProcessGroups(path: string) {
         try {
           const filename = join(dir, name);
           const stat = lstatSync(filename);
-          if (!stat.isFile() || stat.size > 4096) throw new Error();
+          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4096) throw new Error();
           const record = JSON.parse(readFileSync(filename, 'utf8')) as RecordData;
           if (
             record.id !== id ||
