@@ -5,3 +5,4 @@ export const healthResponseSchema = z.strictObject({
 });
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+export { platformActionSchema, actionTools, type PlatformAction, type ActionName } from './actions.ts';
