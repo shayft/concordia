@@ -6,6 +6,8 @@ Concordia 在同一连接上发起一次固定回显，只有模型返回 `CONCO
 
 本开发环境的 `/opt/codex/bin/codex --version` 返回 `codex-cli 0.172.0-alpha.2`。已查看 `codex --help`、`codex exec --help`、`codex login --help`、`codex mcp list --help`、`codex features list --help` 和实际 feature 列表。CLI 提示沙箱内不能创建 PATH 别名，上述查询仍成功。Claude 的原生预检使用临时下载的 Linux x86_64 官方版 2.1.332，在空用户环境中验证。两者运行预检时均按实际可执行文件重新检查版本和参数，版本或能力不足会停止。[Claude CLI 参考](https://code.claude.com/docs/en/cli-reference) · [Codex 配置参考](https://developers.openai.com/codex/config-reference/)
 
+另用官方稳定版 Codex 0.172.0 在 Linux x86_64 的空临时 HOME 和 CODEX_HOME 中运行正式预检。版本、帮助、十项被禁用的功能与空 MCP 列表均通过检查，登录状态为未登录，计费来源未知。本次没有向模型发送任务。[官方 Codex 0.172.0 发行包](https://www.npmjs.com/package/@openai/codex/v/0.172.0) · [阶段 1 记录](verification/stage-1.md)
+
 Claude Code 2.1.332 的根帮助省略了官方参考列出的 `--max-turns`。仅当根帮助成功且只缺这一项时，预检运行 `claude --help --max-turns`。它必须返回退出码 1、空标准输出和原生命令行解析器对该选项的固定缺参诊断。未知选项、其他输出及缺少任一权限参数都会停止。校验任务继续传入 `--max-turns 1`。[Claude CLI 参考](https://code.claude.com/docs/en/cli-reference)
 
 CLI 子进程以参数数组启动。以下代码块用终端写法表示其中的单个参数；实际参数数组可通过 `inspect` 查看。最后一个参数是固定的英文回显提示。

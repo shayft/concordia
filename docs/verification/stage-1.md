@@ -2,6 +2,16 @@
 
 2026-11-27。验收范围为三平台 monorepo 和已有连接验证。GitHub 托管作业使用 Node.js v24.19.0、pnpm 11.25.0，连接测试使用假 CLI 和回环模拟网关。原生 Codex 的账号预检及回显尝试发生在 Codex 云端 Linux 工作区。
 
+## 官方 Codex 稳定版 0.172.0 的 Linux 补验
+
+2026-11-27，在 Linux x86_64 核对 npm 发布包 `@openai/codex@0.172.0` 的平台依赖。Linux x64 条目指向 `@openai/codex@0.172.0-linux-x64`。校验 tarball 与该包发布元数据的 SHA-512 完整性后，将其中 `vendor/x86_64-unknown-linux-musl/bin/codex` 解包到临时目录。进程使用独立的空 HOME、CODEX_HOME 和临时工作目录。表中 `<临时目录>` 代表本次创建的随机目录。[官方 npm 发布包](https://www.npmjs.com/package/@openai/codex/v/0.172.0) · [Codex 非交互模式](https://developers.openai.com/codex/noninteractive/)
+
+| 验收项 | 状态 | 命令和结果 |
+| --- | --- | --- |
+| 官方版本及公开参数 | **真实 Linux 测试通过** | `codex --version` 返回 `codex-cli 0.172.0`。`codex --help`、`codex exec --help`、`codex exec resume --help`、`codex login status --help`、`codex mcp list --help`、`codex features list --help` 均退出 0。根和 exec 帮助包含探针使用的七种长选项 |
+| 平台预检与原生登录状态 | **真实 Linux 测试通过** | `node --import tsx apps/server/src/verify.ts inspect codex --executable <临时目录>/codex --pass-env CODEX_HOME` 退出 0。平台用既有参数执行 `features list`，确认十项功能全部关闭，并以 `mcp list --json` 确认有效列表为空。`login status` 在临时用户环境中报告未登录。平台输出版本 0.172.0，认证方式和计费来源均未知 |
+| 真实登录后的文本回显和录制 | **尚未验证** | 本轮模型调用为 0，没有个人账号、用量或输出样本。首轮云端 0.172.0-alpha.2 的两次失败回显另见下文 |
+
 ## 官方 Claude Code 2.1.332 的 Linux 补验
 
 2026-11-27，在 Linux x86_64 从官方 npm 包的 `optionalDependencies` 确认 `@anthropic-ai/claude-code-linux-x64@2.1.332`，下载平台包并对照发布元数据验证 tarball 的 SHA-512 完整性。只把独立程序解包到临时目录，用空的临时 HOME、CLI 配置目录和工作目录执行。以下命令用 `<临时目录>` 代表本次随机创建的目录。[官方 npm 包](https://www.npmjs.com/package/@anthropic-ai/claude-code/v/2.1.332) · [Claude CLI 参考](https://code.claude.com/docs/en/cli-reference)
@@ -62,7 +72,7 @@ Linux 精简 PATH 用例在实际 Linux 内核上运行，所调用的 CLI 和�
 
 ## 实际使用的版本与参数
 
-云端执行文件为 `/opt/codex/bin/codex`，版本 `codex-cli 0.172.0-alpha.2`。通过原生 `login status` 获取 ChatGPT 登录状态，无法从该结果确定实际支出。以当前版本 `--help`、`exec --help`、`features list` 和 `mcp list --json` 核对参数及有效工具状态。两次实跑均使用下列同一参数数组，在新建空目录启动。argv 不包含任何密钥。
+首轮云端执行文件为 `/opt/codex/bin/codex`，版本 `codex-cli 0.172.0-alpha.2`。通过原生 `login status` 获取 ChatGPT 登录状态，无法从该结果确定实际支出。以当前版本 `--help`、`exec --help`、`features list` 和 `mcp list --json` 核对参数及有效工具状态。两次实跑均使用下列同一参数数组，在新建空目录启动。argv 不包含任何密钥。
 
 ```json
 ["--no-daemon","--disable","shell_tool","--disable","shell_snapshot","--disable","apps","--disable","hooks","--disable","plugins","--disable","multi_agent","--disable","computer_use","--disable","browser_use","--disable","code_mode","--disable","image_generation","-c","notify=[]","-c","web_search=\"disabled\"","-c","mcp_servers={}","--ask-for-approval","on-request","exec","--sandbox","read-only","--ephemeral","--skip-git-repo-check","--json","Reply with exactly CONCORDIA_OK. Do not use tools or access files."]
