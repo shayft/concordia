@@ -20,9 +20,11 @@ it('在本地文件启用 WAL，重复启动只执行迁移一次', () => {
     try {
       expect(db.prepare('PRAGMA journal_mode').get()?.journal_mode).toBe('wal');
       expect(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys).toBe(1);
-      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(1);
+      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(3);
       expect(db.prepare('SELECT * FROM schema_migrations').all()).toEqual([
         { version: 1, name: '001-bootstrap.sql' },
+        { version: 2, name: '002-connections.sql' },
+        { version: 3, name: '003-workflow.sql' },
       ]);
     } finally {
       db.close();
@@ -32,12 +34,12 @@ it('在本地文件启用 WAL，重复启动只执行迁移一次', () => {
 
 it('遇到较新的数据版本时停止，不覆盖数据版本', () => {
   const future = new DatabaseSync(path);
-  future.exec('PRAGMA user_version = 2');
+  future.exec('PRAGMA user_version = 99');
   future.close();
   expect(() => openStore(path)).toThrow('数据库版本不受支持');
   const check = new DatabaseSync(path);
   try {
-    expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+    expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(99);
   } finally {
     check.close();
   }
