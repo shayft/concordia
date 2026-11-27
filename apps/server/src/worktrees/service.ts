@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 import { runProcess } from '@concordia/runtimes/process';
@@ -70,7 +70,13 @@ export class WorktreeService {
   private closing = false;
   private closed = false;
   private onConflict?: (issue: WorktreeIssue) => void;
-  constructor(dataDirectory: string, onConflict?: (issue: WorktreeIssue) => void) {
+  private readonly recoveryDir: string;
+  constructor(
+    dataDirectory: string,
+    onConflict?: (issue: WorktreeIssue) => void,
+    recoveryDir = join(dataDirectory, 'processes'),
+  ) {
+    this.recoveryDir = recoveryDir;
     this.onConflict = onConflict;
     mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
     this.directory = join(realpathSync(dataDirectory), 'worktrees');
@@ -518,7 +524,7 @@ export class WorktreeService {
         cwd: tree.path,
         signal: controller.signal,
         timeoutMs: 60_000,
-        recoveryDir: join(dirname(this.directory), 'processes'),
+        recoveryDir: this.recoveryDir,
         executionId: 'command-' + key,
         maxOutputBytes: 256 * 1024,
         env: {
@@ -600,5 +606,8 @@ export class WorktreeService {
   }
 }
 
-export const openWorktrees = (dataDirectory: string, onConflict?: (issue: WorktreeIssue) => void) =>
-  new WorktreeService(dataDirectory, onConflict);
+export const openWorktrees = (
+  dataDirectory: string,
+  onConflict?: (issue: WorktreeIssue) => void,
+  recoveryDir?: string,
+) => new WorktreeService(dataDirectory, onConflict, recoveryDir);
