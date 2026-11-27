@@ -13,7 +13,7 @@ import {
   writeFileSync,
   type BigIntStats,
 } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { safeDataDirectory } from './paths.ts';
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -33,7 +33,7 @@ export class ContentStore {
     if (
       !now.isDirectory() ||
       !identityMatches(now, this.identity) ||
-      realpathSync.native(this.directory) !== this.directory
+      relative(this.directory, realpathSync.native(this.directory)) !== ''
     )
       throw new Error('内容目录已更换或不是普通目录');
   }
