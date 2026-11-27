@@ -15,6 +15,9 @@ export const actionVariants = [
   z.strictObject({ type: z.literal('submit_result'), summary: message }),
   z.strictObject({ type: z.literal('request_review'), taskId: id }),
   z.strictObject({ type: z.literal('run_project_command'), name: id }),
+  z.strictObject({ type: z.literal('read_file'), path: z.string().min(1).max(1024) }),
+  z.strictObject({ type: z.literal('write_file'), path: z.string().min(1).max(1024), content: z.string().max(262_144) }),
+  z.strictObject({ type: z.literal('commit_artifact'), slotId: id, incompatible: z.boolean().optional() }),
 ] as const;
 
 export const platformActionSchema = z.discriminatedUnion('type', actionVariants).refine(action =>
