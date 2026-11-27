@@ -1,4 +1,4 @@
-name: Stage 1 verification
+name: Concordia verification (stages 1–5)
 
 on:
   workflow_dispatch:
