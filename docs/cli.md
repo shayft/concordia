@@ -25,3 +25,13 @@ Codex 保留本机认证与模型提供商配置，在一次性参数中启用�
 预检显示可执行路径、版本、工作目录、登录方式、计费来源、变量名及传递状态和实际运行参数。运行前复查，并对照所批准的 `inspectionId`。这个标识是脱敏预检结果的摘要；变量值、受管状态的后台变更和套餐余量都不在摘要里。
 
 `--record` 仅适用于已经批准的真实调用。程序仅保留解析所需事件、成功标志与固定回显，清除会话、组织、账号、思考文本、未识别的元数据和标准错误。回放测试自动扫描 `packages/runtimes/fixtures/recorded/claude/*.json` 和 `packages/runtimes/fixtures/recorded/codex/*.jsonl`，没有录制时显示跳过。假 CLI 的输出独立存于测试代码中。[Claude 结构化输出](https://code.claude.com/docs/en/headless) · [Codex JSONL 事件](https://developers.openai.com/codex/noninteractive/)
+
+## 协作执行与 MCP
+
+`CliAgentRuntime` 把提示通过标准输入交给 CLI。执行中的动作通过 Streamable HTTP 送到 `POST /mcp/:executionId`。端点只在本机回环上工作，每个执行单独完成协议协商、列工具和调用工具。访问令牌只通过子进程环境传入，180 秒内到期，取消和结束时立即撤销。相同请求编号的重复调用共享原先的结果。动作名、JSON Schema 和参数校验均来自 `packages/protocol/src/actions.ts`，应用侧每次核对当前有效执行、角色、槽位和工作树授权。[MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports) · [MCP 工具协议](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+
+Claude 使用单次 `--strict-mcp-config --mcp-config` 设置本机 HTTP 地址，认证头引用临时环境变量。`--tools ""` 关闭内置工具，`--allowedTools` 仅列本次获准的 Concordia 工具。授权代码任务可以经 `read_file`、`write_file` 和 `commit_artifact` 交付，路径由平台工作树服务校验。Claude 的 restricted 模式会略过用户和项目设置，可能影响所选提供商，因此使用同一套受控文件工具实现写入。[Claude MCP](https://code.claude.com/docs/en/mcp) · [Claude CLI 权限与 restricted 模式](https://code.claude.com/docs/en/cli-reference)
+
+Codex 使用单次 `-c mcp_servers=...` 注入唯一的本机服务器，`bearer_token_env_var` 指定环境变量名。执行前用同一覆盖运行 `mcp list --json` 核对实际服务器和地址。只读任务传 `--sandbox read-only`；明确授权的工作树才使用 `workspace-write`，额外写入根为空，同时排除临时目录并关闭沙箱网络。Shell、hooks、外部插件和网页搜索继续被禁用。若当前 CLI 无法确认这些约束，运行停止。[Codex MCP](https://developers.openai.com/codex/mcp/) · [Codex 沙箱配置](https://developers.openai.com/codex/config-reference/)
+
+独立会话按 CLI、连接、模型、成员、任务、工作目录和权限绑定，禁止同一会话并行运行。Claude 首次指定新 `--session-id`，随后指定 `--resume <UUID>`；Codex 首次从 `thread.started` 得到 UUID，之后用 `exec resume <UUID> -`。后端登记正反向绑定，发现返回 UUID 变更或属于另一任务即停止。用量保留 CLI 公开字段，动作发生时即可交给调度器，最终文本和用量在子进程结束后交付。CLI 对版本、原生登录、组织策略和计费的真实兼容性仍按真实验收记录判断。[Claude CLI 会话](https://code.claude.com/docs/en/cli-reference) · [Codex 非交互会话](https://developers.openai.com/codex/noninteractive/)

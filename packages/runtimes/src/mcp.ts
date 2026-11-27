@@ -9,7 +9,7 @@ interface Lease {
   token: Buffer;
   expires: number;
   protocol?: string;
-  allowed?: ReadonlySet<PlatformAction['type']>;
+  allowed: ReadonlySet<PlatformAction['type']>;
   observe?: (action: PlatformAction) => void;
   calls: Map<RpcId, { signature: string; result: Promise<McpReply> }>;
 }
@@ -35,7 +35,7 @@ export class ExecutionMcpServer {
   open(executionId: string, observe?: (action: PlatformAction) => void, allowed?: ReadonlySet<PlatformAction['type']>): string {
     if (this.leases.has(executionId)) throw new Error('执行已经拥有动作通道');
     const token = randomBytes(32);
-    this.leases.set(executionId, { token, expires: this.now() + 180_000, calls: new Map(), observe, allowed: allowed && new Set(allowed) });
+    this.leases.set(executionId, { token, expires: this.now() + 180_000, calls: new Map(), observe, allowed: new Set(allowed) });
     return token.toString('hex');
   }
 
@@ -64,7 +64,7 @@ export class ExecutionMcpServer {
     if (!lease.protocol) return rpcError(id, -32600, '请先初始化动作通道');
     if (request.protocolVersion && request.protocolVersion !== lease.protocol) return rpcError(id, -32600, '协议版本不一致', 400);
     if (method === 'ping') return rpcReply(id, {});
-    if (method === 'tools/list') return rpcReply(id, { tools: actionTools.filter(tool => !lease.allowed || lease.allowed.has(tool.name)) });
+    if (method === 'tools/list') return rpcReply(id, { tools: actionTools.filter(tool => lease.allowed.has(tool.name)) });
     if (method !== 'tools/call') return rpcError(id, -32601, '未知方法');
     const args = params?.arguments;
     if (!args || typeof args !== 'object' || Array.isArray(args) || Object.hasOwn(args, 'type')) {
@@ -72,8 +72,9 @@ export class ExecutionMcpServer {
     }
     const action = platformActionSchema.safeParse({ ...args, type: params?.name });
     if (!action.success) return rpcError(id, -32602, '动作参数无效');
-    if (lease.allowed && !lease.allowed.has(action.data.type)) return rpcError(id, -32602, '此动作不在执行授权范围内');
+    if (!lease.allowed.has(action.data.type)) return rpcError(id, -32602, '此动作不在执行授权范围内');
     const signature = JSON.stringify(action.data);
+    if (signature.includes(lease.token.toString('hex'))) return rpcError(id, -32602, '动作包含仅供传输层使用的凭证');
     const previous = lease.calls.get(id);
     if (previous) return previous.signature === signature ? previous.result : rpcError(id, -32600, '请求编号重复');
     if (lease.calls.size >= 256) return rpcError(id, -32000, '单次执行的动作上限已达');
