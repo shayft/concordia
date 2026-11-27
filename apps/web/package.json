@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "dependencies": {
+    "@concordia/protocol": "workspace:*",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
