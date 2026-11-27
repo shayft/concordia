@@ -218,6 +218,10 @@ export class Scheduler {
       messages: State['messages'];
     };
   }
+  readProgress(taskId: string) {
+    const ref = entity(this.deps.storage.read().tasks, taskId).progressRef;
+    return ref ? this.deps.storage.getContent(ref) : null;
+  }
   readVersion(versionId: string) {
     const version = entity(this.deps.storage.read().versions, versionId);
     return { ...version, content: this.deps.storage.getContent(version.contentRef) };

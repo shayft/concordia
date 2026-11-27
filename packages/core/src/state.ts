@@ -20,6 +20,7 @@ export interface Task extends TaskSpec {
   rework: number;
   retries: number;
   active?: string;
+  progressRef?: string;
   reason?: string;
   replyFor?: string;
 }

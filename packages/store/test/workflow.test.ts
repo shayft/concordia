@@ -101,6 +101,9 @@ describe('真实 SQLite 与脚本化成员', () => {
   it('同一交付事件或重复投递只发布一个版本，重用消息号改变内容会被拒绝', () => {
     scheduler.apply(demoSpec());
     const api = scheduler.claim('api');
+    scheduler.act(api.id, { type: 'progress', message: '仅供当前任务查看的普通进度' });
+    expect(scheduler.readProgress('api')).toBe('仅供当前任务查看的普通进度');
+    expect(JSON.stringify(scheduler.events())).not.toContain('仅供当前任务');
     const action = { type: 'publish_artifact', slotId: 'contract', content: 'v1' };
     scheduler.act(api.id, action, 'one');
     scheduler.act(api.id, action, 'one');

@@ -199,7 +199,8 @@ export function applyAction(
       log('message.sent', { taskId: task.id, to: action.to });
       return { delivered: true };
     case 'progress':
-      log('task.progress', { taskId: task.id, message: action.message });
+      task.progressRef = deps.storage.putContent(action.message);
+      log('task.progress', { taskId: task.id, contentRef: task.progressRef });
       return { recorded: true };
     case 'request_review':
     case 'submit_result':
