@@ -10,7 +10,7 @@
 | [4 · 通用分派](stage-4.md) | 从目标生成计划、批准前预览、会议、改派、返工、流式协议及有限 JSON 修复 |
 | [5 · 安全与交付](stage-5.md) | 强制重启、进程回收、限额、脱敏导出、访问控制、安装和灾后恢复 |
 
-## 三平台最终回归
+## 托管三平台回归记录
 
 2026-11-27，GitHub Actions 对源码提交 `c110272343b78987a61f66980ed4e1a2e04b24b3` 执行冻结锁安装、`pnpm lint`、`pnpm test`、`pnpm build`；构建包含 `pnpm typecheck`。以下为整仓计数，每台机器收集 203 项。[完整运行](https://github.com/shayft/concordia/actions/runs/45996818506)
 
@@ -24,14 +24,48 @@
 
 首轮 Windows 暴露了 Git 的空配置设备路径不兼容，以及长短路径或大小写不同导致同一目录校验失败的问题。修复使用随应用提供的无任务配置文件隔离全局 Git 设置与 hooks，并按卷号和文件号验证目录身份。最终回归保留了工作树创建、冲突、审批、合并、用户钩子隔离和清理的断言。[早期 Windows 作业](https://github.com/shayft/concordia/actions/runs/45995426830/job/140493512369) · [路径复测](https://github.com/shayft/concordia/actions/runs/45996144139/job/140495903180)
 
-## 个人设备统一测试
+## 个人设备统一验收
 
-以下项目目前为**尚未验证**。在准备好的目标系统上填写实际版本、结果和供应商能确认的计费来源即可。各平台沿用同一套步骤。
+Linux、macOS、Windows 各填一份记录。以下是待执行菜单，初始状态为 **尚未验证**。在项目根目录执行命令，准备 Git、Node.js 24.16 或更新的 24.x、pnpm 11.25.0。托管浏览器使用临时浏览器配置，托管凭据库使用 runner 的测试账户。这两类结果与个人桌面会话分别登记。使用独立测试仓库和工作区，可将 `CONCORDIA_DATA_DIR` 设为个人账户专用的测试目录绝对路径。
 
-1. 在系统桌面正常启动 Concordia，预检 Claude Code 和 Codex CLI，核对两者的路径、版本、登录状态与环境变量名。用精简 PATH 的回归结果与真实桌面观测分别记录。
-2. 在各自原生 CLI 完成登录。本机各批准一次只读固定回显，以验证命令的录制选项保存净化样本，再跑回放测试。阶段 1 文档记录了云端 Codex 遇到的沙箱限制。
-3. 在系统凭据库保存网关条目。使用自己的 Base URL，在同一网关分别验证一个 Kimi 或 DeepSeek 模型及另一个模型，另验证 Gemini 原生协议。每个测试按钮对应一次验证。记录 HTTP 状态、耗时、可用用量以及实际账单情况。
-4. 在专用测试仓库用 Claude CLI 生成计划，批准后让 API 岗位交付版本，并由 Codex CLI 参与执行或审查。核对下游拿到的提交、联调结果与 diff，再决定是否合并。记录受批准的调用次数和供应方用量。
-5. 在每台机器上实测自己的凭据库锁定与解锁、关闭服务后重启、备份及恢复。可对一次性安装进行卸载演练，核对自行创建的仓库、工作树和分支。
+### 无模型费用的操作
 
-[启动与模拟演练](../../README.md) · [CLI 参数与会话](../cli.md) · [系统凭据](../credentials.md) · [安装、备份和卸载](../operations.md)
+| 操作 | 如何核对 |
+| --- | --- |
+| 安装和回归 | 依次运行 `pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm test`、`pnpm build`。记录通过数、跳过数及原因。需要测试实际浏览器时再运行 `pnpm test:browser`，它用本机 Chrome/Chromium 的原生沙箱，打开内置模拟工作流。 |
+| 从个人桌面打开 Web UI | 从 macOS Finder、Windows 开始菜单或 Linux 应用菜单打开终端，进入仓库运行 `pnpm serve`，在同机浏览器打开本次完整链接。新建工作区，在 **协作任务板 → 运行固定模拟 → 运行模拟** 完成固定需求，在 **活动记录** 核对 `plan.accepted`，刷新后仍应可见。此项记录「桌面终端启动／浏览器操作」。 |
+| 原生 CLI 预检及启动环境 | 在各自的原生程序中登录。在终端运行 `pnpm verify env`、`pnpm verify inspect codex` 和 `pnpm verify inspect claude`，记录脱敏路径、版本、实际参数、登录方式及计费相关变量名与来源。再从个人实际使用的桌面快捷方式或启动器启动服务，在 **连接与成员 → 验证 → 预检路径、版本和登录状态** 核对该进程看到的环境。找不到程序时指定绝对路径，Windows 选原生 `.exe`。分别记录启动器、终端及模拟精简 PATH 的结果。当前发布入口需要交互式终端。缺少独立启动器时，其启动环境保留「尚未验证」。 |
+| 存入网关凭据 | 在本人交互式终端运行 `pnpm credential:set keychain:my_openai_gateway` 并按隐藏提示输入。Linux 使用已解锁的 Secret Service，macOS 使用 Keychain，Windows 使用 Credential Manager。在系统界面只按服务名 `Concordia` 和条目标识核对；个人账户的解锁或拒绝结果单独记录。 |
+| 取消、停服与恢复 | `pnpm exec vitest run packages/runtimes/test/process.test.ts apps/server/test/backup-service.test.ts` 用假进程验证整树退出，并用两个服务进程实测停服和异地恢复。个人恢复演练先按 Ctrl+C 等服务退出，按操作文档执行 `create` 和 `restore`，指向新数据目录后运行 `pnpm serve`，用新链接核对原看板、版本和事件。异地副本保留未提交文件，发布工作树需要原路径和 Git 登记。[安装、备份与卸载命令](../operations.md) |
+| 一次性安装的卸载演练 | 核对未提交内容并完成备份，在 **代码与联调** 清理选定的演练工作树，停服后仅移除专用测试安装及其数据副本。用 `git worktree list --porcelain`、`git branch --list` 核对原仓库、用户工作树和保留分支。[卸载步骤](../operations.md) |
+
+### 需要本人逐项批准的真实调用
+
+**两款 CLI 各启动一次只读固定回显。** 先在原生 Claude Code 的 `/status` 核对 Setting sources，确认没有 Managed settings 才使用下列 Claude 参数。将引号内的预检 ID 替换为本机本次输出；如使用 `--executable`，在对应的 `inspect` 和 `run` 传相同路径。每条 `run` 都可能消耗订阅额度或产生 API 费用。CLI 启动次数可查，内部请求次数和实际扣费以供应方记录为准。
+
+```sh
+pnpm verify inspect claude --confirm-unmanaged
+pnpm verify run claude --confirm-unmanaged --inspection "Claude预检ID" --approve-call --record
+pnpm verify run codex --inspection "Codex预检ID" --approve-call --record
+pnpm exec vitest run packages/runtimes/test/recorded.test.ts
+```
+
+两款 CLI 都应返回 `CONCORDIA_OK`，在 `packages/runtimes/fixtures/recorded/` 下各留下按版本命名的净化样本。最后一条仅本地回放，核对两款 CLI 都有通过项。缺样本导致的跳过记为「尚未验证」。遇到登录、受管策略或沙箱阻塞时记诊断与退出码，保留原权限。[CLI 参数与录制](../cli.md)
+
+**API 每次健康验证发送一次请求。** 第一项用自己的 API 根路径、模型 ID 和系统凭据引用替换示例，验证 Chat Completions 固定回显，记录 HTTP 状态、耗时及返回的 token 用量。
+
+```sh
+pnpm verify run gateway --base-url "https://gateway.example.com/v1" --model "供应方模型ID" --credential keychain:my_openai_gateway --approve-call
+```
+
+完整配置验收包括同一网关的两个手填模型（其中一个为 Kimi 或 DeepSeek），以及单独配置的 Gemini Native 连接。在 **连接与成员 → 模型** 逐个绑定，再从对应连接点击 **验证**，选择模型并点 **批准一次真实调用**。如果首个探针已经覆盖其中一个模型，剩余两项各批准一次即可。缺少供应方用量或账单时填「未知」。[协议与模型配置](../providers.md)
+
+**三位真实成员交付。** 先在 **调用预算** 设置本次可接受的调用上限。在 **计划与审批** 选择 Claude 负责人，预检后点 **批准模型调用并生成草案**，校验差异并单独批准计划。在 **代码与联调** 登记专用测试仓库、目标分支和允许的命令，为需要写入的任务创建成员工作树。让 API 岗位交付版本、由 Codex CLI 执行或审查，逐卡核对 API 请求上限或单次 CLI 启动后批准。记录下游收到的版本、提问与验收快照，在联调树核对测试命令并单次批准，审查 diff 后另行决定是否合并。实际用量、费用或未知项填入记录。[团队与工作树操作](../../README.md)
+
+### 单项验收记录模板
+
+每个系统、每项操作各复制一行。状态使用「模拟测试通过」「真实 Linux 测试通过」「真实 macOS 测试通过」「真实 Windows 测试通过」或「尚未验证」，写明失败或跳过原因。CLI 只记脱敏后的路径、参数和样本位置；启动链接、Cookie、凭据值、原始认证输出和个人账号信息均留在本机。
+
+| 日期、系统版本、启动方式、Git 提交 | 验收项、命令或 UI 操作 | CLI 版本及实际参数／协议与模型 | 授权和实耗次数、HTTP／耗时／用量、计费来源 | 结果、状态、脱敏证据或阻塞原因 |
+| --- | --- | --- | --- | --- |
+| 待填 | 待填 | 待填 | 未知 | 尚未验证 |
