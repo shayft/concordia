@@ -601,6 +601,28 @@ export class WorktreeService {
     this.db.prepare("UPDATE approvals SET status='revoked' WHERE tree=? AND status='pending'").run(key);
     return { branch: tree.branch };
   }
+  issues(): WorktreeIssue[] {
+    return this.db
+      .prepare('SELECT tree,recipients FROM conflict_issues')
+      .all()
+      .map((row) => {
+        const tree = this.tree(String(row.tree));
+        return {
+          id: tree.id,
+          treeId: tree.id,
+          projectId: tree.projectId,
+          taskIds: JSON.parse(String(row.recipients)) as string[],
+          paths: tree.conflicts,
+          status: 'open' as const,
+        };
+      });
+  }
+  issueSnapshot(treeId: string): Snapshot {
+    const issue = this.db
+      .prepare('SELECT t.snapshot FROM trees t JOIN conflict_issues i ON i.tree=t.id WHERE t.id=?')
+      .get(treeId);
+    return issue ? (JSON.parse(String(issue.snapshot)) as Snapshot) : [];
+  }
   state() {
     return {
       projects: this.db
@@ -611,24 +633,28 @@ export class WorktreeService {
         .prepare('SELECT * FROM trees ORDER BY rowid')
         .all()
         .map((r) => this.view(r)),
-      issues: this.db
-        .prepare('SELECT tree,recipients FROM conflict_issues')
+      issues: this.issues(),
+      approvals: this.db
+        .prepare("SELECT id,tree,kind,sha,target FROM approvals WHERE status='pending'")
         .all()
         .map((row) => {
           const tree = this.tree(String(row.tree));
-          return {
-            id: tree.id,
-            treeId: tree.id,
-            projectId: tree.projectId,
-            taskIds: JSON.parse(String(row.recipients)) as string[],
-            paths: tree.conflicts,
-            status: 'open' as const,
-          };
+          try {
+            const repo = this.project(tree.projectId).repository;
+            if (!existsSync(join(repo, '.git')) || !existsSync(join(tree.path, '.git'))) throw new Error();
+            return { ...this.approval(String(row.id)), available: true };
+          } catch {
+            return {
+              id: String(row.id),
+              treeId: tree.id,
+              kind: String(row.kind),
+              sha: String(row.sha),
+              targetSha: String(row.target),
+              available: false,
+              diagnostic: '项目或工作区暂不可读，请恢复后再审批。',
+            };
+          }
         }),
-      approvals: this.db
-        .prepare("SELECT id FROM approvals WHERE status='pending'")
-        .all()
-        .map((r) => this.approval(String(r.id))),
       results: this.db
         .prepare(
           "SELECT tree,name,status,result FROM approvals WHERE status!='pending' ORDER BY rowid DESC LIMIT 100",

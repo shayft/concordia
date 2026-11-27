@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -178,4 +179,34 @@ it('同项目的两份计划和旧手工树在同名任务上互相隔离', { ti
   const av = service.publishForTask('demo', 'shared', a.id, 'board-a/plan'),
     other = service.publish(another.id);
   expect(() => service.integrate('demo', [av, other])).toThrow();
+});
+
+it('仓库离线时仍能打开其他项目、读取冲突快照，并保留不可批准的票据', { timeout: 60_000 }, async () => {
+  service.configure(config(true));
+  const left = service.member('demo', 'left'),
+    right = service.member('demo', 'right');
+  service.write(left.id, 'file.txt', 'left');
+  service.write(right.id, 'file.txt', 'right');
+  service.write(left.id, 'new.txt', 'yes');
+  const leftVersion = service.publish(left.id),
+    rightVersion = service.publish(right.id);
+  const conflict = service.integrate('demo', [leftVersion, rightVersion]).tree;
+  const cleanTree = service.integrate('demo', [leftVersion]).tree;
+  expect((await service.approveCommand(service.requestCommand(cleanTree.id, 'test').id)).passed).toBe(true);
+  const pending = service.reviewMerge(cleanTree.id);
+  const other = join(base, 'other');
+  mkdirSync(other);
+  run(other, 'init', '-q', '-b', 'main');
+  run(other, '-c', 'user.name=T', '-c', 'user.email=t@localhost', 'commit', '--allow-empty', '-qm', 'base');
+  service.configure({ ...config(true), id: 'other', repository: other });
+  renameSync(repo, repo + '-offline');
+  expect(service.issues()[0]?.id).toBe(conflict.id);
+  expect(service.issueSnapshot(conflict.id)).toEqual(
+    [leftVersion, rightVersion].map(({ treeId, sha }) => ({ treeId, sha })),
+  );
+  expect(service.state().approvals).toContainEqual(
+    expect.objectContaining({ id: pending.id, available: false }),
+  );
+  expect(() => service.approveMerge(pending.id)).toThrow();
+  expect(service.member('other', 'still-here').status).toBe('ready');
 });
