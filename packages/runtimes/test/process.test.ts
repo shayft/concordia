@@ -1,13 +1,33 @@
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 import { activeProcessGroups, runProcess } from '../src/process.ts';
 
 const fixture = fileURLToPath(new URL('./process-tree.mjs', import.meta.url));
+const expectedSignal = process.platform === 'win32' ? 'SIGBREAK' : 'SIGTERM';
+
+async function treeCommand(directory: string, mode: string) {
+  if (process.platform !== 'win32' || mode !== 'early') {
+    return { executable: process.execPath, args: [fixture, directory, '0', mode] };
+  }
+  // A Node fixture cannot leave this tree alive after a Windows parent's exit:
+  // libuv puts non-detached children into its own kill-on-close job.
+  const compiler = ['Framework64', 'Framework']
+    .map(folder => join(process.env.SystemRoot!, 'Microsoft.NET', folder, 'v4.0.30319', 'csc.exe'))
+    .find(path => existsSync(path));
+  if (!compiler) throw new Error('Windows 进程测试需要系统 .NET Framework 4.x 的 csc.exe。');
+  const executable = join(directory, 'WindowsProcessTree.exe');
+  const source = fileURLToPath(new URL('./fixtures/WindowsProcessTree.cs', import.meta.url));
+  await promisify(execFile)(compiler, ['/nologo', '/target:exe', '/out:' + executable, source], { shell: false });
+  return { executable, args: [] };
+}
+
 const scratch: string[] = [];
 const running = new Set<AbortController>();
 
@@ -49,9 +69,10 @@ it.each(['cancel', 'early'])('收回关闭了输出管道的三代进程 (%s)', 
   scratch.push(directory);
   const controller = new AbortController();
   running.add(controller);
+  const { executable, args } = await treeCommand(directory, mode);
   const testStart = Date.now();
-  const result = runProcess(process.execPath, [fixture, directory, '0', mode], {
-    signal: controller.signal, timeoutMs: 7000, graceMs: 250,
+  const result = runProcess(executable, args, {
+    cwd: directory, signal: controller.signal, timeoutMs: 7000, graceMs: 250,
   });
   const outcome = mode === 'cancel'
     ? expect(result).rejects.toThrow('取消')
@@ -62,13 +83,16 @@ it.each(['cancel', 'early'])('收回关闭了输出管道的三代进程 (%s)', 
   expect(owner?.startedAtMs).toBeGreaterThanOrEqual(testStart - 5);
   expect(owner?.startedAtMs).toBeLessThanOrEqual(Date.now() + 5);
   const pids = await Promise.all([0, 1, 2].map(async depth => Number(await readFile(join(directory, 'pid-' + depth), 'utf8'))));
+  expect(await Promise.all(pids.map(hasExited))).toEqual([false, false, false]);
   if (mode === 'cancel') controller.abort();
+  else await writeFile(join(directory, 'release-root'), '');
   await outcome;
   expect(activeProcessGroups()).toHaveLength(0);
-  const stopped = (await readFile(join(directory, 'stopping'), 'utf8')).trim().split(/\s+/);
-  // The leaf handles the initial signal but keeps running until forced cleanup.
-  expect(stopped).toContain('2');
-  if (mode === 'cancel') expect(stopped).toEqual(expect.arrayContaining(['0', '1']));
+  // Both surviving descendants must receive the graceful signal. A root
+  // deliberately released before cleanup must retain its own exit code.
+  const stopped = (await readdir(directory)).filter(name => name.startsWith('stopped-')).sort();
+  expect(stopped).toEqual(mode === 'cancel' ? ['stopped-0', 'stopped-1', 'stopped-2'] : ['stopped-1', 'stopped-2']);
+  for (const name of stopped) expect(await readFile(join(directory, name), 'utf8')).toBe(expectedSignal);
   for (const pid of pids) await waitFor(() => hasExited(pid));
 }, 10_000);
 
@@ -115,7 +139,7 @@ it('调用方强制退出后，管理器通过 IPC 断开回收树', async () =>
     const pids = await Promise.all([0, 1, 2].map(async depth => Number(await readFile(join(directory, 'pid-' + depth), 'utf8'))));
     client.kill('SIGKILL');
     for (const pid of pids) await waitFor(() => hasExited(pid));
-    expect(await readFile(join(directory, 'stopping'), 'utf8')).toContain('2');
+    expect(await readFile(join(directory, 'stopped-2'), 'utf8')).toBe(expectedSignal);
   } finally {
     if (!client.killed) client.kill('SIGKILL');
   }
