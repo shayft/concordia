@@ -9,6 +9,9 @@ import { openStore } from '@concordia/store';
 import {
   budgetReport,
   BudgetExceeded,
+  PoolSuspended,
+  pausedPools,
+  resumeSharedPool,
   meterProvider,
   registerBudgets,
   reserveBudget,
@@ -60,12 +63,18 @@ it('不同连接共池，跨工作区调用共用全局限额；删除上限不�
   const id = reserveBudget(db, scope);
   expect(() => reserveBudget(db, { ...scope, connectionId: 'two', workspaceId: 'second' })).toThrow(
     BudgetExceeded,
+    PoolSuspended,
+    pausedPools,
+    resumeSharedPool,
   );
   settleBudget(db, id, { totalTokens: 10 });
   const next = reserveBudget(db, { ...scope, connectionId: 'two', workspaceId: 'second' });
   settleBudget(db, next);
   expect(() => reserveBudget(db, { ...scope, poolId: 'separate', memberId: 'other' })).toThrow(
     BudgetExceeded,
+    PoolSuspended,
+    pausedPools,
+    resumeSharedPool,
   );
   expect((await app.inject({ method: 'DELETE', url: '/api/budgets/global/all' })).statusCode).toBe(204);
   expect(budgetReport(db).usage.find((u) => u.scope === 'global')).toMatchObject({ calls: 2, tokens: 110 });
@@ -121,4 +130,48 @@ it('逐轮调用适配器并处理流消费中止，达到上限时不执行后�
   expect((await app.inject({ method: 'PUT', url: '/api/budgets/global/all', payload: {} })).statusCode).toBe(
     400,
   );
+});
+
+it.each([429, 402])('上游 %s 暂停共享池，换看板或重启仍阻止派发，其他池和本地预算独立', async (status) => {
+  let calls = 0;
+  const failure = {
+    type: 'error' as const,
+    kind: status === 429 ? ('rate_limit' as const) : ('budget' as const),
+    message: '上游拒绝',
+    httpStatus: status,
+  };
+  const base: ModelProvider = {
+    getCapabilities: () => ({ nativeTools: false, streaming: true }),
+    async validateConnection() {
+      calls++;
+      return { ok: false, error: failure };
+    },
+    async *stream() {
+      calls++;
+      yield failure;
+    },
+  };
+  const wrapped = meterProvider(db, scope, base);
+  if (status === 429) {
+    for await (const event of wrapped.stream([{ role: 'user', content: '模拟' }]))
+      expect(event).toEqual(failure);
+  } else expect((await wrapped.validateConnection()).ok).toBe(false);
+  expect(pausedPools(db)).toEqual(['shared']);
+  await app.close();
+  db.close();
+  db = openStore(join(dir, 'catalog.sqlite'));
+  app = Fastify();
+  registerBudgets(app, db);
+  await expect(
+    meterProvider(db, { ...scope, workspaceId: 'other', connectionId: 'other' }, base).validateConnection(),
+  ).rejects.toThrow(PoolSuspended);
+  expect(calls).toBe(1);
+  const separate = reserveBudget(db, { ...scope, poolId: 'different' });
+  settleBudget(db, separate);
+  resumeSharedPool(db, 'shared');
+  const resumed = reserveBudget(db, scope);
+  settleBudget(db, resumed);
+  await caps('global', 'all', { maxCalls: 1 });
+  expect(() => reserveBudget(db, scope)).toThrow(BudgetExceeded);
+  expect(pausedPools(db)).toEqual([]);
 });

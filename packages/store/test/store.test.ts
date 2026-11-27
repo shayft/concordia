@@ -20,7 +20,7 @@ it('在本地文件启用 WAL，重复启动只执行迁移一次', () => {
     try {
       expect(db.prepare('PRAGMA journal_mode').get()?.journal_mode).toBe('wal');
       expect(db.prepare('PRAGMA foreign_keys').get()?.foreign_keys).toBe(1);
-      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(6);
+      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(7);
       expect(db.prepare('SELECT * FROM schema_migrations').all()).toEqual([
         { version: 1, name: '001-bootstrap.sql' },
         { version: 2, name: '002-connections.sql' },
@@ -28,6 +28,7 @@ it('在本地文件启用 WAL，重复启动只执行迁移一次', () => {
         { version: 4, name: '004-application.sql' },
         { version: 5, name: '005-code-bindings.sql' },
         { version: 6, name: '006-budget-ledger.sql' },
+        { version: 7, name: '007-paused-pools.sql' },
       ]);
     } finally {
       db.close();

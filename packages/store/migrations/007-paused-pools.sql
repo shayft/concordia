@@ -1,0 +1,3 @@
+CREATE TABLE paused_pools (
+  id TEXT PRIMARY KEY, paused_at INTEGER NOT NULL
+) STRICT;

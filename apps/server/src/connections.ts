@@ -1,4 +1,4 @@
-import { BudgetExceeded, meterProvider, registerBudgets, reserveBudget, settleBudget } from './budget-ledger.ts';
+import { BudgetExceeded, PoolSuspended, meterProvider, registerBudgets, reserveBudget, settleBudget, suspendPool } from './budget-ledger.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import type { FastifyInstance } from 'fastify';
 import { type z } from 'zod';
@@ -152,7 +152,7 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
   // Keep this error handler confined to catalog routes. The parent owns session and Origin checks.
   app.register(async api => {
     api.setErrorHandler((error, _request, reply) => {
-      if (error instanceof BudgetExceeded) return reply.code(409).send({error:error.message});
+      if (error instanceof BudgetExceeded || error instanceof PoolSuspended) return reply.code(409).send({error:error.message});
       if (error instanceof CatalogError) return reply.code(error.statusCode).send({ error: error.message });
       if (error instanceof CliDiagnosticError) return reply.code(400).send({ error: error.message });
       const code = typeof error === 'object' && error && 'statusCode' in error ? error.statusCode : undefined;
@@ -240,6 +240,10 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
           try {
             const result = await runCliProbe(connection.kind, { ...cli, approved: true, inspectionId: input.inspectionId });
             return { ok: true, text: result.text, elapsedMs: Math.round(performance.now() - started) };
+          } catch (error) {
+            if (error instanceof CliDiagnosticError && (error.kind === 'rate_limit' || error.kind === 'budget'))
+              suspendPool(db,scope.poolId);
+            throw error;
           } finally { settleBudget(db,reservation); }
         } finally {
           reply.raw.off('close', stop);

@@ -24,6 +24,30 @@ export class BudgetExceeded extends Error {
     super('此调用超出已配置的预算或并发上限。');
   }
 }
+export class PoolSuspended extends Error {
+  constructor() {
+    super('共享额度池已暂停，请核对供应商状态后手动恢复。');
+  }
+}
+
+export function pausedPools(db: DatabaseSync): string[] {
+  return db
+    .prepare('SELECT id FROM paused_pools ORDER BY id')
+    .all()
+    .map((row) => String(row.id));
+}
+export function suspendPool(db: DatabaseSync, poolId: string): void {
+  db.prepare('INSERT INTO paused_pools(id,paused_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING').run(
+    poolId,
+    Date.now(),
+  );
+}
+export function resumeSharedPool(db: DatabaseSync, poolId: string): void {
+  db.prepare('DELETE FROM paused_pools WHERE id=?').run(poolId);
+}
+export function assertPoolAvailable(db: DatabaseSync, poolId: string): void {
+  if (db.prepare('SELECT 1 FROM paused_pools WHERE id=?').get(poolId)) throw new PoolSuspended();
+}
 function transaction<T>(db: DatabaseSync, write: () => T): T {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -48,6 +72,7 @@ export function reserveBudget(db: DatabaseSync, scope: CallScope): string {
   if (scope.workspaceId) accounts.push(['workspace', scope.workspaceId]);
   if (scope.memberId) accounts.push(['member', scope.memberId]);
   return transaction(db, () => {
+    assertPoolAvailable(db, scope.poolId);
     const check = db.prepare(`SELECT 1 AS exceeded FROM budget_limits l
       LEFT JOIN budget_usage u USING (scope,id)
       WHERE l.scope=? AND l.id=? AND (COALESCE(u.calls,0)+1 > l.max_calls OR
@@ -107,6 +132,8 @@ export function meterProvider(db: DatabaseSync, scope: CallScope, provider: Mode
       const usage: Usage = {};
       try {
         for await (const event of provider.stream(messages, tools, options)) {
+          if (event.type === 'error' && (event.kind === 'rate_limit' || event.kind === 'budget'))
+            suspendPool(db, scope.poolId);
           if (event.type === 'usage') {
             if (event.inputTokens !== undefined) usage.inputTokens = event.inputTokens;
             if (event.outputTokens !== undefined) usage.outputTokens = event.outputTokens;
@@ -124,6 +151,8 @@ export function meterProvider(db: DatabaseSync, scope: CallScope, provider: Mode
       let usage: Usage | undefined;
       try {
         const result = await provider.validateConnection(signal);
+        if (!result.ok && (result.error.kind === 'rate_limit' || result.error.kind === 'budget'))
+          suspendPool(db, scope.poolId);
         usage = result.usage;
         return result;
       } finally {
