@@ -53,11 +53,14 @@ function finish(res: ServerResponse, content: unknown) {
 async function gateway() {
   const queue: Array<(res:ServerResponse)=>void> = [];
   const messages: unknown[] = [];
+  const statuses: number[] = [];
   const seen: Array<{stream:unknown; model:unknown; url:unknown; authorization:boolean}> = [];
   const srv = createServer(async (req,res) => {
     const input: {model:unknown;stream:unknown;messages:unknown} = JSON.parse(await text(req));
     messages.push(input.messages);
     seen.push({ stream: input.stream, model:input.model, url:req.url, authorization:req.headers.authorization!==undefined });
+    const status = statuses.shift() ?? 200;
+    if (status !== 200) { res.writeHead(status).end(); return; }
     const dispatch = queue.shift();
     if (!dispatch) { res.writeHead(500).end();return; }
     res.writeHead(200,{'content-type':'text/event-stream'});res.flushHeaders();
@@ -67,7 +70,7 @@ async function gateway() {
   await once(srv,'listening');
   const addr = srv.address();
   if (!addr || typeof addr === 'string') throw new Error('缺少本地测试端口');
-  return {queue,seen,messages,baseUrl:'http://127.0.0.1:'+addr.port+'/custom/v1',close: async () => {
+  return {queue,seen,messages,statuses,baseUrl:'http://127.0.0.1:'+addr.port+'/custom/v1',close: async () => {
     const closed=once(srv,'close');srv.close();srv.closeAllConnections();await closed;
   }};
 }
@@ -342,3 +345,25 @@ it('通用 Worker 从绑定树提交版本，只读下游从该 SHA 读文件；
   expect(api.seen).toHaveLength(oldCalls + 2);
   expect(JSON.stringify(api.messages.slice(oldCalls))).not.toContain(published);
 }, 30_000);
+
+it('共享账户限流后，切换工作区仍须手动恢复，未恢复前不再向网关发请求', async () => {
+  app = await startLocalServer(web, data);
+  const first = await login(app);
+  await configure(first);
+  await apply(first);
+  api.statuses.push(429);
+  expect((await first.post('/api/tasks/write/run', { mode: 'live', approved: true })).status).toBe(200);
+  await vi.waitFor(async () => expect((await board(first)).stoppedPools).toContain('connection:gateway'));
+  await vi.waitFor(async () => {
+    const switched = await first.post('/api/workspaces', { name: '同一账户' });
+    expect(switched.status).toBe(200);
+  });
+  await apply(first);
+  expect((await board(first)).stoppedPools).toContain('connection:gateway');
+  expect((await first.post('/api/tasks/write/run', { mode: 'live', approved: true })).status).toBe(409);
+  expect(api.seen).toHaveLength(1);
+  expect((await first.post('/api/pools/connection%3Agateway/resume', {})).status).toBe(200);
+  expect((await first.post('/api/workspaces/default/select', {})).status).toBe(200);
+  expect((await board(first)).stoppedPools).toEqual([]);
+  expect(api.seen).toHaveLength(1);
+}, 20_000);

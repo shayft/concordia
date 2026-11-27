@@ -14,6 +14,7 @@ import { openWorktrees, serveWorktrees } from './worktrees.ts';
 import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
 import { auditEvent, serveAuditExport } from './audit.ts';
+import { serveExecutionCosts } from './execution-cost.ts';
 import { serveDelivery } from './delivery.ts';
 
 const text = z.string().trim().min(1).max(8000);
@@ -93,11 +94,11 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   // Task names may repeat in different plans. Route an issue only when all source
   // commits were actually published as versions on the currently selected board.
   function syncConflict(issue: WorktreeIssue): void {
-    const integration = trees.state().trees.find((tree) => tree.id === issue.treeId);
-    if (!issue.taskIds.length || !integration?.snapshot.length) return;
+    const snapshot = trees.issueSnapshot(issue.treeId);
+    if (!issue.taskIds.length || !snapshot.length) return;
     const board = current.scheduler.board();
     if (!issue.taskIds.every((id) => board.tasks.some((task) => task.id === id))) return;
-    for (const source of integration.snapshot) {
+    for (const source of snapshot) {
       const rows = db
         .prepare('SELECT execution FROM version_sources WHERE workspace=? AND project=? AND tree=? AND sha=?')
         .all(current.id, issue.projectId, source.treeId, source.sha);
@@ -113,9 +114,13 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       )
         return;
     }
-    current.scheduler.reportConflict(issue);
+    const paths = issue.paths
+      .filter((path) => path.length <= 1024 && !path.startsWith('/') && !path.includes('\0'))
+      .sort()
+      .slice(0, 256);
+    current.scheduler.reportConflict({ ...issue, paths });
   }
-  for (const issue of trees.state().issues) syncConflict(issue);
+  for (const issue of trees.issues()) syncConflict(issue);
   app.addHook('onRequest', async (req, reply) => {
     const scope = req.headers['x-concordia-workspace'];
     if (scope !== undefined && scope !== current.id && req.method !== 'GET')
@@ -130,6 +135,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     current.scheduler.board().spec ? current.worker.treeScope() : undefined,
   );
   serveAuditExport(app, () => current.scheduler.board());
+  serveExecutionCosts(app, () => current.scheduler.board().executions);
   const delivery = serveDelivery(app, directory, assertRecovered);
 
   function switchBoard(id: string) {
@@ -150,7 +156,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     closeFeeds();
     current.close();
     current = next;
-    for (const issue of trees.state().issues) syncConflict(issue);
+    for (const issue of trees.issues()) syncConflict(issue);
   }
   function checkedSpec(raw: unknown) {
     const spec = workflowSpecSchema.parse(raw);
@@ -346,7 +352,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     }),
     async (input) => {
       assertRecovered();
-      return current.worker.generate(input.goal, input.agentId, input);
+      return current.worker.generate(input.goal, input.agentId, input, checkedSpec);
     },
   );
   app.post<{ Params: { id: string } }>('/mcp/:id', async (req, reply) => {

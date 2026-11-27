@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Scheduler, Execution, Failure } from '@concordia/core/workflow';
 import { actionTools, type PlatformAction } from '@concordia/protocol';
-import { workflowSpecSchema } from '@concordia/protocol/workflow';
+import { workflowSpecSchema, type WorkflowSpec } from '@concordia/protocol/workflow';
 import { createModelProvider } from '@concordia/providers';
 import {
   CliAgentRuntime,
@@ -17,6 +17,7 @@ import { getCatalog, providerConfig, resolveMember, probeCount, type RunningFilt
 import {
   assertPoolAvailable,
   BudgetExceeded,
+  PoolSuspended,
   meterProvider,
   reserveBudget,
   settleBudget,
@@ -216,7 +217,7 @@ export class Worker {
     if (options.treeId)
       this.trees.executionTree(options.projectId!, taskId, options.treeId, this.treeScope());
     if (shared && shared.remaining < 1) throw new Error('本批调用用尽');
-    const exec = this.scheduler.claim(taskId);
+    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined);
     if (shared) shared.remaining--;
     const job: LiveJob = {
       controller: new AbortController(),
@@ -254,7 +255,13 @@ export class Worker {
       .catch((err: unknown) => {
         if (job.controller.signal.aborted) return;
         const kind =
-          err instanceof BudgetExceeded ? 'budget' : err instanceof ModelCallError ? err.kind : 'invalid';
+          err instanceof PoolSuspended
+            ? 'rate_limit'
+            : err instanceof BudgetExceeded
+              ? 'budget'
+              : err instanceof ModelCallError
+                ? err.kind
+                : 'invalid';
         const failure: Failure =
           kind === 'auth' || kind === 'rate_limit' || kind === 'budget'
             ? kind
@@ -483,7 +490,12 @@ export class Worker {
     this.scheduler.recover();
   }
 
-  async generate(goal: string, agentId: string, options: Pick<Options, 'inspectionId' | 'confirmUnmanaged'>) {
+  async generate(
+    goal: string,
+    agentId: string,
+    options: Pick<Options, 'inspectionId' | 'confirmUnmanaged'>,
+    validate: (raw: unknown) => WorkflowSpec,
+  ) {
     const binding = resolveMember(this.db, agentId);
     this.checkConnection(binding);
     const id = randomUUID(),
@@ -536,7 +548,7 @@ export class Worker {
           true,
         );
       job.controller.signal.throwIfAborted();
-      const spec = workflowSpecSchema.parse(JSON.parse(text.trim()));
+      const spec = validate(JSON.parse(text.trim()));
       for (const agent of spec.agents) {
         const selected = resolveMember(this.db, agent.id);
         if (selected.connection.id !== agent.connection) throw new Error('计划成员连接与配置不符');
