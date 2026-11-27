@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { Scheduler } from '../../../packages/core/src/workflow.ts';
 import { api, useAction, useResource } from './api.ts';
@@ -137,7 +137,9 @@ function TaskDetails({
               <li key={index}>
                 {period.kind === 'waiting' ? '等待依赖' : '就绪排队'} ·{' '}
                 {period.start === null ? '开始时间未知' : new Date(period.start).toLocaleString()}
-                {' 至 '}{period.end === null ? '现在' : new Date(period.end).toLocaleString()}
+                {period.end === null
+                  ? '，截至 ' + new Date(task.waitTime.observedAt).toLocaleString() + ' 仍在等待'
+                  : ' 至 ' + new Date(period.end).toLocaleString()}
                 {period.blockedBy.map(({ slotId, owner }) => (
                   <span key={slotId}> · {slotName(slotId)}（{board.agents.find(a => a.id === owner)?.name ?? owner ?? '负责人未知'}）</span>
                 ))}
@@ -426,6 +428,12 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
   const catalog = useResource<Catalog>('catalog');
   const [owner, setOwner] = useState('');
   const [selected, setSelected] = useState('');
+  const openRequest = useRef(0);
+  async function openTask(id: string) {
+    const request = ++openRequest.current;
+    await reload();
+    if (openRequest.current === request) setSelected(id);
+  }
   const [dialog, setDialog] = useState<'demo' | 'dispatch' | 'stop' | 'accept'>();
   const [version, setVersion] = useState<{
     id: string;
@@ -523,7 +531,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
                 {tasks
                   .filter((t) => t.column === col)
                   .map((t) => (
-                    <button className="card" key={t.id} onClick={() => setSelected(t.id)}>
+                    <button className="card" key={t.id} onClick={() => void openTask(t.id)}>
                       <span className={'tag status-' + t.status}>{labels[t.status]}</span>
                       <strong>{t.title}</strong>
                       <small>{board.agents.find((a) => a.id === t.owner)?.name || '未分配'}</small>

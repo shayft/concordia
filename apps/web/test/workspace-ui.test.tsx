@@ -188,7 +188,7 @@ it('任务详情区分依赖等待和排队，旧记录保留未知，普通进�
     id: 'draft', title: '编写说明', owner: 'docs', status: 'waiting', column: 'waiting',
     consumes: [], produces: [], missing: ['sample'], progressRef: 'first',
     waitTime: {
-      complete: false, dependencyMs: 65000, queueMs: 0,
+      complete: false, dependencyMs: 65000, queueMs: 0, observedAt: 65000,
       intervals: [{ kind: 'waiting', start: null, end: null, blockedBy: [{slotId: 'sample', owner: 'qa'}] }],
     },
   };
@@ -208,8 +208,12 @@ it('任务详情区分依赖等待和排队，旧记录保留未知，普通进�
   expect(requests.some(r => r.path === progress)).toBe(false);
   const card = container.querySelector<HTMLElement>('.card')!;
   expect(card.textContent).toContain('等待依赖 至少 1 分 5 秒 · 就绪排队 未知');
+  task.waitTime.observedAt = 68000;
+  task.waitTime.dependencyMs = 68000;
   await click(card);
-  expect(container.textContent).toContain('开始时间未知 至 现在');
+  expect(requests.filter(r => r.path === '/api/board')).toHaveLength(2);
+  expect(container.textContent).toContain('等待依赖 至少 1 分 8 秒');
+  expect(container.textContent).toContain('开始时间未知，截至 ' + new Date(68000).toLocaleString() + ' 仍在等待');
   expect(container.textContent).toContain('可运行样例（测试成员）');
   expect(container.textContent).toContain('正在整理样例');
   task.progressRef = 'second';
