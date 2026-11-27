@@ -6,7 +6,7 @@ import {
   catalogModelSchema, connectionSchema, writableConnectionSchema, inspectConnectionSchema, memberSchema, quotaPoolSchema, testConnectionSchema,
   type Catalog, type CatalogModel, type Connection, type Member, type QuotaPool,
 } from '@concordia/protocol/connections';
-import { createModelProvider, type ProviderConfig } from '@concordia/providers';
+import { createModelProvider, type ProviderConfig, type CredentialReader } from '@concordia/providers';
 import { CliDiagnosticError, inspectCli, runCliProbe } from '@concordia/runtimes';
 
 const entities = {
@@ -23,6 +23,7 @@ export interface CatalogOptions {
   isRunning(filter: RunningFilter): boolean;
   runningCount?(filter: RunningFilter): number;
   assertCanExecute?(): void;
+  readCredential?: CredentialReader;
 }
 
 interface Probe extends RunningFilter { controller: AbortController; modelId?: string }
@@ -225,7 +226,7 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
           if ('baseUrl' in connection) {
             if (mode === 'inspect') throw new CatalogError(400, 'API 连接无需 CLI 预检。');
             const start = performance.now();
-            const provider = meterProvider(db,scope,createModelProvider(providerConfig(connection, model)));
+            const provider = meterProvider(db,scope,createModelProvider(providerConfig(connection, model), options.readCredential));
             const result = await provider.validateConnection(controller.signal);
             const elapsedMs = Math.round(performance.now() - start);
             return result.ok ? { ...result, elapsedMs } : { ok: false, error: result.error.message,

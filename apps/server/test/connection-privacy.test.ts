@@ -5,25 +5,15 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Fastify from 'fastify';
-import { afterEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { openStore } from '@concordia/store';
 import { acquireDataDirectory } from '../src/data-directory.ts';
 import { copyApplicationState } from '../src/backup.ts';
 import { registerConnectionRoutes } from '../src/connections.ts';
 
-const fakeStore = vi.hoisted(() => ({ read: vi.fn<() => Promise<string>>() }));
-vi.mock('@napi-rs/keyring', () => ({
-  AsyncEntry: class {
-    getPassword = fakeStore.read;
-  },
-}));
-
-afterEach(() => {
-  vi.clearAllMocks();
-});
 it('网关回显请求头时，浏览器结果、额度记录和离线备份只包含系统引用', async () => {
   const synthetic = randomUUID();
-  fakeStore.read.mockResolvedValue(synthetic);
+  const readCredential = vi.fn(async () => synthetic);
   let sawRequest = false;
   const mock = createServer((req, res) => {
     sawRequest = req.headers.authorization === 'Bearer ' + synthetic && req.headers['x-tenant'] === synthetic;
@@ -36,7 +26,7 @@ it('网关回显请求头时，浏览器结果、额度记录和离线备份只�
   const lock = acquireDataDirectory(source);
   const db = openStore(join(source, 'catalog.sqlite'));
   const app = Fastify();
-  registerConnectionRoutes(app, db, { isRunning: () => false });
+  registerConnectionRoutes(app, db, { isRunning: () => false, readCredential });
   try {
     await new Promise<void>((resolve) => mock.listen(0, '127.0.0.1', resolve));
     const baseUrl = 'http://127.0.0.1:' + (mock.address() as AddressInfo).port;
@@ -58,7 +48,7 @@ it('网关回显请求头时，浏览器结果、额度记录和离线备份只�
     const result = await create('connections/one/test', { modelId: 'choice', approved: true });
     expect(result.json()).toMatchObject({ ok: false, httpStatus: 401 });
     expect(sawRequest).toBe(true);
-    expect(fakeStore.read).toHaveBeenCalledTimes(2);
+    expect(readCredential).toHaveBeenCalledTimes(2);
     for (const body of [
       result.body,
       (await app.inject('/api/catalog')).body,
