@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { demoSpec, Scheduler } from '@concordia/core/workflow';
 import { openStore } from '@concordia/store';
+import { safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 import { WorkflowStore } from '@concordia/store/workflow';
 import { git } from './worktrees/git.ts';
 import { WorktreeService } from './worktrees/service.ts';
@@ -39,20 +40,38 @@ const approval = z.strictObject({ approved: z.literal(true), approvalId: z.uuid(
 const start = z.strictObject({ approved: z.literal(true), retryOf: z.uuid().optional() });
 
 /** The rehearsal has its own scheduler and Git ledger, outside all user-configured projects. */
-export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
-  const directory = join(realpathSync(dataDirectory), 'assignee-delivery');
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  if (realpathSync(directory) !== directory) throw new Error('演练目录必须是平台数据目录内的普通目录。');
-  const db = openStore(join(directory, 'delivery.sqlite'));
+export function serveDelivery(app: FastifyInstance, dataDirectory: string, assertCanExecute?: () => void) {
+  const directory = safeDataDirectory(dataDirectory, 'assignee-delivery');
+  safeDataDirectory(directory, 'objects');
+  const db = openStore(safeDatabasePath(directory, 'delivery.sqlite'));
   db.exec(readFileSync(new URL('./delivery.sql', import.meta.url), 'utf8'));
   const scheduler = new Scheduler({
     now: Date.now,
     nextId: randomUUID,
     storage: new WorkflowStore(db, directory),
   });
-  const worktrees = new WorktreeService(directory);
+  const worktrees = new WorktreeService(directory, undefined, join(dataDirectory, 'processes'));
+  let activeRequest: Promise<void> | undefined;
+  let closing = false;
+  function allowed() {
+    try {
+      assertCanExecute?.();
+      return !closing;
+    } catch {
+      return false;
+    }
+  }
+  async function stop() {
+    const settled = activeRequest;
+    await worktrees.cancelAll();
+    await settled;
+  }
+  app.addHook('preClose', async () => {
+    closing = true;
+    await stop();
+  });
   app.addHook('onClose', async () => {
-    worktrees.close();
+    await worktrees.close();
     db.close();
   });
 
@@ -88,6 +107,8 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
   function prepare(run: Run) {
     // Never reuse an existing repository or resolve the demo target from an HTTP input.
     mkdirSync(run.repository, { mode: 0o700 });
+    if (safeDataDirectory(directory, 'example-' + run.id) !== run.repository)
+      throw new Error('演练仓库路径已改变。');
     git(run.repository, ['init', '-b', 'main', '--template=']);
     writeFileSync(join(run.repository, 'README.md'), '# 按负责人筛选\n\nConcordia 的本地代码交付演练。\n', {
       flag: 'wx',
@@ -172,6 +193,7 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
         !['failed', 'interrupted', 'merged', 'branch-only'].includes(existing.phase))
     )
       return reply.code(409).send({ error: '请重新查看当前演练状态。' });
+    if (!allowed()) return reply.code(409).send({ error: '请先核对中断执行并确认服务仍可运行。' });
     const id = randomUUID();
     const run: Run = { id, phase: 'building', repository: join(directory, 'example-' + id) };
     save(run);
@@ -197,7 +219,12 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
       run.command?.id !== args.data.approvalId
     )
       return reply.code(409).send({ error: '项目命令票据已失效或与当前快照不符。' });
+    if (!allowed()) return reply.code(409).send({ error: '请先核对中断执行并确认服务仍可运行。' });
     save({ ...run, phase: 'testing' });
+    let settle!: () => void;
+    activeRequest = new Promise((resolve) => {
+      settle = resolve;
+    });
     try {
       const execution = scheduler.claim('integrate');
       for (const v of run.snapshot) {
@@ -228,6 +255,9 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
       scheduler.recover();
       save({ ...run, phase: 'failed', reason: '联调未完成，请检查工作区和测试命令。' });
       return reply.code(409).send(state());
+    } finally {
+      activeRequest = undefined;
+      settle();
     }
     return state();
   });
@@ -238,6 +268,7 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
     if (!args.success) return reply.code(400).send({ error: '需要在审阅 diff 后批准此合并。' });
     if (!run || run.phase !== 'review-merge' || run.review?.id !== args.data.approvalId)
       return reply.code(409).send({ error: '合并票据已失效或与当前快照不符。' });
+    if (!allowed()) return reply.code(409).send({ error: '请先核对中断执行并确认服务仍可运行。' });
     save({ ...run, phase: 'merging' });
     try {
       const result = worktrees.approveMerge(args.data.approvalId);
@@ -253,4 +284,5 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string) {
     }
     return state();
   });
+  return { stop };
 }

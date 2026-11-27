@@ -5,15 +5,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { serveDelivery } from '../src/delivery.ts';
+import { exampleFiles } from '../src/delivery-example.ts';
 import { git } from '../src/worktrees/git.ts';
 
 let root: string;
 let app: FastifyInstance;
+let control: ReturnType<typeof serveDelivery>;
+let permitted: boolean;
 function open() {
   app = Fastify();
-  serveDelivery(app, root);
+  control = serveDelivery(app, root, () => {
+    if (!permitted) throw new Error('unresolved');
+  });
 }
 beforeEach(() => {
+  permitted = true;
   root = mkdtempSync(join(tmpdir(), 'concordia-delivery-'));
   open();
 });
@@ -104,4 +110,41 @@ it('an interrupted rehearsal never launches another command or repurposes the pr
   expect(next.phase).toBe('approve-test');
   expect(next.repository).not.toBe(started.repository);
   expect(readFileSync(join(started.repository, 'personal-notes'), 'utf8')).toBe('keep');
+}, 60_000);
+
+it('blocks new side effects while process recovery is unresolved without losing the approval', async () => {
+  permitted = false;
+  expect((await post('start', { approved: true })).statusCode).toBe(409);
+  expect((await app.inject('/api/delivery')).json().phase).toBe('idle');
+  permitted = true;
+  const ready = (await post('start', { approved: true })).json();
+  permitted = false;
+  expect((await post('test', { approved: true, approvalId: ready.command.id })).statusCode).toBe(409);
+  permitted = true;
+  const review = (await post('test', { approved: true, approvalId: ready.command.id })).json();
+  permitted = false;
+  expect((await post('merge', { approved: true, approvalId: review.review.id })).statusCode).toBe(409);
+  expect((await app.inject('/api/delivery')).json().phase).toBe('review-merge');
+}, 60_000);
+
+it('global stop waits for an active demonstration command and records its termination', async () => {
+  const original = exampleFiles.qa['filter.test.mjs'];
+  let ready;
+  try {
+    exampleFiles.qa['filter.test.mjs'] =
+      "import {setTimeout} from 'node:timers/promises'; await setTimeout(30_000);";
+    ready = (await post('start', { approved: true })).json();
+  } finally {
+    exampleFiles.qa['filter.test.mjs'] = original;
+  }
+  const request = post('test', { approved: true, approvalId: ready.command.id }).then((r) => r.statusCode);
+  const deadline = Date.now() + 10000;
+  while ((await app.inject('/api/delivery')).json().phase !== 'testing') {
+    if (Date.now() > deadline) throw new Error('测试未启动');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await control.stop();
+  expect(await request).toBe(409);
+  expect((await app.inject('/api/delivery')).json().phase).toBe('failed');
+  expect(git(ready.repository, ['rev-parse', 'HEAD']).trim()).toBe(ready.command.targetSha);
 }, 60_000);
