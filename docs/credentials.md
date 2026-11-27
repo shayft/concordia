@@ -19,3 +19,9 @@ Linux 无图形会话、系统后端缺失或用户取消解锁时，命令会�
 ## 实现依据
 
 2026-11-27 核对了 npm 发布包的类型声明和维护者文档。应用使用 `@napi-rs/keyring@2.1.2` 的 `AsyncEntry(service, username, options)`、`setPassword(value)` 和 `getPassword(signal)`。Linux 固定传入 `{ linux: { store: 'secret-service' } }`。系统已开始的解锁操作可能晚于取消返回，调用方丢弃迟到结果。终端输入由 `@inquirer/password@5.3.1` 处理，禁用回显和显示明文的快捷键。[keyring-node 文档](https://github.com/Brooooooklyn/keyring-node/blob/52184fbebffeef8a061234f60f313c479b954f9f/README.md) · [各平台后端依赖](https://github.com/Brooooooklyn/keyring-node/blob/52184fbebffeef8a061234f60f313c479b954f9f/Cargo.toml) · [Inquirer 隐藏输入](https://github.com/SBoudrias/Inquirer.js/blob/6570b8e4d5e33a00dad2b55fa5f5fa5d148a245b/packages/password/README.md)
+
+## 托管系统验证
+
+在 GitHub Actions 里选择 **Native credential stores → Run workflow**。三个作业在各自的临时用户会话中执行 `node packages/providers/test-native/vault.ts`。Linux 作业启动独立的 D-Bus 会话和 GNOME Keyring，其数据、配置和运行目录均位于本次创建的临时目录。macOS 和 Windows 作业使用托管账户的原生后端。
+
+工具在内存中生成随机值，通过应用的凭据接口写入唯一测试条目并读回比对。删除后，工具分别向原生后端和应用确认该条目不存在。日志只记录平台、成功结果或失败阶段。缺少系统后端、解锁失败或超时都会使对应作业失败。该验证覆盖托管账户的凭据读写，个人桌面的授权弹窗和账户策略需在目标机器上另行验证。[托管运行器环境](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) · [GNOME Keyring 命令说明](https://github.com/GNOME/gnome-keyring/blob/master/docs/gnome-keyring-daemon.xml) · [绑定维护者的原生测试](https://github.com/Brooooooklyn/keyring-node/blob/52184fbebffeef8a061234f60f313c479b954f9f/.github/workflows/CI.yml)
