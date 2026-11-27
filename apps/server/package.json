@@ -1,0 +1,14 @@
+{
+  "name": "@concordia/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@concordia/providers": "workspace:*",
+    "@concordia/runtimes": "workspace:*",
+    "@concordia/store": "workspace:*",
+    "@concordia/protocol": "workspace:*",
+    "fastify": "5.12.8",
+    "zod": "4.6.7"
+  }
+}

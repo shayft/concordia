@@ -1,0 +1,30 @@
+{
+  "name": "concordia",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24.16.0 <25"
+  },
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "build": "pnpm typecheck && pnpm --filter @concordia/web build",
+    "verify": "tsx apps/server/src/verify.ts",
+    "serve": "tsx apps/server/src/main.ts",
+    "credential:set": "tsx packages/providers/src/credentials-set.ts",
+    "db:migrate": "tsx packages/store/src/migrate.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.0",
+    "eslint": "10.15.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.74.0",
+    "vitest": "5.1.2",
+    "vite": "8.4.0"
+  }
+}

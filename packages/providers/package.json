@@ -1,0 +1,16 @@
+{
+  "name": "@concordia/providers",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@concordia/protocol": "workspace:*",
+    "zod": "4.6.7",
+    "@napi-rs/keyring": "2.1.2",
+    "@inquirer/password": "5.3.1"
+  }
+}
