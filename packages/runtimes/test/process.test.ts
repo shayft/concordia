@@ -25,12 +25,20 @@ async function treeCommand(directory: string, mode: string) {
 }
 
 const scratch: string[] = [];
-const running = new Set<AbortController>();
+const running = new Map<AbortController, ReturnType<typeof runProcess>>();
 
 afterEach(async () => {
-  for (const controller of running) controller.abort();
+  for (const controller of running.keys()) controller.abort();
+  // A failed assertion can reach this hook before its Job has been closed.
+  await Promise.allSettled(running.values());
   running.clear();
-  for (const directory of scratch.splice(0)) await rm(directory, { recursive: true, force: true });
+  for (const directory of scratch.splice(0)) {
+    // Windows may still deny unlink on an executable image after all tested
+    // PIDs have exited. Keep bounded retries in teardown and surface the last error.
+    await rm(directory, {
+      recursive: true, force: true, maxRetries: process.platform === 'win32' ? 8 : 0, retryDelay: 50,
+    });
+  }
 });
 
 async function waitFor(check: () => Promise<boolean>) {
@@ -64,12 +72,12 @@ it.each(['cancel', 'early'])('收回关闭了输出管道的三代进程 (%s)', 
   const directory = await mkdtemp(join(tmpdir(), 'concordia tree '));
   scratch.push(directory);
   const controller = new AbortController();
-  running.add(controller);
   const { executable, args } = await treeCommand(directory, mode);
   const testStart = Date.now();
   const result = runProcess(executable, args, {
     cwd: directory, signal: controller.signal, timeoutMs: 7000, graceMs: 250,
   });
+  running.set(controller, result);
   const outcome = mode === 'cancel'
     ? expect(result).rejects.toThrow('取消')
     : expect(result).resolves.toMatchObject({ exitCode: 23 });
@@ -90,6 +98,7 @@ it.each(['cancel', 'early'])('收回关闭了输出管道的三代进程 (%s)', 
   expect(stopped).toEqual(mode === 'cancel' ? ['stopped-0', 'stopped-1', 'stopped-2'] : ['stopped-1', 'stopped-2']);
   for (const name of stopped) expect(await readFile(join(directory, name), 'utf8')).toBe(expectedSignal);
   for (const pid of pids) await waitFor(() => hasExited(pid));
+  await waitFor(() => hasExited(owner!.pid));
 }, 10_000);
 
 it('不经 shell 传递包含空格、引号和元字符的参数，保留退出码', async () => {
