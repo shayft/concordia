@@ -1,11 +1,12 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
-import { activeProcessGroups, runProcess } from '../src/process.ts';
+import { activeProcessGroups, recoverProcessGroups, runProcess } from '../src/process.ts';
 
 import { compileWindowsFixture } from './fixtures/compile-windows.ts';
 
@@ -126,13 +127,15 @@ it('调用方强制退出后，管理器通过 IPC 断开回收树', async () =>
   const runModule = new URL('../src/process.ts', import.meta.url).href;
   const client = spawn(process.execPath, [
     '--input-type=module', '-e',
-    'const [module, fixture, dir] = process.argv.slice(1); const { runProcess } = await import(module); await runProcess(process.execPath, [fixture, dir, "0", "cancel"]);',
+    'const [module, fixture, dir] = process.argv.slice(1); const { runProcess } = await import(module); await runProcess(process.execPath, [fixture, dir, "0", "cancel"], {recoveryDir: dir, executionId:"interrupted-attempt"});',
     runModule, fixture, directory,
   ], { shell: false, stdio: 'ignore' });
   try {
     await waitFor(() => stat(join(directory, 'leaf-ready')).then(() => true, () => false));
     const pids = await Promise.all([0, 1, 2].map(async depth => Number(await readFile(join(directory, 'pid-' + depth), 'utf8'))));
     client.kill('SIGKILL');
+    expect(await recoverProcessGroups(directory)).toEqual({ recovered:['interrupted-attempt'], unresolved:[] });
+    expect(await recoverProcessGroups(directory)).toEqual({ recovered:[], unresolved:[] });
     for (const pid of pids) await waitFor(() => hasExited(pid));
     expect(await readFile(join(directory, 'stopped-2'), 'utf8')).toBe(expectedSignal);
   } finally {
@@ -146,3 +149,22 @@ it('管理器本身被外力终止时明确报告清理结果未知', async () =
   ])).rejects.toThrow('无法确认清理结果');
   expect(activeProcessGroups()).toHaveLength(0);
 });
+
+it('提示通过 stdin 传达，正常退出时移除持久化进程登记',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'concordia lease ')); scratch.push(dir);
+  const input='含中文与换行\n$unexpanded';
+  const result=await runProcess(process.execPath,['-e',"process.stdin.pipe(process.stdout)"],{stdin:input,recoveryDir:dir,executionId:'ok'});
+  expect(result.stdout).toBe(input);
+  expect(await readdir(dir)).toEqual([]);
+});
+
+it('过期登记指向另一个活进程组时保留记录，绝不向该组发信',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'concordia stale ')); scratch.push(dir);
+  const other=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',shell:false});
+  try {
+    const id=randomUUID();
+    await writeFile(join(dir,id+'.json'),JSON.stringify({id,pid:other.pid,startedAtMs:1,executionId:'old'}));
+    expect(await recoverProcessGroups(dir)).toEqual({recovered:[],unresolved:['old']});
+    expect(await hasExited(other.pid!)).toBe(false);
+  } finally { other.kill('SIGKILL'); }
+},10000);

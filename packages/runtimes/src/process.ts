@@ -1,8 +1,13 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { forgetSupervisor } from './process-recovery.ts';
+export { recoverProcessGroups } from './process-recovery.ts';
 
 export interface ProcessOptions {
   cwd?: string;
+  stdin?: string;
+  recoveryDir?: string;
+  executionId?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -26,7 +31,7 @@ const supervisorFile = fileURLToPath(new URL('./process-supervisor.ts', import.m
 
 /** Live, in-memory observations of group owners. Never signal a recorded PID. */
 export function activeProcessGroups(): ReadonlyArray<ProcessGroup> {
-  return Array.from(groups, group => ({ ...group }));
+  return Array.from(groups, (group) => ({ ...group }));
 }
 
 function positiveInteger(value: number, name: string) {
@@ -47,7 +52,8 @@ export async function runProcess(
   if (options.signal?.aborted) throw new Error('进程运行已取消');
   // The trusted supervisor holds the group ID / job handle through cleanup.
   // Caller-controlled Node options belong only to the target CLI environment.
-  const bootstrapEnv: NodeJS.ProcessEnv = process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {};
+  const bootstrapEnv: NodeJS.ProcessEnv =
+    process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot } : {};
   const child = spawn(process.execPath, [supervisorFile], {
     detached: true,
     shell: false,
@@ -65,6 +71,7 @@ export async function runProcess(
     let group: ProcessGroup | undefined;
     let stopping = false;
     let retiring = false;
+    let recordId: string | undefined;
     let targetExit: number | null | undefined;
 
     function stop(reason?: string) {
@@ -75,7 +82,7 @@ export async function runProcess(
         // Before the ready/start handshake, the supervisor has spawned no CLI.
         child.kill('SIGKILL');
       } else if (child.connected) {
-        child.send({ type: 'stop', graceMs }, err => {
+        child.send({ type: 'stop', graceMs }, (err) => {
           // Closing the channel triggers the same cleanup inside the owner.
           if (err && child.connected) child.disconnect();
         });
@@ -96,16 +103,32 @@ export async function runProcess(
       switch (message.type) {
         case 'ready':
           if (stopping || group || !child.pid) return;
-          if (!('pid' in message) || message.pid !== child.pid || !('startedAtMs' in message)
-            || typeof message.startedAtMs !== 'number' || !Number.isFinite(message.startedAtMs)) {
+          if (
+            !('pid' in message) ||
+            message.pid !== child.pid ||
+            !('startedAtMs' in message) ||
+            typeof message.startedAtMs !== 'number' ||
+            !Number.isFinite(message.startedAtMs)
+          ) {
             stop('无法确认受控进程身份');
             return;
           }
           group = { pid: child.pid, startedAtMs: message.startedAtMs };
           groups.add(group);
-          child.send({ type: 'start', executable, args, env: options.env ?? bootstrapEnv }, err => {
-            if (err) stop('无法启动受控进程');
-          });
+          child.send(
+            {
+              type: 'start',
+              executable,
+              args,
+              stdin: options.stdin,
+              recoveryDir: options.recoveryDir,
+              executionId: options.executionId,
+              env: options.env ?? bootstrapEnv,
+            },
+            (err) => {
+              if (err) stop('无法启动受控进程');
+            },
+          );
           break;
         case 'finished':
           if ('code' in message && (message.code === null || typeof message.code === 'number')) {
@@ -114,6 +137,9 @@ export async function runProcess(
             // Also retire any helpers still alive after a normal CLI return.
             stop();
           }
+          break;
+        case 'registered':
+          if ('id' in message && typeof message.id === 'string') recordId = message.id;
           break;
         case 'retiring':
           retiring = true;
@@ -136,6 +162,13 @@ export async function runProcess(
     });
     child.on('close', () => {
       clearTimeout(deadline);
+      if (retiring && recordId && options.recoveryDir) {
+        try {
+          forgetSupervisor(options.recoveryDir, recordId);
+        } catch {
+          failure ??= new Error('进程清理记录需要在重启时核对。');
+        }
+      }
       options.signal?.removeEventListener('abort', abort);
       if (failure || targetExit === undefined) {
         reject(failure ?? new Error('受控进程意外退出'));
