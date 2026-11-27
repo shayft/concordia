@@ -6,6 +6,7 @@ export { recoverProcessGroups } from './process-recovery.ts';
 export interface ProcessOptions {
   cwd?: string;
   stdin?: string;
+  observeStdout?: (chunk: Buffer) => void;
   recoveryDir?: string;
   executionId?: string;
   env?: NodeJS.ProcessEnv;
@@ -94,7 +95,12 @@ export async function runProcess(
     function capture(chunk: Buffer, output: Buffer[]) {
       bytes += chunk.length;
       if (bytes > limit) stop('进程输出超过限制');
-      else output.push(chunk);
+      else {
+        output.push(chunk);
+        if (output === stdout && !stopping && options.observeStdout) {
+          try { options.observeStdout(chunk); } catch { stop('无法安全登记 CLI 会话'); }
+        }
+      }
     }
     child.stdout!.on('data', (chunk: Buffer) => capture(chunk, stdout));
     child.stderr!.on('data', (chunk: Buffer) => capture(chunk, stderr));

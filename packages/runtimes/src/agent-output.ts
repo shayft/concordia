@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
 import { CliDiagnosticError, nativeCliFailure } from './errors.ts';
 import type { CliKind } from './environment.ts';
@@ -19,7 +20,10 @@ export function decodeAgentOutput(kind: CliKind, output: string) {
     try { return JSON.parse(s); } catch { throw new CliDiagnosticError('CLI 输出格式错误。'); }
   };
   if (kind === 'claude') {
-    const data = claude.safeParse(decode(output));
+    const rows = output.trim().split(/\r?\n/).map(decode);
+    const results = rows.filter(row => !!row && typeof row === 'object' && 'type' in row && row.type === 'result');
+    if (results.length !== 1) throw new CliDiagnosticError('Claude Code 缺少唯一的本次结果。');
+    const data = claude.safeParse(results[0]);
     if (!data.success) throw new CliDiagnosticError('Claude Code 结果格式未知。');
     const { session_id, result, permission_denials, ...meta } = data.data;
     return { session: session_id, text: result ?? '', usage: meta.usage,
@@ -55,4 +59,34 @@ export function decodeAgentOutput(kind: CliKind, output: string) {
   }
   if (!completed || !session) throw new CliDiagnosticError('Codex CLI 缺少终止事件。');
   return { session, text, usage: tokens, denied: false, success: true };
+}
+
+// The observer sees bounded stdout only in memory. Retain only the official
+// initialization UUID, before an interrupted turn can lose its final message.
+export function watchSessionStart(kind: CliKind, save: (id: string) => void) {
+  const decoder = new StringDecoder('utf8');
+  let pending = '';
+  let found = false;
+  return (chunk: Buffer) => {
+    if (found) return;
+    pending += decoder.write(chunk);
+    const lines = pending.split('\n');
+    pending = lines.pop()!;
+    for (const line of lines) {
+      let event: unknown;
+      try { event = JSON.parse(line); } catch { continue; }
+      if (!event || typeof event !== 'object' || !('type' in event)) continue;
+      let id: unknown;
+      if (kind === 'claude' && event.type === 'system' && 'subtype' in event && event.subtype === 'init' && 'session_id' in event) id = event.session_id;
+      if (kind === 'codex' && event.type === 'thread.started' && 'thread_id' in event) id = event.thread_id;
+      if (id !== undefined) {
+        const result = thread.safeParse(id);
+        if (!result.success) throw new CliDiagnosticError('初始 CLI 会话编号无效。');
+        save(result.data);
+        found = true;
+        pending = '';
+        return;
+      }
+    }
+  };
 }
