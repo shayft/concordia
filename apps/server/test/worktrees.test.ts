@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -16,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { openWorktrees, type WorktreeService } from '../src/worktrees.ts';
+import { git as platformGit } from '../src/worktrees/git.ts';
 
 let base: string, repo: string, data: string, service: WorktreeService;
 const run = (cwd: string, ...args: string[]) =>
@@ -209,4 +211,17 @@ it('仓库离线时仍能打开其他项目、读取冲突快照，并保留不�
   );
   expect(() => service.approveMerge(pending.id)).toThrow();
   expect(service.member('other', 'still-here').status).toBe('ready');
+});
+
+it('平台 Git 使用普通文件屏蔽外部全局配置和项目预提交钩子', { timeout: 60_000 }, () => {
+  expect(platformGit(repo, ['config', '--global', '--name-only', '--list']).trim()).toBe('');
+  const defaults = platformGit(repo, ['config', '--get', 'core.hooksPath']).trim();
+  expect(readFileSync(defaults, 'utf8')).toMatch(/^# Concordia/);
+  const hook = join(repo, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\nexit 72\n');
+  chmodSync(hook, 0o755);
+  service.configure(config(true));
+  const member = service.member('demo', 'hook-check');
+  service.write(member.id, 'new.txt', 'ordinary change');
+  expect(service.publish(member.id).sha).not.toBe(member.base);
 });
