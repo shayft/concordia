@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { State, WorkflowEvent } from '@concordia/core/workflow';
 import { startLocalServer } from '../src/local-server.ts';
+import { git } from '../src/worktrees/git.ts';
 
 const spec = {
   id: 'sample', title: '交付样例', goal: '让下游按指定样例验收', acceptance: ['可读版本'],
@@ -51,9 +52,11 @@ function finish(res: ServerResponse, content: unknown) {
 
 async function gateway() {
   const queue: Array<(res:ServerResponse)=>void> = [];
+  const messages: unknown[] = [];
   const seen: Array<{stream:unknown; model:unknown; url:unknown; authorization:boolean}> = [];
   const srv = createServer(async (req,res) => {
-    const input: {model:unknown;stream:unknown} = JSON.parse(await text(req));
+    const input: {model:unknown;stream:unknown;messages:unknown} = JSON.parse(await text(req));
+    messages.push(input.messages);
     seen.push({ stream: input.stream, model:input.model, url:req.url, authorization:req.headers.authorization!==undefined });
     const dispatch = queue.shift();
     if (!dispatch) { res.writeHead(500).end();return; }
@@ -64,7 +67,7 @@ async function gateway() {
   await once(srv,'listening');
   const addr = srv.address();
   if (!addr || typeof addr === 'string') throw new Error('缺少本地测试端口');
-  return {queue,seen,baseUrl:'http://127.0.0.1:'+addr.port+'/custom/v1',close: async () => {
+  return {queue,seen,messages,baseUrl:'http://127.0.0.1:'+addr.port+'/custom/v1',close: async () => {
     const closed=once(srv,'close');srv.close();srv.closeAllConnections();await closed;
   }};
 }
@@ -218,3 +221,124 @@ it('阶段 5：强制终止 HTTP 服务后，同一目录重新启动可追赶 S
   } finally {controller.abort();}
   expect(api.seen).toHaveLength(1);
 },25_000);
+
+it('通用 Worker 从绑定树提交版本，只读下游从该 SHA 读文件；同名跨工作区任务不能借用原树', async () => {
+  const repository = join(directory, 'user-project');
+  await mkdir(repository);
+  git(repository, ['init', '-b', 'main', '--template=']);
+  await writeFile(join(repository, 'README.md'), '用户项目基准');
+  git(repository, ['add', '--', 'README.md']);
+  git(repository, ['commit', '-m', '临时验收基准']);
+  const base = git(repository, ['rev-parse', 'HEAD']).trim();
+  app = await startLocalServer(web, data);
+  const ui = await login(app);
+  await configure(ui);
+  const plan = {
+    ...spec,
+    id: 'same-plan',
+    requiredSlots: ['sample', 'inspection'],
+    slots: [...spec.slots, { id: 'inspection', title: '读取结果' }],
+    tasks: [
+      ...spec.tasks,
+      {
+        id: 'inspect',
+        title: '按已发布版本检查文件',
+        owner: 'lead',
+        consumes: [{ slotId: 'sample' }],
+        produces: ['inspection'],
+      },
+    ],
+  };
+  await apply(ui, plan);
+  const project = { id: 'user-repo', repository, targetBranch: 'main', writeEnabled: true, commands: [] };
+  expect((await ui.post('/api/worktrees/projects', project)).ok).toBe(true);
+  const createTree = () => ui.post('/api/worktrees/member', { projectId: project.id, taskId: 'write' });
+  const treeResponse = await createTree();
+  expect(treeResponse.ok).toBe(true);
+  const member = (await treeResponse.json()) as { id: string; path: string };
+  const path = 'lib/version.txt',
+    published = '发布时的正文',
+    later = '尚未交付的本地改动';
+  api.queue.push((res) =>
+    finish(res, {
+      actions: [
+        { type: 'write_file', path, content: published },
+        { type: 'commit_artifact', slotId: 'sample' },
+        { type: 'request_review', taskId: 'write' },
+      ],
+    }),
+  );
+  const bound = { mode: 'live', approved: true, projectId: project.id, treeId: member.id };
+  expect((await ui.post('/api/tasks/write/run', bound)).ok).toBe(true);
+  await vi.waitFor(
+    async () => expect((await board(ui)).tasks.find((t) => t.id === 'write')?.status).toBe('review'),
+    { timeout: 10000 },
+  );
+  const version = (await board(ui)).versions.find((v) => v.slotId === 'sample')!;
+  expect(version.kind).toBe('git_commit');
+  const record = (await (await ui.get('/api/versions/' + version.id)).json()) as { content: string };
+  expect(record.content).toBe(git(member.path, ['rev-parse', 'HEAD']).trim());
+  expect(git(repository, ['show', record.content + ':' + path])).toBe(published);
+  // Simulate an unpublished edit after the slot was fulfilled.
+  await writeFile(join(member.path, path), later);
+  api.queue.push((res) =>
+    finish(res, { type: 'read_artifact', slotId: 'sample', versionId: version.id, path }),
+  );
+  api.queue.push((res) =>
+    finish(res, {
+      actions: [
+        { type: 'publish_artifact', slotId: 'inspection', content: '已读取' },
+        { type: 'request_review', taskId: 'inspect' },
+      ],
+    }),
+  );
+  expect((await ui.post('/api/tasks/inspect/run', { mode: 'live', approved: true, maxCalls: 2 })).ok).toBe(
+    true,
+  );
+  await vi.waitFor(async () =>
+    expect((await board(ui)).tasks.find((t) => t.id === 'inspect')?.status).toBe('review'),
+  );
+  const delivered = JSON.stringify(api.messages.at(-1));
+  expect(delivered).toContain(published);
+  expect(delivered).not.toContain(later);
+  expect((await board(ui)).versions.find((v) => v.slotId === 'inspection')?.basedOn).toEqual({
+    sample: version.id,
+  });
+  expect(git(repository, ['rev-parse', 'HEAD']).trim()).toBe(base);
+  expect(git(repository, ['status', '--porcelain'])).toBe('');
+  const oldCalls = api.seen.length;
+  expect((await ui.post('/api/workspaces', { name: '同名任务的另一个工作区' })).ok).toBe(true);
+  await apply(ui, plan);
+  expect((await ui.post('/api/tasks/write/run', bound)).status).toBe(409);
+  expect((await ui.get('/api/versions/' + version.id)).ok).toBe(false);
+  expect(api.seen).toHaveLength(oldCalls);
+  const foreign = await createTree();
+  expect(foreign.ok).toBe(true);
+  expect(((await foreign.json()) as { id: string }).id).not.toBe(member.id);
+  api.queue.push((res) =>
+    finish(res, {
+      actions: [
+        { type: 'publish_artifact', slotId: 'sample', content: '第二个工作区自己的占位版本' },
+        { type: 'request_review', taskId: 'write' },
+      ],
+    }),
+  );
+  expect((await ui.post('/api/tasks/write/run', { mode: 'live', approved: true })).ok).toBe(true);
+  await vi.waitFor(async () =>
+    expect((await board(ui)).tasks.find((t) => t.id === 'write')?.status).toBe('review'),
+  );
+  api.queue.push((res) =>
+    finish(res, { type: 'read_artifact', slotId: 'sample', versionId: version.id, path }),
+  );
+  expect((await ui.post('/api/tasks/inspect/run', { mode: 'live', approved: true, maxCalls: 2 })).ok).toBe(
+    true,
+  );
+  await vi.waitFor(async () => {
+    const b = await board(ui);
+    const execution = b.executions.find((e) => e.taskId === 'inspect');
+    expect(execution?.status).toBe('failed');
+    expect(b.versions.some((v) => v.slotId === 'inspection')).toBe(false);
+  });
+  expect(api.seen).toHaveLength(oldCalls + 2);
+  expect(JSON.stringify(api.messages.slice(oldCalls))).not.toContain(published);
+}, 30_000);

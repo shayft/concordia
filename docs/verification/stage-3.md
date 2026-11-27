@@ -9,6 +9,7 @@
 | 按版本快照联调，运行项目声明的命令 | 模拟测试通过 | A。联调任务核对每个输入版本的 SHA，批准对应票据后在联调树中运行 `node --test filter.test.mjs`，退出码为 0。覆盖按指定成员筛选、仅看未分配、清除筛选。 |
 | 对照 diff 后单独批准合并 | 模拟测试通过 | A。测试通过后产生绑定目标 SHA 和联调 SHA 的 diff。使用命令票据批准合并或重复批准会被拒绝；正确批准后目标 HEAD 等于联调 SHA。重开服务可以继续审阅相同快照。 |
 | 同一团队经 CLI MCP 发布、HTTP API 审查并验收 | 模拟测试通过 | B。假 CLI 在真正的子进程中发布契约，进程仍运行时，已批准批次自动唤醒本机 HTTP 审查成员。服务记录指定输入版本与审查产物的关联，随后验收两项版本。 |
+| 通用 Worker 在用户绑定的项目中交付 Git 版本，只读成员按版本取文件 | 模拟测试通过 | C。通过 HTTP API 配置演练目录以外的 Git 仓库。写入成员发布提交后，手工改动其工作树中的同名文件。只读下游取得发布时的正文，目标分支仍在原 SHA。另一个工作区使用相同计划及任务名时，不能借用旧树或指定旧版本取得文件。 |
 | 使用一个真实 CLI 和一个真实 API 完成版本发布、唤醒、提问与自动移卡 | 尚未验证 | 本次演练的 `mode` 为 `simulated-agents`。Linux、macOS、Windows 均待本人用原生 CLI、真实网关和实际计费授权演示。 |
 
 **命令 A** 在仓库根目录执行，3 个测试文件、13 项通过。Web 交互用例通过 DOM 测试驱动操作命令审批及 diff 审批。
@@ -21,6 +22,12 @@ node_modules/.bin/vitest run apps/server/test/delivery.test.ts apps/server/test/
 
 ```sh
 node_modules/.bin/vitest run apps/server/test/mixed-team.test.ts
+```
+
+**命令 C** 在 Linux 执行，1 项通过；标题过滤未选中 3 项其他用例。使用正式服务路由和两个工作区、真实 Git 仓库与本机模拟 HTTP API。
+
+```sh
+node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '通用 Worker'
 ```
 
 用户真实混合演示时，应记录平台、CLI 路径／版本／实际参数、批准的连接和模型、任务与交付版本、联调 SHA、批准的测试退出码、diff 及最终合并 SHA。CLI 无法可靠报告的计费来源记“未知”。
