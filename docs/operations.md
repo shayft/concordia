@@ -32,7 +32,7 @@ pnpm exec tsx apps/server/src/backup.ts create "/absolute/data" "/absolute/backu
 pnpm exec tsx apps/server/src/backup.ts restore "/absolute/backups/concordia-01" "/absolute/restored"
 ```
 
-备份命令取得服务独占锁，对 `catalog.sqlite`、`worktrees.sqlite` 和各看板的 `workspace.sqlite` 进行完整性及外键检查，再通过 SQLite 备份 API 导出包含已提交 WAL 事务的快照。它复制 `boards`、`objects` 和 `worktrees` 中的应用数据，包括工作树中尚未提交的文件。工作树内的符号链接只复制链接本身。发布备份前核对内容寻址对象文件名与 SHA-256；恢复时校验整个目录的路径、类型、文件内容和链接目标。只有校验完成才发布目标目录。备份中包含原有的私人讨论和项目源码，应按本地账户的数据保管；SHA-256 用于发现损坏，更换备份介质时请从可信位置取得副本。[Node.js SQLite 备份接口](https://nodejs.org/docs/latest-v24.x/api/sqlite.html#sqlitebackupsource-path-options)
+备份命令取得服务独占锁，对 `catalog.sqlite`、`worktrees.sqlite` 和各看板的 `workspace.sqlite` 进行完整性及外键检查，再通过 SQLite 备份 API 导出包含已提交 WAL 事务的快照。它一并备份演练目录 `assignee-delivery`（含演练仓库、SQLite 和工作树），并复制 `boards`、`objects` 和 `worktrees` 中的应用数据，包括工作树中尚未提交的文件。工作树内的符号链接只复制链接本身。发布备份前核对内容寻址对象文件名与 SHA-256；恢复时校验整个目录的路径、类型、文件内容和链接目标。只有校验完成才发布目标目录。备份中包含原有的私人讨论和项目源码，应按本地账户的数据保管；SHA-256 用于发现损坏，更换备份介质时请从可信位置取得副本。[Node.js SQLite 备份接口](https://nodejs.org/docs/latest-v24.x/api/sqlite.html#sqlitebackupsource-path-options)
 
 锁、PID 登记和临时 CLI 工作目录属于运行现场，恢复时由应用重新建立。若源机器刚发生崩溃，应先在该机正常启动并核对遗留进程，停服后再备份。命令不操作系统凭据存储，备份中的连接凭据字段保留原来的 `keychain:` 引用。
 

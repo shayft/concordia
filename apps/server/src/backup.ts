@@ -7,8 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { acquireDataDirectory } from './data-directory.ts';
 
 const manifest = 'concordia-backup-v1.sha256';
-const applicationRoots = new Set(['catalog.sqlite', 'worktrees.sqlite', 'objects', 'boards', 'worktrees']);
-const dbFile = /^(?:catalog\.sqlite|worktrees\.sqlite|boards\/[^/]+\/workspace\.sqlite)$/u;
+const applicationRoots = new Set(['catalog.sqlite', 'worktrees.sqlite', 'objects', 'boards', 'worktrees', 'assignee-delivery']);
+const dbFile = /^(?:catalog\.sqlite|worktrees\.sqlite|boards\/[^/]+\/workspace\.sqlite|assignee-delivery\/(?:delivery|worktrees)\.sqlite)$/u;
 const sidecar = /-(?:shm|wal|journal)$/u;
 const privatePath = /(?:^|[\\/])\.(?:claude|codex)(?:[\\/]|$)/iu;
 const isManagedSidecar = (path: string) => sidecar.test(path) && dbFile.test(path.replace(sidecar, ''));
@@ -43,7 +43,7 @@ async function copyState(source: string, target: string, snapshot: boolean) {
     const stat = await lstat(from);
     if (stat.isSymbolicLink()) {
       // Git projects may contain symlinks. Copy only link metadata, never follow one.
-      if (!path.startsWith('worktrees/') || path.split('/').length < 3) throw new Error('应用数据不能指向外部文件。');
+      if (!/^(?:worktrees\/[^/]+|assignee-delivery\/(?:worktrees\/[^/]+|example-[^/]+))\//u.test(path)) throw new Error('应用数据不能指向外部文件。');
       await cp(from, to, { force: false, errorOnExist: true, verbatimSymlinks: true });
       digest.update(JSON.stringify([path, 'link', await readlink(to)]) + '\n');
     } else if (stat.isDirectory()) {
@@ -71,7 +71,7 @@ async function copyState(source: string, target: string, snapshot: boolean) {
       // Preserve executable bits for a restored project command while keeping backups private.
       if (process.platform !== 'win32') await chmod(to, 0o600 | (stat.mode & 0o100));
       const hash = await digestFile(to);
-      if (/^(?:boards\/[^/]+\/)?objects\/[a-f0-9]{64}$/u.test(path) && hash !== basename(path)) {
+      if (/^(?:boards\/[^/]+\/|assignee-delivery\/)?objects\/[a-f0-9]{64}$/u.test(path) && hash !== basename(path)) {
         throw new Error('交付物内容与 SHA-256 名称不匹配。');
       }
       digest.update(JSON.stringify([path, 'file', hash]) + '\n');

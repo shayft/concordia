@@ -53,6 +53,23 @@ it('恢复已提交的 SQLite/WAL、事件、内容对象和未提交的 worktre
   await expect(access(join(snapshot, 'server-lock.sqlite'))).rejects.toThrow();
 });
 
+it('演练的数据库、示例仓库和内容也位于快照中，运行时 PID 现场除外', async () => {
+  const demo = join(source, 'assignee-delivery');
+  await mkdir(join(demo, 'example-test', '.git'), {recursive:true});
+  await writeFile(join(demo, 'example-test', '.git', 'HEAD'), 'ref: refs/heads/main');
+  const ledger = openStore(join(demo, 'delivery.sqlite'));
+  ledger.exec("CREATE TABLE rehearsal (phase TEXT); INSERT INTO rehearsal VALUES ('ready')");
+  ledger.close();
+  await mkdir(join(source, 'processes'));
+  await writeFile(join(source, 'processes', 'placeholder'), '模拟运行登记');
+  await copyApplicationState('create', source, snapshot);
+  await copyApplicationState('restore', snapshot, restored);
+  expect(await readFile(join(restored,'assignee-delivery/example-test/.git/HEAD'),'utf8')).toBe('ref: refs/heads/main');
+  const db = openStore(join(restored, 'assignee-delivery/delivery.sqlite'));
+  try { expect(db.prepare('SELECT phase FROM rehearsal').get()?.phase).toBe('ready'); } finally { db.close(); }
+  await expect(access(join(restored,'processes'))).rejects.toThrow();
+});
+
 it('拒绝占用中的目录、重叠目录和覆盖旧备份', async () => {
   const lock = acquireDataDirectory(source);
   try { await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('占用'); } finally { lock.release(); }
