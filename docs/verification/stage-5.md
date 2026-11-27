@@ -41,10 +41,12 @@ pnpm serve
 
 用户个人设备的 Finder、Windows 桌面及 Linux 图形启动器、三平台已有订阅的计费来源、系统凭据解锁和三位真实成员的协作仍为「尚未验证」。安装和卸载演练使用专用临时目录；未操作使用中的个人安装、系统凭据项或现有 CLI 认证目录。源项目与目标分支的人工合并审批仍是正式验收的一步。[安装、备份与卸载说明](../operations.md)
 
-## 最终三平台回归
+## 源码 c110272 的三平台回归
 
 2026-11-27，提交 `c110272`。三个托管系统均从冻结锁安装，并通过 `pnpm lint`、`pnpm test` 和含严格类型检查的 `pnpm build`。本阶段涉及模拟连接的用例为「模拟测试通过」。整仓在 Linux 和 macOS 各 201 项通过、2 项跳过，Windows 197 项通过、6 项跳过。个人账号、计费和桌面验收状态沿用上表。[逐系统作业、跳过原因及统一测试步骤](README.md) · [GitHub Actions](https://github.com/shayft/concordia/actions/runs/45996818506)
 
 ## CLI 与 API 同时运行时强退
 
 2026-11-27，`821cf64`，模拟测试通过。在云端 Linux 执行 `pnpm exec vitest run apps/server/test/crash-recovery-mixed.test.ts`，1 项通过。测试在同一个正式服务实例中同时运行三代假 Codex 进程和回环 HTTP 请求，在两个任务执行中强制终止服务，再用同一数据目录重启。恢复后 CLI 三个进程均已退出，两个 execution 均为 `interrupted`，对应卡均为 `decision`，此前交付的版本仍可取用。HTTP 对端只收到原来的一次请求，等待用户决定重试。
+
+Windows Server 2025 补验了假 CLI 根进程早退。全量回归通过后连跑三次 `pnpm exec vitest run packages/runtimes/test/process.test.ts -t early`，每次选中的用例均通过。根进程保留退出码 23，后代收到 CTRL_BREAK，校验全部 PID 与管理器退出后才删除临时目录。上一次作业失败于删除测试程序时的短暂文件占用。[最终 Windows 作业](https://github.com/shayft/concordia/actions/runs/46000757825/job/140511488671)

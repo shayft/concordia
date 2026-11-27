@@ -10,7 +10,27 @@
 | [4 · 通用分派](stage-4.md) | 从目标生成计划、批准前预览、会议、改派、返工、流式协议及有限 JSON 修复 |
 | [5 · 安全与交付](stage-5.md) | 强制重启、进程回收、限额、脱敏导出、访问控制、安装和灾后恢复 |
 
-## 托管三平台回归记录
+## 当前交付版本
+
+2026-11-27，提交 `702939bdef021599dd0660568763709966f2826b`。三台托管机均完成 `pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm test`、`pnpm build`（含严格类型检查）和 `pnpm test:browser`。每个系统收集 225 项 Vitest 用例。另在云端 Linux 工作区独立运行冻结锁安装、lint、构建和全套 Vitest，223 项通过、2 项跳过。[完整运行](https://github.com/shayft/concordia/actions/runs/46000757825)
+
+| 托管系统 | Vitest 回归 | 安装、构建及启用沙箱的真实 Chrome |
+| --- | --- | --- |
+| Ubuntu 26.04.1 LTS x64 | 模拟测试通过，223 通过、2 跳过 | 真实 Linux 测试通过。[作业日志](https://github.com/shayft/concordia/actions/runs/46000757825/job/140511488269) |
+| macOS 26.7.2 ARM64 | 模拟测试通过，223 通过、2 跳过 | 真实 macOS 测试通过。[作业日志](https://github.com/shayft/concordia/actions/runs/46000757825/job/140511488664) |
+| Windows Server 2025 x64 | 模拟测试通过，219 通过、6 跳过 | 真实 Windows 测试通过。[作业日志](https://github.com/shayft/concordia/actions/runs/46000757825/job/140511488671) |
+
+三台机器均实际完成一次性会话、模板预览、批准、六卡模拟交付、验收快照与刷新回读。两款 CLI 尚缺个人账号真实回放，各系统均跳过这两项。Windows 另跳过四项 Unix 文件链接场景，使用 Windows 的目录联接、硬链接及原生进程回归验证平台边界。
+
+Windows 上一轮在临时测试程序的清理阶段出现一次 `EPERM`。本版验证根进程退出码 23、两代后代收到 CTRL_BREAK、所有 PID 和管理器退出后，才清理临时文件。对 Windows 短暂占用作有界重试，超出次数仍报错。Windows 作业在全量回归后另行连续三次执行 `pnpm exec vitest run packages/runtimes/test/process.test.ts -t early`，三次均通过。[上一轮 Windows 日志](https://github.com/shayft/concordia/actions/runs/46000066364/job/140509127943)
+
+## 官方 CLI 与系统凭据
+
+在 Ubuntu x64、macOS ARM64 和 Windows x64 上，Claude Code `2.1.332` 和 Codex CLI `0.172.0` 的六次无账号预检均取得 PASS，模型请求数为 0。每次检查都使用独立临时用户目录，核对官方平台发行物、版本和权限参数，并取得原生未登录状态。[三平台 CLI 作业](https://github.com/shayft/concordia/actions/runs/46000066348) · [实际命令与版本记录](stage-1.md)
+
+同三个托管系统已经使用正式应用接口写入及读回一次性随机凭据，并通过 Linux Secret Service、macOS Keychain、Windows Credential Manager 核对删除结果。个人登录、系统解锁、真实任务回显、网关与账单列在下方的统一验收菜单。[三平台凭据作业](https://github.com/shayft/concordia/actions/runs/45999064361) · [逐系统说明](stage-2.md#三种原生凭据库)
+
+## 较早版本的三平台回归
 
 2026-11-27，GitHub Actions 对源码提交 `c110272343b78987a61f66980ed4e1a2e04b24b3` 执行冻结锁安装、`pnpm lint`、`pnpm test`、`pnpm build`；构建包含 `pnpm typecheck`。以下为整仓计数，每台机器收集 203 项。[完整运行](https://github.com/shayft/concordia/actions/runs/45996818506)
 
