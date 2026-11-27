@@ -14,4 +14,6 @@
 | 2026-11-27 | 哪个测试连接已经取得持续授权 | 用户已持续批准本项目云端环境的 Codex CLI。后续在同等只读权限下使用该连接时可直接使用有效预检 ID 执行，并说明预计次数。Claude、本机账号和 API 网关按各自授权处理 | 便于继续同一云端测试。实际遭遇沙箱或权限限制时依用户原约束停止，由用户决定运行地点 |
 | 2026-11-27 | 哪些能力留到下一阶段 | 阶段 1 的运行时和提供方仅实现连接探针。工作流、MCP 动作、连接编辑、流式响应和持久化执行恢复按开发计划推进 | 本次交付独立可验证，保留核心层的时钟、ID、存储注入边界 |
 
+2026-11-27，用户授权将阶段 1 首次公开推送到 `shayft/concordia`，并在 GitHub 托管的 Linux、macOS、Windows 上执行模拟回归。GitHub 的邮箱隐私保护拒绝了首次推送，公开历史将 Git 邮箱替换为 `concordia@example.invalid`，已逐提交核对文件树。此授权用于发布和验证 Concordia 自身，提案 §6.1 对平台管理的用户项目继续适用。
+
 进程管理依据为 [Node child_process](https://nodejs.org/api/child_process.html)、[Windows Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[控制台事件](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent) 和[控制处理函数](https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler)。系统凭据接口与网关协议依据分别见[凭据说明](credentials.md)及[网关说明](gateway.md)。
