@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existingDataDirectory } from '@concordia/store/paths';
 
 // Git for Windows uses its own pathname layer. A regular file works on all
 // platforms and cannot be traversed as an executable hook directory.
@@ -50,6 +51,8 @@ export function gitResult(cwd: string, args: string[]) {
       'core.excludesFile=' + defaults,
       '-c',
       'core.fsmonitor=false',
+      '-c',
+      'core.longpaths=true',
       '-c',
       'commit.gpgSign=false',
       '-c',
@@ -130,12 +133,25 @@ export function gitWorktrees(repo: string) {
 }
 
 function checkedGitDirectory(path: string) {
-  const privateCliPath = /(?:^|[\\/])\.(?:claude|codex)(?:[\\/]|$)/i;
-  if (privateCliPath.test(path)) throw new Error('仓库管理目录指向 CLI 私有目录。');
-  const canonical = realpathSync(path);
-  if (privateCliPath.test(canonical) || !lstatSync(canonical).isDirectory())
-    throw new Error('仓库管理目录无效。');
-  return canonical;
+  // Preserve the ban on CLI directories and directory links independently of
+  // path spelling. Windows may report long names, 8.3 aliases or different case.
+  return realpathSync.native(existingDataDirectory(path));
+}
+
+export function sameDirectory(a: string, b: string) {
+  const left = statSync(checkedGitDirectory(a), { bigint: true });
+  const right = statSync(checkedGitDirectory(b), { bigint: true });
+  if (
+    !left.isDirectory() ||
+    !right.isDirectory() ||
+    left.ino <= 0n ||
+    right.ino <= 0n ||
+    left.dev <= 0n ||
+    right.dev <= 0n
+  ) {
+    throw new Error('文件系统未提供可核对的目录身份。');
+  }
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 function checkMetadata(path: string, max: number) {
@@ -149,7 +165,7 @@ function readMetadata(path: string, max: number) {
 }
 
 export function checkLocalConfig(repo: string) {
-  if (checkedGitDirectory(repo) !== repo) throw new Error('仓库位置已改变。');
+  repo = checkedGitDirectory(repo);
   const marker = join(repo, '.git');
   const type = lstatSync(marker);
   let gitDir = marker;

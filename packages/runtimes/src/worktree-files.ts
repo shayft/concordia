@@ -14,7 +14,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, toNamespacedPath } from 'node:path';
 import koffi from 'koffi';
 
 const limit = 512 * 1024;
@@ -135,7 +135,7 @@ function windowsFile(root: string, parts: string[], text?: string): string {
   const pins: bigint[] = [];
   function pin(path: string, directory: boolean) {
     // No FILE_SHARE_DELETE: all inspected parents stay pinned through the operation.
-    const handle: bigint = api.open(path, 0x80, 3, null, 3, 0x02200000, null);
+    const handle: bigint = api.open(toNamespacedPath(path), 0x80, 3, null, 3, 0x02200000, null);
     if (!handle || BigInt.asIntN(64, handle) === -1n) throw invalid();
     pins.push(handle);
     const info = Buffer.alloc(8);

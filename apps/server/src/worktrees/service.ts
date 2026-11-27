@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
-import { safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
+import { existingDataDirectory, safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 import { runProcess } from '@concordia/runtimes/process';
 import { worktreeFile, worktreePathParts } from '@concordia/runtimes/worktree-files';
-import { checkLocalConfig, git, gitResult, gitWorktrees } from './git.ts';
+import { checkLocalConfig, git, gitResult, gitWorktrees, sameDirectory } from './git.ts';
 
 const id = z.string().min(1).max(180);
 const sha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -132,11 +132,11 @@ export class WorktreeService {
     const config = projectSchema.parse(input);
     if (!isAbsolute(config.repository)) throw new Error('请指定仓库的绝对路径。');
     checkRepoLocation(resolve(config.repository), this.directory);
-    const repo = realpathSync(config.repository);
+    const repo = realpathSync.native(config.repository);
     checkRepoLocation(repo, this.directory);
     checkLocalConfig(repo);
     // Start from the actual repository root, never from a subdirectory or bare repository.
-    if (realpathSync(git(repo, ['rev-parse', '--show-toplevel']).trimEnd()) !== repo)
+    if (!sameDirectory(git(repo, ['rev-parse', '--show-toplevel']).trimEnd(), repo))
       throw new Error('请选择 Git 工作副本根目录。');
     git(repo, ['check-ref-format', target(config)]);
     git(repo, ['rev-parse', '--verify', target(config) + '^{commit}']);
@@ -155,8 +155,8 @@ export class WorktreeService {
     const existing = this.db.prepare('SELECT * FROM projects WHERE id=?').get(config.id);
     if (
       existing &&
-      (existing.repository !== repo || existing.target !== config.targetBranch) &&
-      this.db.prepare('SELECT 1 FROM trees WHERE project=?').get(config.id)
+      this.db.prepare('SELECT 1 FROM trees WHERE project=?').get(config.id) &&
+      (!sameDirectory(String(existing.repository), repo) || existing.target !== config.targetBranch)
     )
       throw new Error('此项目已有 Git 交付记录，请为其他仓库或目标分支新建项目。');
     for (const row of this.db.prepare('SELECT id FROM trees WHERE project=?').all(config.id))
@@ -218,18 +218,18 @@ export class WorktreeService {
     if (tree.status === 'removed' || (write && !project.writeEnabled) || this.running.has(key))
       throw new Error('工作区未获写入授权、已清理或正在执行命令。');
     checkLocalConfig(project.repository);
+    existingDataDirectory(tree.path);
     const match = gitWorktrees(project.repository).find(
-      (w) => resolve(w.path) === tree.path && w.branch === 'refs/heads/' + tree.branch,
+      (w) => w.branch === 'refs/heads/' + tree.branch && sameDirectory(w.path, tree.path),
     );
     if (
       !match ||
-      realpathSync(tree.path) !== tree.path ||
       !lstatSync(join(tree.path, '.git')).isFile() ||
       git(tree.path, ['symbolic-ref', 'HEAD']).trimEnd() !== match.branch ||
-      realpathSync(git(tree.path, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trimEnd()) !==
-        realpathSync(
-          git(project.repository, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trimEnd(),
-        )
+      !sameDirectory(
+        git(tree.path, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trimEnd(),
+        git(project.repository, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trimEnd(),
+      )
     ) {
       throw new Error('工作区身份或分支已改变。');
     }
@@ -518,7 +518,16 @@ export class WorktreeService {
       if (copies.length > 1) return finish(false, '目标分支被多个工作副本同时检出，仅交付待合并分支。');
       const checkedOut = copies[0];
       if (checkedOut) {
-        checkLocalConfig(realpathSync(checkedOut.path));
+        checkLocalConfig(checkedOut.path);
+        if (
+          git(checkedOut.path, ['symbolic-ref', 'HEAD']).trimEnd() !== ref ||
+          !sameDirectory(
+            git(checkedOut.path, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trimEnd(),
+            git(project.repository, ['rev-parse', '--path-format=absolute', '--git-common-dir']).trimEnd(),
+          )
+        ) {
+          return finish(false, '目标工作副本身份已改变。');
+        }
         if (!clean(checkedOut.path)) return finish(false, '目标工作副本有未提交改动，仅交付待合并分支。');
         git(checkedOut.path, ['merge', '--ff-only', '--no-overwrite-ignore', approval.sha]);
       } else git(project.repository, ['update-ref', ref, approval.sha, approval.targetSha]);
@@ -591,7 +600,9 @@ export class WorktreeService {
       git(repo, ['worktree', 'remove', '--', tree.path]);
     } else if (
       gitWorktrees(repo).some(
-        (w) => resolve(w.path) === tree.path || w.branch === 'refs/heads/' + tree.branch,
+        (w) =>
+          w.branch === 'refs/heads/' + tree.branch ||
+          (basename(w.path).toLowerCase() === tree.id && sameDirectory(dirname(w.path), dirname(tree.path))),
       )
     ) {
       throw new Error('登记路径丢失或工作区已移动，请先核对 Git 工作区。');

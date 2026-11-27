@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { openWorktrees, type WorktreeService } from '../src/worktrees.ts';
-import { git as platformGit } from '../src/worktrees/git.ts';
+import { git as platformGit, sameDirectory } from '../src/worktrees/git.ts';
 
 let base: string, repo: string, data: string, service: WorktreeService;
 const run = (cwd: string, ...args: string[]) =>
@@ -224,4 +224,15 @@ it('平台 Git 使用普通文件屏蔽外部全局配置和项目预提交钩�
   const member = service.member('demo', 'hook-check');
   service.write(member.id, 'new.txt', 'ordinary change');
   expect(service.publish(member.id).sha).not.toBe(member.base);
+});
+
+it('以文件系统身份校验目录，拒绝其他目录和链接，接受 Windows 路径大小写差异', () => {
+  const alias = process.platform === 'win32' ? repo.toUpperCase() : realpathSync.native(repo);
+  expect(sameDirectory(repo, alias)).toBe(true);
+  expect(sameDirectory(repo, data)).toBe(false);
+  const link = join(base, 'alias-root');
+  symlinkSync(repo, link, process.platform === 'win32' ? 'junction' : 'dir');
+  expect(() => sameDirectory(repo, link)).toThrow();
+  service.configure({ ...config(true), repository: alias });
+  expect(service.member('demo', 'identity').status).toBe('ready');
 });
