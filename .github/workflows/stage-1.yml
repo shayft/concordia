@@ -43,3 +43,5 @@ jobs:
         run: pnpm test
       - name: Typecheck and build
         run: pnpm build
+      - name: Exercise the installed browser against the built local application
+        run: pnpm test:browser
