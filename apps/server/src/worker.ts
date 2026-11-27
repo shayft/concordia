@@ -14,7 +14,14 @@ import {
 import { ModelCallError, runBuiltin } from '@concordia/runtimes/builtin';
 import { z } from 'zod';
 import { getCatalog, providerConfig, resolveMember, probeCount, type RunningFilter } from './connections.ts';
-import { BudgetExceeded, meterProvider, reserveBudget, settleBudget } from './budget-ledger.ts';
+import {
+  assertPoolAvailable,
+  BudgetExceeded,
+  meterProvider,
+  reserveBudget,
+  settleBudget,
+  suspendPool,
+} from './budget-ledger.ts';
 import { safeDataDirectory } from './data-directory.ts';
 import type { WorktreeService } from './worktrees/service.ts';
 
@@ -78,6 +85,7 @@ export class Worker {
     ).length;
   }
   private checkConnection(binding: Binding) {
+    assertPoolAvailable(this.db, binding.poolId);
     const all = [...this.jobs.values()];
     if (
       all.filter((j) => j.connection === binding.connection.id).length +
@@ -390,6 +398,10 @@ export class Worker {
           emit(event);
         },
       );
+    } catch (error) {
+      if (error instanceof CliDiagnosticError && ['rate_limit', 'budget'].includes(error.kind))
+        suspendPool(this.db, job.pool);
+      throw error;
     } finally {
       settleBudget(this.db, reservation, usage);
     }

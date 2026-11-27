@@ -12,6 +12,7 @@ import { getCatalog, registerConnectionRoutes, resolveMember, cancelCatalogProbe
 import type { WorktreeIssue } from './worktrees/service.ts';
 import { openWorktrees, serveWorktrees } from './worktrees.ts';
 import { Worker, runOptions } from './worker.ts';
+import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
 import { auditEvent, serveAuditExport } from './audit.ts';
 import { serveDelivery } from './delivery.ts';
 
@@ -65,6 +66,17 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       return 'http://127.0.0.1:' + address.port;
     });
     scheduler.recover();
+    // A user may have resumed a shared account from a different workspace.
+    const board = scheduler.board();
+    const shared = pausedPools(db);
+    for (const pool of board.stoppedPools) {
+      if (
+        !shared.includes(pool) &&
+        board.agents.some((agent) => !agent.connection.startsWith('mock-') && agent.pool === pool)
+      ) {
+        scheduler.resumePool(pool);
+      }
+    }
     return { id, scheduler, worker, close: () => boardDb.close() };
   }
   let current = openBoard(String(db.prepare('SELECT id FROM workspaces WHERE active=1').get()!.id));
@@ -114,7 +126,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     runningCount: (f) => current.worker.count(f),
     assertCanExecute: assertRecovered,
   });
-  serveWorktrees(app, trees, assertRecovered, () => current.worker.treeScope());
+  serveWorktrees(app, trees, assertRecovered, () =>
+    current.scheduler.board().spec ? current.worker.treeScope() : undefined,
+  );
   serveAuditExport(app, () => current.scheduler.board());
   const delivery = serveDelivery(app, directory, assertRecovered);
 
@@ -156,7 +170,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     const { receipts: _, wakeups: __, ...board } = current.scheduler.board();
     void _;
     void __;
-    return board;
+    return { ...board, stoppedPools: [...new Set([...board.stoppedPools, ...pausedPools(db)])] };
   });
   app.get('/api/workspaces', async () => ({ active: current.id, workspaces: workspaces() }));
   app.get('/api/recovery', async () => recovery);
@@ -309,6 +323,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     return { ok: true };
   });
   post('/api/pools/:id/resume', empty, (_, p) => {
+    resumeSharedPool(db, p.id);
     current.scheduler.resumePool(p.id);
     return { ok: true };
   });
