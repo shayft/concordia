@@ -3,7 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { demoSpec, meetingSpec, Scheduler, type Version, type Question } from '@concordia/core/workflow';
+import {
+  demoSpec,
+  meetingSpec,
+  parallelSpec,
+  reviewSpec,
+  Scheduler,
+  type Version,
+  type Question,
+} from '@concordia/core/workflow';
 import { runDemo } from '@concordia/core/demo';
 import { openStore } from '../src/index.ts';
 import { WorkflowStore } from '../src/workflow.ts';
@@ -255,6 +263,84 @@ describe('真实 SQLite 与脚本化成员', () => {
     expect(() =>
       scheduler.act(api.id, { type: 'answer_question', questionId: q.id, answer: '越权' }),
     ).toThrow();
+  });
+  it('冲突按稳定标识一次投递到对应任务，其他成员的收件箱不受影响', () => {
+    runDemo(scheduler);
+    const issue = { id: 'safe-snapshot', taskIds: ['api', 'ui'], paths: ['src/main.ts'] };
+    expect(scheduler.reportConflict(issue)).toEqual({ duplicate: false });
+    expect(scheduler.reportConflict({ ...issue, taskIds: ['ui', 'api'] })).toEqual({ duplicate: true });
+    expect(() => scheduler.reportConflict({ ...issue, paths: ['src/changed.ts'] })).toThrow();
+    const board = scheduler.board();
+    expect(board.questions.filter((q) => q.from === 'integration').map((q) => q.to)).toEqual([
+      'backend',
+      'frontend',
+    ]);
+    expect(board.acceptance).toBeNull();
+  });
+  it('禁止成员读取未绑定交付物或跳到同一槽位其他版本；幂等回执中的正文也只保存摘要', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api'),
+      v1 = pub(api.id, 'contract', '已绑定的内容');
+    const ui = scheduler.claim('ui'),
+      v2 = pub(api.id, 'contract', '更新内容');
+    expect(() => scheduler.act(ui.id, { type: 'read_artifact', slotId: 'backend-code' })).toThrow('无权');
+    expect(() =>
+      scheduler.act(ui.id, { type: 'read_artifact', slotId: 'contract', versionId: v2.id }),
+    ).toThrow('绑定');
+    const read = { type: 'read_artifact', slotId: 'contract', versionId: v1.id };
+    const result = scheduler.act(ui.id, read, 'read-once');
+    expect(scheduler.act(ui.id, read, 'read-once')).toEqual(result);
+    const row = db.prepare('SELECT data FROM workflow_state').get()!;
+    expect(String(row.data)).not.toContain('已绑定的内容');
+  });
+  it('不足以覆盖估算时禁止下一次调用，完整用量可结算估算，同一轮累计用量不会重复计算', () => {
+    const spec = demoSpec();
+    spec.maxTokens = 15;
+    spec.estimatedTokensPerCall = 10;
+    scheduler.apply(spec);
+    const api = scheduler.claim('api');
+    scheduler.recordUsage(api.id, { inputTokens: 2, outputTokens: 3 });
+    scheduler.recordUsage(api.id, { inputTokens: 2, outputTokens: 3 });
+    expect(scheduler.board().executions[0].usage).toEqual({ input: 2, output: 3 });
+    scheduler.reserveCall(api.id);
+    expect(() => scheduler.reserveCall(api.id)).toThrow('预算');
+    expect(task('api').status).toBe('decision');
+  });
+  it('合成连接池与同名共享池独立，禁止特殊发件人、原型名称和原型池名', () => {
+    const spec = parallelSpec('测试', ['a', 'b']);
+    spec.agents[1].pool = 'a';
+    spec.poolLimits = { 'connection:a': 1, a: 1 };
+    scheduler.apply(spec);
+    expect(scheduler.claim('work-0').pool).toBe('connection:a');
+    expect(scheduler.claim('work-1').pool).toBe('a');
+    expect(() =>
+      scheduler.preview({
+        ...spec,
+        agents: spec.agents.map((a) => ({ ...a, pool: 'connection:constructor' })),
+      }),
+    ).toThrow();
+    expect(() => meetingSpec('讨论', ['user'])).toThrow();
+  });
+  it('并行方案彼此隔离，比较任务等待全部方案；审查任务等待初稿，修改任务等待全部意见', () => {
+    const parallel = parallelSpec('比较设计', ['a', 'b'], 'c');
+    scheduler.apply(parallel);
+    expect(task('compare').status).toBe('waiting');
+    for (const item of ['0', '1']) {
+      const round = scheduler.claim('work-' + item);
+      pub(round.id, 'option-' + item, '方案' + item);
+      submit(round.id, round.taskId);
+    }
+    expect(task('compare').status).toBe('ready');
+    scheduler.apply(reviewSpec('审查设计', 'p', ['one', 'two']));
+    const producer = scheduler.claim('produce');
+    pub(producer.id, 'draft', '初稿');
+    expect(task('review-0').status).toBe('ready');
+    expect(task('revise').status).toBe('waiting');
+    for (const item of ['0', '1']) {
+      const round = scheduler.claim('review-' + item);
+      pub(round.id, 'feedback-' + item, '意见' + item);
+    }
+    expect(task('revise').status).toBe('ready');
   });
   it('会议使用同一调度器，新计划保留既有工作区与快照', () => {
     const previous = runDemo(scheduler);

@@ -1,3 +1,4 @@
+import type { CallMeter } from './budget.ts';
 import type { TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
 
 export type TaskStatus =
@@ -35,6 +36,7 @@ export interface Execution {
   started: number;
   ended?: number;
   calls: number;
+  meters?: CallMeter[];
   usage?: { input?: number; output?: number };
   resultRef?: string;
 }
@@ -69,6 +71,8 @@ export interface Message {
   from: string;
   to: string;
   message: string;
+  forTask?: string;
+  deliveredTo?: string;
 }
 export interface WorkflowEvent {
   seq: number;
@@ -88,7 +92,8 @@ export interface State {
   stoppedPools: string[];
   wakeups: string[];
   acceptance: Record<string, string> | null;
-  receipts: Record<string, { fingerprint: string; result: unknown }>;
+  receipts: Record<string, { fingerprint: string; result?: unknown; resultRef?: string }>;
+  conflicts?: Record<string, string>;
   proposals: { executionId: string; action: unknown }[];
 }
 export const emptyState = (): State => ({

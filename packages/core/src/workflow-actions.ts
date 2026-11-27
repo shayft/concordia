@@ -17,7 +17,12 @@ import {
   type WorkflowStorage,
 } from './state.ts';
 
-function scheduleReply(state: State, q: Question, log: Append, deps: CoreDependencies<WorkflowStorage>) {
+export function scheduleReply(
+  state: State,
+  q: Question,
+  log: Append,
+  deps: CoreDependencies<WorkflowStorage>,
+) {
   if (
     !q.blocking ||
     q.to === 'user' ||
@@ -177,6 +182,7 @@ export function applyAction(
         from: exec.owner,
         to: q.from,
         message: action.answer,
+        forTask: q.taskId,
       });
       log('question.answered', { id: q.id, to: q.from });
       return q;
@@ -218,6 +224,9 @@ export function applyAction(
     case 'assign_task':
       if (entity(plan.agents, exec.owner).role !== 'lead') throw new Error('只有负责人可以提议修改计划');
       entity(plan.agents, action.assignee);
+      if (action.type === 'assign_task') entity(s.tasks, action.taskId);
+      if (action.type === 'create_task' && s.tasks.some((t) => t.id === action.taskId))
+        throw new Error('任务编号已存在');
       s.proposals.push({ executionId: exec.id, action });
       log('plan.proposed', { executionId: exec.id, kind: action.type });
       return { approvalRequired: true };

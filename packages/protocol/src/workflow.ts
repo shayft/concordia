@@ -2,16 +2,21 @@ import { z } from 'zod';
 
 const id = z
   .string()
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/)
   .refine((value) => !Object.hasOwn(Object.prototype, value), '标识不能使用保留名称');
+const poolId = z
+  .string()
+  .regex(/^(?:connection:)?[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/)
+  .refine((value) => !Object.hasOwn(Object.prototype, value.replace(/^connection:/, '')), '额度池名称无效');
 const title = z.string().trim().min(1).max(500);
 const count = z.number().int().min(1).max(1000);
+const tokens = z.number().int().min(1).max(100_000_000);
 const list = <T extends z.ZodType>(item: T) => z.array(item).max(256);
 export const agentSchema = z.strictObject({
   id,
   name: title,
   connection: id,
-  pool: id.optional(),
+  pool: poolId.optional(),
   role: z.enum(['lead', 'member']).default('member'),
 });
 const inputSchema = z
@@ -31,6 +36,9 @@ export const taskSchema = z.strictObject({
   produces: list(id).default([]),
   consumes: list(inputSchema).default([]),
   maxCalls: count.default(6),
+  maxCallsPerExecution: count.optional(),
+  maxTokens: tokens.optional(),
+  priority: z.number().int().min(-100).max(100).optional(),
   maxRework: z.number().int().min(0).max(20).default(1),
   maxRetries: z.number().int().min(0).max(5).default(1),
 });
@@ -47,8 +55,11 @@ export const workflowSpecSchema = z
     slots: list(z.strictObject({ id, title })).default([]),
     tasks: list(taskSchema).min(1),
     maxCalls: count.default(50),
+    maxConcurrent: z.number().int().min(1).max(256).optional(),
+    maxTokens: tokens.optional(),
+    estimatedTokensPerCall: tokens.optional(),
     maxHops: z.number().int().min(1).max(16).default(4),
-    poolLimits: z.record(id, z.number().int().min(1).max(16)).default({}),
+    poolLimits: z.record(poolId, z.number().int().min(1).max(1024)).default({}),
   })
   .superRefine((spec, ctx) => {
     const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
@@ -60,6 +71,8 @@ export const workflowSpecSchema = z
       spec.agents.map((a) => a.id),
       '成员',
     );
+    if (agents.has('user') || agents.has('integration')) issue('成员标识与系统发件人冲突');
+    if (spec.tasks.some((t) => t.id.startsWith('reply-'))) issue('任务编号的 reply- 前缀由答复任务使用');
     const slots = unique(
       spec.slots.map((s) => s.id),
       '槽位',

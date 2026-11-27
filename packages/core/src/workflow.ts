@@ -1,3 +1,4 @@
+import { exhausted } from './budget.ts';
 import { platformActionSchema } from '@concordia/protocol';
 import { workflowSpecSchema, type WorkflowSpec } from '@concordia/protocol/workflow';
 import type { CoreDependencies } from './index.ts';
@@ -20,7 +21,7 @@ import {
   type State,
   type WorkflowStorage,
 } from './state.ts';
-import { applyAction } from './workflow-actions.ts';
+import { applyAction, scheduleReply } from './workflow-actions.ts';
 export * from './state.ts';
 export * from './templates.ts';
 
@@ -100,6 +101,9 @@ export class Scheduler {
         maxCalls: _calls,
         maxRetries: _tries,
         maxRework: _rework,
+        maxCallsPerExecution: _execCalls,
+        maxTokens: _tokens,
+        priority: _priority,
         ...rest
       }: WorkflowSpec['tasks'][number]) => JSON.stringify(rest);
       for (const id of revised) {
@@ -110,6 +114,9 @@ export class Scheduler {
           throw new Error('已有执行的任务须通过改派或返工更新');
         const task = entity(s.tasks, id);
         task.maxCalls = replacement.maxCalls;
+        task.maxCallsPerExecution = replacement.maxCallsPerExecution;
+        task.maxTokens = replacement.maxTokens;
+        task.priority = replacement.priority;
         task.maxRetries = replacement.maxRetries;
         task.maxRework = replacement.maxRework;
         revised.delete(id);
@@ -151,14 +158,16 @@ export class Scheduler {
   }
   board() {
     const s = this.deps.storage.read();
-    const tasks = s.tasks.map((t) => {
-      const inputs = inputsFor(t, s);
-      return {
-        ...t,
-        column: column(t),
-        missing: t.consumes.filter((c) => !inputs[c.slotId]).map((c) => c.slotId),
-      };
-    });
+    const tasks = [...s.tasks]
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+      .map((t) => {
+        const inputs = inputsFor(t, s);
+        return {
+          ...t,
+          column: column(t),
+          missing: t.consumes.filter((c) => !inputs[c.slotId]).map((c) => c.slotId),
+        };
+      });
     const slots = (s.spec?.slots ?? []).map((slot) => ({
       ...slot,
       producer: tasks.find((t) => t.produces.includes(slot.id))?.id,
@@ -208,15 +217,14 @@ export class Scheduler {
         plan = activePlan(s),
         agent = entity(plan.agents, task.owner);
       if (task.status !== 'ready') throw new Error('任务尚未就绪');
-      const pool = agent.pool ?? agent.connection;
-      const running = s.executions.filter((e) => e.status === 'running' && e.pool === pool).length;
+      const pool = agent.pool ?? 'connection:' + agent.connection;
+      const active = s.executions.filter((e) => e.status === 'running');
+      if (plan.maxConcurrent !== undefined && active.length >= plan.maxConcurrent)
+        throw new Error('工作流并发已满');
+      const running = active.filter((e) => e.pool === pool).length;
       if (s.stoppedPools.includes(pool) || running >= (plan.poolLimits[pool] ?? 1))
         throw new Error('额度池暂停或并发已满');
-      const calls = (items: Execution[]) => items.reduce((sum, e) => sum + e.calls, 0);
-      if (
-        calls(s.executions) >= plan.maxCalls ||
-        calls(s.executions.filter((e) => e.taskId === task.id)) >= task.maxCalls
-      ) {
+      if (exhausted(plan, s, task)) {
         transition(task, 'decision', '调用预算已用尽');
         log('budget.exhausted', { taskId });
         return null;
@@ -237,7 +245,12 @@ export class Scheduler {
         questions: s.questions.filter(
           (q) => q.to === agent.id && q.status === 'open' && (!task.replyFor || q.taskId === task.replyFor),
         ),
-        messages: s.messages.filter((m) => m.to === agent.id),
+        messages: s.messages.filter(
+          (m) =>
+            m.to === agent.id &&
+            (!m.forTask || m.forTask === task.id || m.forTask === task.replyFor) &&
+            (!m.deliveredTo || m.deliveredTo === task.id),
+        ),
       };
       const encoded = JSON.stringify(context);
       // Byte count conservatively bounds byte-level tokenizer input even for non-ASCII text.
@@ -254,8 +267,10 @@ export class Scheduler {
         contextRef: this.deps.storage.putContent(encoded),
         started: this.deps.now(),
         calls: 1,
+        meters: [{ reserved: plan.estimatedTokensPerCall ?? 1024 }],
         status: 'running',
       };
+      for (const message of context.messages) message.deliveredTo = task.id;
       task.active = id;
       transition(task, 'running');
       s.executions.push(execution);
@@ -274,7 +289,10 @@ export class Scheduler {
       const fingerprint = key ? this.deps.storage.putContent(JSON.stringify(action)) : '';
       if (key && Object.hasOwn(s.receipts, key)) {
         if (s.receipts[key].fingerprint !== fingerprint) throw new Error('重复消息编号的内容不同');
-        return s.receipts[key].result;
+        const receipt = s.receipts[key];
+        return receipt.resultRef
+          ? JSON.parse(this.deps.storage.getContent(receipt.resultRef))
+          : receipt.result;
       }
       if (task.active !== exec.id || exec.status !== 'running') {
         const previousStatus = exec.status;
@@ -288,7 +306,11 @@ export class Scheduler {
         return { obsolete: true };
       }
       const result = applyAction(s, exec, task, action, log, this.deps);
-      if (key) s.receipts[key] = { fingerprint, result };
+      if (key)
+        s.receipts[key] = {
+          fingerprint,
+          resultRef: this.deps.storage.putContent(JSON.stringify(result ?? null)),
+        };
       return result;
     });
   }
@@ -298,14 +320,16 @@ export class Scheduler {
         task = entity(s.tasks, exec.taskId),
         plan = activePlan(s);
       if (exec.status !== 'running' || task.active !== exec.id) throw new Error('执行已结束');
-      const total = s.executions.reduce((sum, e) => sum + e.calls, 0);
-      const taskCalls = s.executions.reduce((sum, e) => sum + (e.taskId === task.id ? e.calls : 0), 0);
-      if (total >= plan.maxCalls || taskCalls >= task.maxCalls) {
+      if (exhausted(plan, s, task, exec)) {
         fence(s, task, 'failed', this.deps.now());
         transition(task, 'decision', '调用预算已用尽');
         log('budget.exhausted', { taskId: task.id, id: exec.id });
         return false;
       }
+      exec.meters ??= Array.from({ length: exec.calls }, () => ({
+        reserved: plan.estimatedTokensPerCall ?? 1024,
+      }));
+      exec.meters.push({ reserved: plan.estimatedTokensPerCall ?? 1024 });
       exec.calls++;
       log('call.reserved', { id: exec.id, calls: exec.calls });
       return true;
@@ -319,8 +343,15 @@ export class Scheduler {
         if (count !== undefined && (!Number.isSafeInteger(count) || count < 0)) throw new Error('用量无效');
       if (usage.inputTokens === undefined && usage.outputTokens === undefined) return;
       e.usage ??= {};
-      if (usage.inputTokens !== undefined) e.usage.input = (e.usage.input ?? 0) + usage.inputTokens;
-      if (usage.outputTokens !== undefined) e.usage.output = (e.usage.output ?? 0) + usage.outputTokens;
+      const meter = e.meters?.at(-1);
+      if (usage.inputTokens !== undefined) {
+        e.usage.input = (e.usage.input ?? 0) + usage.inputTokens - (meter?.input ?? 0);
+        if (meter) meter.input = usage.inputTokens;
+      }
+      if (usage.outputTokens !== undefined) {
+        e.usage.output = (e.usage.output ?? 0) + usage.outputTokens - (meter?.output ?? 0);
+        if (meter) meter.output = usage.outputTokens;
+      }
       log('usage.recorded', { id: executionId, ...usage });
     });
   }
@@ -392,6 +423,63 @@ export class Scheduler {
       return task;
     });
   }
+  reportConflict(issue: { id: string; taskIds: string[]; paths: string[] }) {
+    if (
+      !issue.id ||
+      issue.id.length > 200 ||
+      !issue.taskIds.length ||
+      issue.taskIds.length > 256 ||
+      issue.paths.length > 256
+    )
+      throw new Error('冲突记录无效');
+    const paths = [...new Set(issue.paths)].sort(),
+      taskIds = [...new Set(issue.taskIds)].sort();
+    if (paths.some((path) => !path || path.length > 1024 || path.startsWith('/') || path.includes('\0')))
+      throw new Error('冲突路径无效');
+    return this.write((s, log) => {
+      const key = JSON.stringify([issue.id]);
+      const fingerprint = this.deps.storage.putContent(JSON.stringify({ taskIds, paths }));
+      if (s.conflicts?.[key]) {
+        if (s.conflicts[key] !== fingerprint) throw new Error('冲突编号已用于其他快照');
+        return { duplicate: true };
+      }
+      const tasks = taskIds.map((id) => entity(s.tasks, id));
+      s.conflicts ??= {};
+      s.conflicts[key] = fingerprint;
+      for (const task of tasks) {
+        const message = '联调快照出现合并冲突，请协调修复并发布新版本。' + paths.join('、');
+        const question = {
+          id: this.deps.nextId(),
+          taskId: task.id,
+          from: 'integration',
+          to: task.owner,
+          question: message,
+          blocking: true,
+          hops: 1,
+          status: 'open' as const,
+        };
+        s.questions.push(question);
+        s.messages.push({
+          id: this.deps.nextId(),
+          taskId: task.id,
+          forTask: task.id,
+          from: 'integration',
+          to: task.owner,
+          message,
+        });
+        if (task.status === 'done' || task.status === 'review') reopen(task, s, this.deps.now());
+        if (task.status !== 'ready') scheduleReply(s, question, log, this.deps);
+        log('integration.conflict', {
+          issueId: issue.id,
+          taskId: task.id,
+          to: task.owner,
+          questionId: question.id,
+        });
+      }
+      s.acceptance = null;
+      return { duplicate: false };
+    });
+  }
   answerAsUser(questionId: string, answer: string) {
     if (!answer.trim() || answer.length > 32_768) throw new Error('答复长度无效');
     return this.write((s, log) => {
@@ -403,6 +491,7 @@ export class Scheduler {
         id: this.deps.nextId(),
         taskId: q.taskId,
         from: 'user',
+        forTask: q.taskId,
         to: q.from,
         message: answer,
       });
@@ -414,7 +503,14 @@ export class Scheduler {
     if (!message.trim() || message.length > 32_768) throw new Error('消息长度无效');
     return this.write((s, log) => {
       const task = entity(s.tasks, taskId);
-      s.messages.push({ id: this.deps.nextId(), taskId, from: 'user', to: task.owner, message });
+      s.messages.push({
+        id: this.deps.nextId(),
+        taskId,
+        forTask: taskId,
+        from: 'user',
+        to: task.owner,
+        message,
+      });
       log('message.sent', { taskId, to: task.owner });
     });
   }
