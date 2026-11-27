@@ -100,3 +100,77 @@ export function meetingSpec(goal: string, members: string[]): WorkflowSpec {
     requiredSlots: ['minutes'],
   });
 }
+
+export function parallelSpec(goal: string, members: string[], lead = members[0]): WorkflowSpec {
+  if (!members.length) throw new Error('并行模式需要至少一个执行成员');
+  const agents = [...new Set([...members, lead])].map((id) => ({
+    id,
+    name: id,
+    connection: id,
+    role: id === lead ? 'lead' : 'member',
+  }));
+  const tasks = members.map((owner, i) => ({
+    id: 'work-' + i,
+    title: '独立完成 · ' + owner,
+    owner,
+    produces: ['option-' + i],
+  }));
+  const slots = tasks.map((task) => ({ id: task.produces[0], title: task.title }));
+  return workflowSpecSchema.parse({
+    id: 'parallel',
+    title: '并行比较',
+    goal,
+    agents,
+    slots: [...slots, { id: 'comparison', title: '比较结论' }],
+    tasks: [
+      ...tasks,
+      {
+        id: 'compare',
+        title: '比较独立方案',
+        owner: lead,
+        consumes: slots.map((s) => ({ slotId: s.id })),
+        produces: ['comparison'],
+      },
+    ],
+    acceptance: ['成员分别提交独立方案', '负责人比较各方案并给出结论'],
+    requiredSlots: ['comparison'],
+  });
+}
+
+export function reviewSpec(goal: string, producer: string, reviewers: string[]): WorkflowSpec {
+  if (!reviewers.length || reviewers.includes(producer)) throw new Error('审查模式需要独立的审查成员');
+  const members = [...new Set([producer, ...reviewers])];
+  const reviews = reviewers.map((owner, i) => ({
+    id: 'review-' + i,
+    title: '审查 · ' + owner,
+    owner,
+    consumes: [{ slotId: 'draft' }],
+    produces: ['feedback-' + i],
+  }));
+  const slots = reviews.map((t) => ({ id: t.produces[0], title: t.title }));
+  return workflowSpecSchema.parse({
+    id: 'review',
+    title: '成果审查',
+    goal,
+    agents: members.map((id) => ({
+      id,
+      name: id,
+      connection: id,
+      role: id === producer ? 'lead' : 'member',
+    })),
+    slots: [{ id: 'draft', title: '初稿' }, ...slots, { id: 'final', title: '审查后成果' }],
+    tasks: [
+      { id: 'produce', title: '产出初稿', owner: producer, produces: ['draft'] },
+      ...reviews,
+      {
+        id: 'revise',
+        title: '回应意见并提交定稿',
+        owner: producer,
+        produces: ['final'],
+        consumes: ['draft', ...slots.map((s) => s.id)].map((slotId) => ({ slotId })),
+      },
+    ],
+    acceptance: ['独立审查意见已记录', '产出者处理意见并提交定稿'],
+    requiredSlots: ['final'],
+  });
+}
