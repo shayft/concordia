@@ -1,13 +1,13 @@
-import { execFile, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 import { activeProcessGroups, runProcess } from '../src/process.ts';
+
+import { compileWindowsFixture } from './fixtures/compile-windows.ts';
 
 const fixture = fileURLToPath(new URL('./process-tree.mjs', import.meta.url));
 const expectedSignal = process.platform === 'win32' ? 'SIGBREAK' : 'SIGTERM';
@@ -18,13 +18,8 @@ async function treeCommand(directory: string, mode: string) {
   }
   // A Node fixture cannot leave this tree alive after a Windows parent's exit:
   // libuv puts non-detached children into its own kill-on-close job.
-  const compiler = ['Framework64', 'Framework']
-    .map(folder => join(process.env.SystemRoot!, 'Microsoft.NET', folder, 'v4.0.30319', 'csc.exe'))
-    .find(path => existsSync(path));
-  if (!compiler) throw new Error('Windows 进程测试需要系统 .NET Framework 4.x 的 csc.exe。');
   const executable = join(directory, 'WindowsProcessTree.exe');
-  const source = fileURLToPath(new URL('./fixtures/WindowsProcessTree.cs', import.meta.url));
-  await promisify(execFile)(compiler, ['/nologo', '/target:exe', '/out:' + executable, source], { shell: false });
+  await compileWindowsFixture(new URL('./fixtures/WindowsProcessTree.cs', import.meta.url), executable);
   return { executable, args: [] };
 }
 

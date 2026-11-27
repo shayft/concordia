@@ -1,10 +1,9 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { inspectCli, runCliProbe } from '../src/cli.ts';
 import { prepareEnvironment, resolveExecutable } from '../src/environment.ts';
 import { parseAuth, parseProbeOutput } from '../src/output.ts';
+import { installFakeClis } from './fixtures/fake-clis.ts';
 
 it('计费变量按名称和来源列出，只有批准过的名称进入子进程', () => {
   const env = { HOME: '/home', OPENAI_API_KEY: 'unused-marker', UNKNOWN_DEBUG: 'omit', NODE_OPTIONS: 'omit' };
@@ -50,23 +49,17 @@ it('失败、异常工具、残缺的 JSONL 和意外文本都不能形成成功
   expect(() => parseProbeOutput('claude', JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'CONCORDIA_OK' }))).toThrow();
 });
 
-describe.skipIf(process.platform === 'win32')('以独立进程执行两种假 CLI', () => {
-  let directory: string;
-  let cwd: string;
-  const env = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', OPENAI_API_KEY: 'unused-marker', UNLISTED_DEMO: 'omit' };
+describe('以独立进程执行两种假 CLI', () => {
+  let fixture: Awaited<ReturnType<typeof installFakeClis>>;
+  let env: NodeJS.ProcessEnv;
   beforeAll(async () => {
-    directory = await mkdtemp(join(tmpdir(), 'concordia-fake-cli-'));
-    cwd = join(directory, 'working dir');
-    await mkdir(cwd);
-    const fixture = await readFile(new URL('./fixtures/fake-cli.cjs', import.meta.url), 'utf8');
-    for (const kind of ['claude', 'codex']) {
-      await writeFile(join(directory, kind), '#!' + process.execPath + '\n' + fixture, { mode: 0o700 });
-    }
-  });
-  afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
+    fixture = await installFakeClis();
+    env = { ...fixture.env, OPENAI_API_KEY: 'unused-marker' };
+  }, 30_000);
+  afterAll(async () => { await fixture?.dispose(); });
   for (const kind of ['claude', 'codex'] as const) {
     it(kind + ' 在最小 PATH 下接受带空格的工作目录和绝对路径，输出可脱敏回放', async () => {
-      const options = { cwd, env, executable: join(directory, kind), confirmUnmanaged: true };
+      const options = { cwd: fixture.cwd, env, executable: fixture.executable(kind), confirmUnmanaged: true };
       const { inspectionId } = await inspectCli(kind, options);
       const result = await runCliProbe(kind, { ...options, approved: true, inspectionId });
       expect(result.text).toBe('CONCORDIA_OK');
@@ -76,19 +69,19 @@ describe.skipIf(process.platform === 'win32')('以独立进程执行两种假 CL
       expect(result.version).toBe('1.2.3');
       expect(JSON.stringify(result)).not.toMatch(/OMITTED_MARKER|unused-marker/);
       expect(parseProbeOutput(kind, result.recording)).toMatchObject({ text: result.text, recording: result.recording });
-    }, 20_000);
+    }, 60_000);
   }
   it('预检中的计费变量有变化即停止', async () => {
-    const options = { cwd, env, executable: join(directory, 'claude'), confirmUnmanaged: true };
+    const options = { cwd: fixture.cwd, env, executable: fixture.executable('claude'), confirmUnmanaged: true };
     const { inspectionId } = await inspectCli('claude', options);
-    await expect(runCliProbe('claude', { ...options, env: { PATH: env.PATH }, approved: true, inspectionId })).rejects.toThrow(/重新预检/);
-  }, 15_000);
+    await expect(runCliProbe('claude', { ...options, env: fixture.env, approved: true, inspectionId })).rejects.toThrow(/重新预检/);
+  }, 45_000);
   it('管理策略未知仅可做 Claude 预检', async () => {
-    const options = { cwd, env, executable: join(directory, 'claude') };
+    const options = { cwd: fixture.cwd, env, executable: fixture.executable('claude') };
     const { inspectionId } = await inspectCli('claude', options);
     await expect(runCliProbe('claude', { ...options, approved: true, inspectionId })).rejects.toThrow(/Managed settings/);
-  }, 15_000);
+  }, 45_000);
   it('指定了失效路径即明确失败，不另选 PATH 候选', async () => {
-    await expect(inspectCli('claude', { env: { PATH: directory }, executable: join(cwd, 'missing') })).rejects.toThrow(/指定的 CLI 路径/);
+    await expect(inspectCli('claude', { env: { ...fixture.env, PATH: fixture.directory }, executable: join(fixture.cwd, 'missing.exe') })).rejects.toThrow(/指定的 CLI 路径/);
   });
 });

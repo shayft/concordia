@@ -16,7 +16,7 @@ internal static class FakeCli
         else if (args.Contains("status"))
         {
             if (claude)
-                Console.WriteLine("{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}");
+                Console.WriteLine("{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"account\":\"OMITTED_MARKER\"}");
             else
                 Console.Error.WriteLine("Logged in using ChatGPT");
         }
@@ -29,20 +29,25 @@ internal static class FakeCli
             Console.WriteLine("[]");
         else
         {
-            if (Environment.GetEnvironmentVariable("UNLISTED_DEMO") != null) return 2;
+            if (Environment.GetEnvironmentVariable("UNLISTED_DEMO") != null || Environment.GetEnvironmentVariable("OPENAI_API_KEY") != null) return 2;
+            string system32 = Path.Combine(Environment.GetEnvironmentVariable("SystemRoot"), "System32");
+            if (!String.Equals(Environment.GetEnvironmentVariable("PATH"), system32, StringComparison.OrdinalIgnoreCase)) return 7;
             if (Path.GetFileName(Environment.CurrentDirectory) != "working dir") return 3;
             if (!args.Last().StartsWith("Reply with exactly CONCORDIA_OK", StringComparison.Ordinal)) return 4;
             if (claude)
             {
                 int tools = Array.IndexOf(args, "--tools");
                 if (tools < 0 || tools + 1 >= args.Length || args[tools + 1] != "") return 5;
-                Console.WriteLine("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"CONCORDIA_OK\"}");
+                int disallowed = Array.IndexOf(args, "--disallowedTools");
+                if (disallowed < 0 || disallowed + 1 >= args.Length || args[disallowed + 1] != "*") return 8;
+                Console.WriteLine("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"CONCORDIA_OK\",\"session_id\":\"OMITTED_MARKER\"}");
             }
             else
             {
                 int sandbox = Array.IndexOf(args, "--sandbox");
                 if (sandbox < 0 || sandbox + 1 >= args.Length || args[sandbox + 1] != "read-only") return 6;
-                Console.WriteLine("{\"type\":\"thread.started\"}");
+                if (!args.Contains("--json")) return 9;
+                Console.WriteLine("{\"type\":\"thread.started\",\"thread_id\":\"OMITTED_MARKER\"}");
                 Console.WriteLine("{\"type\":\"turn.started\"}");
                 Console.WriteLine("{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"CONCORDIA_OK\"}}");
                 Console.WriteLine("{\"type\":\"turn.completed\"}");
