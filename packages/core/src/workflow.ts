@@ -46,6 +46,17 @@ function planDiff(state: State, spec: WorkflowSpec) {
   };
 }
 
+function validateInputs(state: State, spec: WorkflowSpec) {
+  for (const task of spec.tasks)
+    for (const input of task.consumes) {
+      if (
+        input.policy === 'pinned' &&
+        !state.versions.some((v) => v.id === input.version && v.slotId === input.slotId)
+      )
+        throw new Error('钉住的交付物版本不存在');
+    }
+}
+
 export class Scheduler {
   constructor(private readonly deps: CoreDependencies<WorkflowStorage>) {}
   private write<T>(callback: (state: State, append: Append) => T): T {
@@ -76,7 +87,15 @@ export class Scheduler {
     });
   }
   preview(input: unknown) {
-    return planDiff(this.deps.storage.read(), workflowSpecSchema.parse(input));
+    const state = this.deps.storage.read(),
+      spec = workflowSpecSchema.parse(input);
+    let target = state;
+    if (state.spec && state.spec.id !== spec.id) {
+      const archived = state.archives.find((a) => a.id === spec.id);
+      target = archived ? (JSON.parse(this.deps.storage.getContent(archived.ref)) as State) : emptyState();
+    }
+    validateInputs(target, spec);
+    return planDiff(state, spec);
   }
   apply(input: unknown, expectedRevision?: number) {
     const spec = workflowSpecSchema.parse(input);
@@ -127,15 +146,7 @@ export class Scheduler {
         )
       )
         throw new Error('仍有问题等待该成员答复');
-      if (
-        spec.tasks.some((t) =>
-          t.consumes.some(
-            (c) =>
-              c.policy === 'pinned' && !s.versions.some((v) => v.id === c.version && v.slotId === c.slotId),
-          ),
-        )
-      )
-        throw new Error('钉住的交付物版本不存在');
+      validateInputs(s, spec);
       s.spec = spec;
       s.tasks = [
         ...spec.tasks.map(
@@ -171,7 +182,10 @@ export class Scheduler {
     const slots = (s.spec?.slots ?? []).map((slot) => ({
       ...slot,
       producer: tasks.find((t) => t.produces.includes(slot.id))?.id,
-      waiting: tasks.filter((t) => t.missing.includes(slot.id)).map((t) => t.id),
+      waiting: tasks.filter((t) => t.status === 'waiting' && t.missing.includes(slot.id)).map((t) => t.id),
+      unblocks: tasks.filter(
+        (t) => t.status === 'waiting' && t.missing.length === 1 && t.missing[0] === slot.id,
+      ).length,
     }));
     const versions = s.versions.map((v) => ({
       ...v,
@@ -179,7 +193,15 @@ export class Scheduler {
         .filter(([slot, id]) => latest(s, slot)?.id !== id)
         .map(([slot]) => slot),
     }));
-    return { ...s, tasks, slots, versions, agents: s.spec?.agents ?? [] };
+    const nextSlot = [...slots].sort((a, b) => b.unblocks - a.unblocks)[0];
+    return {
+      ...s,
+      tasks,
+      slots,
+      versions,
+      criticalSlot: nextSlot?.unblocks ? nextSlot.id : null,
+      agents: s.spec?.agents ?? [],
+    };
   }
   events(after = 0) {
     return this.deps.storage.events(after);

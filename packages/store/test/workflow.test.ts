@@ -109,6 +109,16 @@ describe('真实 SQLite 与脚本化成员', () => {
     expect(scheduler.board().versions).toHaveLength(1);
     expect(db.prepare('SELECT count(*) AS n FROM workflow_wakeups').get()?.n).toBe(2);
   });
+  it('预览拒绝跨槽钉住和不存在的版本，看板只统计实际等待的下游', () => {
+    const spec = demoSpec();
+    scheduler.apply(spec);
+    expect(scheduler.board().criticalSlot).toBe('contract');
+    scheduler.control('tests', 'cancel');
+    expect(scheduler.board().slots.find((s) => s.id === 'contract')?.waiting).toEqual(['ui']);
+    const changed = structuredClone(spec);
+    changed.tasks[1].consumes = [{ slotId: 'contract', policy: 'pinned', version: 'missing' }];
+    expect(() => scheduler.preview(changed)).toThrow('版本不存在');
+  });
   it('拒绝循环、越权、过期预览和错误的计划，既有状态保持不变', () => {
     const spec = demoSpec();
     const bad = structuredClone(spec);
