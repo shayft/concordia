@@ -375,9 +375,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
   }, [events, reload]);
   const task = board?.tasks.find((t) => t.id === selected);
   const tasks = filteredTasks(board?.tasks ?? [], owner);
-  const blocking = board?.slots
-    .filter((s) => s.waiting.length)
-    .sort((a, b) => b.waiting.length - a.waiting.length)[0];
+  const blocking = board?.slots.find((slot) => slot.id === board.criticalSlot);
   const demo = () => setDialog('demo');
   return (
     <>
@@ -427,9 +425,9 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
               </strong>
             </div>
             <div>
-              <span>等待最多的输入</span>
-              <strong>{blocking?.title ?? '无阻塞'}</strong>
-              {blocking && <p>{blocking.waiting.length} 项任务在等</p>}
+              <span>优先交付</span>
+              <strong>{blocking?.title ?? '无可单项解锁的输入'}</strong>
+              {blocking && <p>可解除 {blocking.unblocks} 项任务的等待</p>}
             </div>
           </section>
           <div className="toolbar">

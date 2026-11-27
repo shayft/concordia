@@ -1,21 +1,37 @@
 # Concordia
 
-个人自用的本地多模型协作平台。当前交付到阶段 1，可分别验证 Claude Code、Codex CLI 和指定的 OpenAI Chat Completions 网关。目标系统为 Linux、macOS 和 Windows。已运行的测试和仍缺的真机证据见[阶段 1 验收记录](docs/verification/stage-1.md)。
+Concordia 是运行在 Linux、macOS 和 Windows 本机上的个人 AI 协作工作区。可以为不同岗位绑定 CLI 或 API 连接，在浏览器中预览计划、按交付物版本并行派工、处理返工和审查代码差异。第一次体验可以只用模拟成员，不需要模型账号。
 
-## 安装与本地运行
+## 安装与启动
 
-在目标系统上安装 Node.js 24 LTS（24.16 或更新的 24.x）和 pnpm 11.25.0。下载项目后，在包含此 README 的目录执行以下命令。已安装 Node 的机器可用 `npm install --global pnpm@11.25.0` 安装该版本。首次安装项目依赖需要访问 npm 注册表。
+准备 Git、Node.js 24 LTS（24.16 或更新的 24.x）和 pnpm 11.25.0。已有 Node 时可通过 `npm install --global pnpm@11.25.0` 安装 pnpm。三个系统均可从仓库根目录执行以下命令，首次安装会访问 npm 注册表。
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm lint
-pnpm typecheck
-pnpm test
 pnpm build
-pnpm verify --help
+pnpm serve
 ```
 
-CLI、网关和数据库验证均可从终端执行。要打开 React 页面，在交互式终端运行 `pnpm serve`，用同机浏览器打开当次显示的链接，按 Ctrl+C 关闭服务。Fastify 监听随机回环端口，启动链接只能兑换一次。运行测试无需任何模型账号。Windows 上运行端到端假 CLI 测试需系统 .NET Framework 4.x 的 C# 编译器来生成临时的原生测试程序。
+在启动服务的交互式终端复制本次完整链接，在同机浏览器打开。Fastify 监听 `127.0.0.1` 的随机端口；浏览器用链接片段中的一次性令牌建立会话。页面提示重新启动时，可停止服务后再运行 `pnpm serve`。当前数据目录、CLI 和 Git 仓库均在运行服务的计算机上。
+
+## 跑通模拟交付
+
+1. 在页头选择 **新工作区**，填写本次演练名称。点 **计划与审批**，选择 **固定示范 · 按负责人筛选**，依次点 **载入模板**、**校验并预览差异** 和 **批准并应用此版本**。审批前可以检查成员、任务、输入槽位、验收条件和调用上限。
+2. 在 **协作任务板** 点 **运行固定模拟** 并确认。这个入口只接受空工作区或尚未执行的标准模拟计划。它用假 Agent 发布接口样例、唤醒下游、处理技术提问并完成版本快照验收。
+3. 按负责人筛选卡片，选择“未分配”，再清除筛选。打开任务的执行记录，展开交付版本；在 **活动记录** 按事件顺序核对前端、测试何时取得输入，以及完成主卡验收时绑定的版本。
+4. 打开 **代码与联调**，在 **代码交付演练** 中批准创建平台专用演示仓库。成员由程序模拟，仓库、工作树及 Git 提交会真实写入应用数据目录。先检查并批准联调测试命令，再查看测试结果、候选提交和 diff，最后决定是否批准合并。如果目标分支不满足合并条件，页面会显示交付分支。
+5. 在另一新工作区载入并批准同一模板，**逐卡**点击“模拟执行”。可在待审查卡片上验收或返工，暂停后恢复，改派或取消未结束的任务。全局停止会取消未结束的工作，适合在单独的演练工作区验证。
+
+## 接入自己的连接与团队
+
+在 **连接与成员** 中按下列顺序配置。工作区之间共享连接目录；每份工作流各自保存任务、投递记录和交付版本。
+
+1. 如同一订阅或网关账号有多个连接，可先新建 **额度池** 并设置并发上限。
+2. **添加连接**。CLI 可选 Claude Code 或 Codex，保留自动探测或填写可执行文件绝对路径。API 可选 Chat Completions、Responses、Gemini Native 或 Anthropic Messages，填写网关实际 API 根路径。需鉴权时在本机系统凭据库存入密钥，页面只填 `keychain:` 引用。高级字段支持端点、请求头引用、超时、输出上限和采样参数。[凭据操作](docs/credentials.md) · [协议适配](docs/providers.md)
+3. 在 **模型** 下绑定连接，填写真实的供应方模型 ID；用 API 的原生工具或受限 JSON 文本动作模式。然后在 **岗位** 下设置职责、系统提示词、连接和模型。CLI 岗位可沿用原生默认模型。编辑或禁用单个条目只作用于所选条目；正在使用的绑定可能需要先结束当前执行。
+4. 从连接或岗位点 **验证**。CLI 先预检，核对实际路径、版本、登录、计费和权限，再批准真实调用。CLI 的登录由用户在原生工具中完成。API 连接选中已启用模型后可单独批准一次测试。失败时显示诊断，由用户处理当前连接。
+5. 在新工作区的 **计划与审批** 使用会议、并行比较、成员审查、负责人生成或手工 spec。真实成员的 `id` 对应岗位标识，`connection` 对应该岗位绑定的连接标识。模板会带入所选岗位；修改手工草案后需重新预览并批准。负责人生成计划也会发生真实调用，页面单独请求批准。
+6. 在就绪任务上选择单项授权或从看板授权批量派发。单个 API 执行按请求上限授权；CLI 按程序启动计次，内部可能有多轮模型调用，计费来源不明时按“未知”处理。需要写代码时先在 **代码与联调** 注册独立测试仓库、目标分支和项目命令，在明确开启写入后为对应任务创建 worktree，再在任务执行授权里选择它。项目命令使用可执行文件绝对路径和参数数组。联调时勾选提交版本，查看测试与差异，再决定是否合并。
 
 ## 检查已有 CLI
 
@@ -53,10 +69,38 @@ pnpm credential:set keychain:my_openai_gateway
 pnpm verify run gateway --base-url "https://gateway.example.com/v1" --model "自定义模型ID" --credential keychain:my_openai_gateway --approve-call
 ```
 
-## 数据与卸载
+## 验证与人工验收
 
-阶段 1 的连接探针按次运行。API Key 由系统凭据库保存。需要初始化应用数据库时，先建立个人可写的独立目录，然后运行 `pnpm db:migrate "本地数据库文件的绝对路径"`。可选用 Linux 的 `~/.local/share/concordia`、macOS 的 `~/Library/Application Support/Concordia` 或 Windows 的 `%LOCALAPPDATA%\Concordia`；在命令中填写展开后的路径。
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
 
-卸载时退出服务，移除本项目目录。若需清除运行数据，可另外删除自己为 Concordia 建立的数据目录，并在系统凭据管理界面删除名为 Concordia 的对应条目。保留原生 CLI 及用户工程。
+Vitest 回归使用临时数据、假 CLI 与回环模拟服务。Windows 的进程测试使用系统 .NET Framework 4.x 的 C# 编译器生成临时测试程序。按阶段核对每项已经运行的命令、真实平台和待验证项；CI 的系统矩阵只计入该系统上实际执行的测试。[验收记录目录](docs/verification/) · [阶段 1 连接验收](docs/verification/stage-1.md)
 
-[项目方案](Multi_Agent_Platform_Proposal.md) · [开发计划](DEVELOPMENT_PLAN.md) · [阶段 1 决策记录](docs/decisions.md)
+人工验收请使用自己的测试仓库和独立工作区。分别验证真实桌面启动下的 CLI 路径与登录、授权后的两个 CLI 与自定义网关、平台凭据库、取消及重启恢复，最后由真实成员完成“计划 → 分派 → 阶段交付 → 联调测试 → diff 审查 → 合并”并核对账单。在本机记录系统、CLI 版本及参数、模型、状态和经净化的回显，凭据始终留在系统凭据库。未配备账号或目标系统的项目保留“尚未验证”。
+
+## 数据、停止与升级
+
+| 平台 | 默认应用数据目录 |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/concordia`，未设置时为 `~/.local/share/concordia` |
+| macOS | `~/Library/Application Support/Concordia` |
+| Windows | `%LOCALAPPDATA%\Concordia` |
+
+首次启动会创建目录及 SQLite 数据库并执行迁移。可在启动前设置 `CONCORDIA_DATA_DIR` 为当前用户专用的本地绝对路径。停止前先等待执行结束或从看板取消，再在服务终端按 Ctrl+C 并等待退出。重启后在任务板和活动记录核对中断项与进程恢复结果，选择是否重试。
+
+升级前先停服，另行保存用户项目的 Git 对象及需要保留的分支，用备份工具创建应用数据快照。备份目标须为尚不存在的目录，父目录须已存在。恢复演练使用新的目标目录。命令中的路径请换成本机绝对路径。
+
+```sh
+pnpm exec tsx apps/server/src/backup.ts create "/absolute/concordia-data" "/absolute/backups/concordia-01"
+pnpm exec tsx apps/server/src/backup.ts restore "/absolute/backups/concordia-01" "/absolute/restored"
+```
+
+换到已选定的新发行版本后，重新运行锁文件安装、构建和启动命令，打开原工作区核对任务与版本。系统凭据、CLI 会话及外部 Git 仓库需要分别保管；工作树恢复还依赖原仓库与位置登记。[备份和恢复说明](docs/operations.md)
+
+卸载前先审查未提交的工作，再通过 **代码与联调** 逐一清理平台创建的工作树，确认需要保留的分支，停止服务。核对路径后可移除 Concordia 的应用副本和专用数据目录。网关凭据按服务名 `Concordia` 在系统凭据界面逐项处理。保留原始项目及原生 CLI 的配置和认证。[完整卸载流程](docs/operations.md)
+
+[项目方案](Multi_Agent_Platform_Proposal.md) · [开发计划](DEVELOPMENT_PLAN.md) · [工程决策](docs/decisions.md)

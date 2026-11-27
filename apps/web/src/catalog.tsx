@@ -73,6 +73,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                 ? {
                     executable: text(fields, 'executable') || undefined,
                     cwd: text(fields, 'cwd') || undefined,
+                    actionChannel: text(fields, 'actionChannel') || undefined,
                   }
                 : {
                     baseUrl: text(fields, 'baseUrl'),
@@ -166,6 +167,21 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                         defaultValue={cliConnection?.executable}
                         placeholder="留空则从 PATH 查找"
                       />
+                    </Field>
+                    <Field name="actionChannel" label="调度动作通道">
+                      <select
+                        id="actionChannel"
+                        name="actionChannel"
+                        defaultValue={
+                          cliConnection && 'actionChannel' in cliConnection
+                            ? String(cliConnection.actionChannel ?? '')
+                            : ''
+                        }
+                      >
+                        <option value="">自动检测</option>
+                        <option value="mcp">本机 MCP</option>
+                        <option value="json">受限 JSON 文本</option>
+                      </select>
                     </Field>
                     <Field name="cwd" label="工作目录">
                       <input

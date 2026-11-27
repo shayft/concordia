@@ -137,3 +137,87 @@ it('交付演练呈现命令和 diff 并分别绑定审批票据', async () => {
     { approved: true, approvalId: 'merge-1' },
   ]);
 });
+
+it('看板按负责人、未分配和全部筛选，保留后端计算的阻塞优先级', async () => {
+  const { BoardPage } = await import('../src/board.tsx');
+  const agents = [
+    { id: 'lead', name: '负责人' },
+    { id: 'qa', name: '质量验证' },
+  ];
+  const tasks = [
+    { id: 'a', title: '提交接口', owner: 'lead' },
+    { id: 'b', title: '准备样例', owner: 'qa' },
+    { id: 'c', title: '等待认领', owner: '' },
+  ].map((t) => ({ ...t, status: 'ready', column: 'waiting', missing: [] }));
+  const board = {
+    spec: { title: '筛选验收', goal: '每个岗位看到自己的任务', acceptance: [], maxCalls: 5 },
+    criticalSlot: 'sample',
+    slots: [{ id: 'sample', title: '样例输入', unblocks: 2, waiting: ['a', 'b'] }],
+    agents,
+    tasks,
+    executions: [],
+    versions: [],
+    messages: [],
+    stoppedPools: [],
+    revision: 1,
+  };
+  serve = (path) =>
+    path === '/api/board' ? board : { connections: [], members: [], models: [], pools: [] };
+  await render(<BoardPage openPlans={() => {}} events={0} />);
+  expect(container.querySelectorAll('.card')).toHaveLength(3);
+  expect(container.textContent).toContain('可解除 2 项任务的等待');
+  const select = container.querySelector<HTMLSelectElement>('.toolbar select')!;
+  async function choose(value: string) {
+    await act(async () => {
+      select.value = value;
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    });
+  }
+  await choose('qa');
+  expect(container.querySelector('.card')?.textContent).toContain('准备样例');
+  await choose('(none)');
+  expect(container.querySelector('.card')?.textContent).toContain('等待认领');
+  await click(button('清除筛选'));
+  expect(container.querySelectorAll('.card')).toHaveLength(3);
+});
+
+it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
+  const { WorktreesPage } = await import('../src/worktrees.tsx');
+  const project = {
+    id: 'app',
+    repository: '/repo',
+    targetBranch: 'main',
+    writeEnabled: true,
+    commands: [],
+  };
+  let sha = 'a'.repeat(40);
+  const tree = () => ({
+    id: 'tree',
+    projectId: 'app',
+    taskId: 'task1',
+    kind: 'member',
+    path: '/tmp/example',
+    branch: 'concordia/task1',
+    base: 'base',
+    status: 'ready',
+    sha,
+    conflicts: [],
+    snapshot: [],
+  });
+  serve = (path) => {
+    if (path === '/api/worktrees/state')
+      return { projects: [project], trees: [tree()], approvals: [], issues: [], results: [] };
+    if (path === '/api/worktrees/publish') sha = 'b'.repeat(40);
+    if (path === '/api/board') return { tasks: [] };
+    if (path === '/api/delivery') return { phase: 'idle' };
+    return {};
+  };
+  await render(<WorktreesPage />);
+  await click(container.querySelector<HTMLInputElement>('.record input[type="checkbox"]')!);
+  await click(button('提交交付版本'));
+  await click(button('按所选提交联调（1）'));
+  expect(requests.find((r) => r.path.endsWith('/integrate'))?.body).toEqual({
+    projectId: 'app',
+    snapshot: [{ treeId: 'tree', sha: 'a'.repeat(40) }],
+  });
+});

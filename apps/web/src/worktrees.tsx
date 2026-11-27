@@ -38,6 +38,8 @@ export interface Worktrees {
   projects: Project[];
   trees: Tree[];
   approvals: Approval[];
+  issues: { id: string; projectId: string; taskIds: string[]; paths: string[] }[];
+  results: { treeId: string; name: string | null; status: string; result: unknown }[];
 }
 const base = 'worktrees/';
 export function WorktreesPage() {
@@ -46,10 +48,11 @@ export function WorktreesPage() {
   const feedback = useAction();
   const [projectId, setProjectId] = useState('');
   const [task, setTask] = useState('');
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selected, setSelected] = useState<{ treeId: string; sha: string }[]>([]);
   const [editing, setEditing] = useState<Project | null>();
   const [inspect, setInspect] = useState<Approval>();
   const [removing, setRemoving] = useState<Tree>();
+  const cancel = useAction();
   const [review, setReview] = useState('');
   const selectedProject = state.data?.projects.find((p) => p.id === projectId) ?? state.data?.projects[0];
   const trees =
@@ -178,10 +181,12 @@ export function WorktreesPage() {
                     <label className="check">
                       <input
                         type="checkbox"
-                        checked={selected.includes(t.id)}
+                        checked={selected.some((s) => s.treeId === t.id && s.sha === t.sha)}
                         onChange={(e) =>
                           setSelected(
-                            e.target.checked ? [...selected, t.id] : selected.filter((id) => id !== t.id),
+                            e.target.checked && t.sha
+                              ? [...selected.filter((s) => s.treeId !== t.id), { treeId: t.id, sha: t.sha }]
+                              : selected.filter((s) => s.treeId !== t.id),
                           )
                         }
                       />
@@ -227,15 +232,17 @@ export function WorktreesPage() {
               </article>
             ))}
           </section>
+          {selected.length > 0 && (
+            <p className="help">
+              所选快照：{selected.map((s) => s.sha.slice(0, 12)).join(' · ')}{' '}
+              <button onClick={() => setSelected([])}>清除选择</button>
+            </p>
+          )}
           <button
             disabled={!selected.length || feedback.busy}
             onClick={() =>
               void feedback.run(async () => {
-                const snapshot = trees
-                  .filter((t) => selected.includes(t.id) && t.sha)
-                  .map((t) => ({ treeId: t.id, sha: t.sha }));
-                if (!snapshot.length) throw new Error('没有可联调的提交。');
-                await mutate('integrate', { projectId: selectedProject.id, snapshot });
+                await mutate('integrate', { projectId: selectedProject.id, snapshot: selected });
                 setSelected([]);
               }, '已按所选版本创建联调记录。')
             }
@@ -271,6 +278,44 @@ export function WorktreesPage() {
           <Empty>暂无待审批操作。</Empty>
         )}
       </section>
+      {state.data?.issues
+        ?.filter((i) => i.projectId === selectedProject?.id)
+        .map((i) => (
+          <div key={i.id} className="notice error">
+            <strong>联调冲突</strong>
+            <p>{i.paths.join('、')}</p>
+            <p>已通知 {i.taskIds.join('、')}</p>
+          </div>
+        ))}
+      {selectedProject && (
+        <details className="panel">
+          <summary>项目命令与合并记录</summary>
+          {state.data?.results
+            ?.filter((r) => trees.some((t) => t.id === r.treeId))
+            .map((r, index) => (
+              <div className="history" key={r.treeId + '-' + index}>
+                <strong>
+                  {r.name ?? '合并'} · {r.status}
+                </strong>
+                <p>{r.treeId}</p>
+                {r.result != null && <pre>{JSON.stringify(r.result, null, 2)}</pre>}
+                {r.status === 'running' && (
+                  <button
+                    disabled={cancel.busy}
+                    onClick={() =>
+                      void cancel.run(async () => {
+                        await mutate('cancel-command', { treeId: r.treeId });
+                      })
+                    }
+                  >
+                    取消项目命令
+                  </button>
+                )}
+              </div>
+            ))}
+        </details>
+      )}
+      <Notice error={cancel.error} />
       {review && (
         <p role="status" className="notice">
           {review}
@@ -334,8 +379,20 @@ export function WorktreesPage() {
               ? inspect.diff
               : JSON.stringify([inspect.executable, ...(inspect.args ?? [])], null, 2)}
           </pre>
-          <Notice error={feedback.error} />
+          <Notice error={feedback.error || cancel.error} />
           <div className="modal-actions">
+            {feedback.busy && inspect.kind === 'command' && (
+              <button
+                disabled={cancel.busy}
+                onClick={() =>
+                  void cancel.run(async () => {
+                    await api(base + 'cancel-command', 'POST', { treeId: inspect.treeId });
+                  })
+                }
+              >
+                取消正在运行的命令
+              </button>
+            )}
             <button onClick={() => setInspect(undefined)}>关闭</button>
             <button
               className="primary"
