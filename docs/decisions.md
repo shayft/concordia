@@ -11,6 +11,7 @@
 | 2026-11-27 | 父进程先退出后如何收回后代 | 每次 CLI 预检或运行都先建立专用管理进程。在 POSIX 进程组内发送 SIGTERM 和 SIGKILL；Windows 在启动 CLI 前加入 kill-on-close Job Object，独立控制台先发送 CTRL_BREAK。默认宽限 300 毫秒 | 组长持续拥有身份，避免向已经回收的 PID 发信。运行中登记 PID 和启动时间，IPC 断开触发清理。组长意外丢失时报告无法确认清理结果 |
 | 2026-11-27 | 如何跨平台存放密钥 | 保留 keychain: 逻辑引用，通过 @napi-rs/keyring 访问 macOS Keychain、Windows Credential Manager、Linux Secret Service。终端隐藏输入，Linux 后端显式固定 | 业务层能复用引用，凭据服务缺失或锁定时可停止并给出诊断。凭据只在原生系统存储和当前请求内存中使用 |
 | 2026-11-27 | 如何同时验证与脱敏 | 固定回显 CONCORDIA_OK；CLI 录制仅重建必要字段，错误按有限类别显示。网关远程仅 HTTPS，可用本机回环 HTTP 测试；拒绝跳转，限制正文大小，不补 /v1 | 防止把账号、任意输出、请求头或网关错误中的秘密带进样本与日志，同时保留 HTTP 状态、耗时和用量 |
+| 2026-11-27 | 哪个测试连接已经取得持续授权 | 用户已持续批准本项目云端环境的 Codex CLI。后续在同等只读权限下使用该连接时可直接使用有效预检 ID 执行，并说明预计次数。Claude、本机账号和 API 网关按各自授权处理 | 便于继续同一云端测试。实际遭遇沙箱或权限限制时依用户原约束停止，由用户决定运行地点 |
 | 2026-11-27 | 哪些能力留到下一阶段 | 阶段 1 的运行时和提供方仅实现连接探针。工作流、MCP 动作、连接编辑、流式响应和持久化执行恢复按开发计划推进 | 本次交付独立可验证，保留核心层的时钟、ID、存储注入边界 |
 
 进程管理依据为 [Node child_process](https://nodejs.org/api/child_process.html)、[Windows Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[控制台事件](https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent) 和[控制处理函数](https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler)。系统凭据接口与网关协议依据分别见[凭据说明](credentials.md)及[网关说明](gateway.md)。
