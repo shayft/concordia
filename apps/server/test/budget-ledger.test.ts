@@ -63,18 +63,12 @@ it('不同连接共池，跨工作区调用共用全局限额；删除上限不�
   const id = reserveBudget(db, scope);
   expect(() => reserveBudget(db, { ...scope, connectionId: 'two', workspaceId: 'second' })).toThrow(
     BudgetExceeded,
-    PoolSuspended,
-    pausedPools,
-    resumeSharedPool,
   );
   settleBudget(db, id, { totalTokens: 10 });
   const next = reserveBudget(db, { ...scope, connectionId: 'two', workspaceId: 'second' });
   settleBudget(db, next);
   expect(() => reserveBudget(db, { ...scope, poolId: 'separate', memberId: 'other' })).toThrow(
     BudgetExceeded,
-    PoolSuspended,
-    pausedPools,
-    resumeSharedPool,
   );
   expect((await app.inject({ method: 'DELETE', url: '/api/budgets/global/all' })).statusCode).toBe(204);
   expect(budgetReport(db).usage.find((u) => u.scope === 'global')).toMatchObject({ calls: 2, tokens: 110 });
