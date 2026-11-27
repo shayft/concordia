@@ -90,7 +90,7 @@ function gatewayError(status: number, body: unknown): string {
 }
 
 // A native credential prompt may stay open even after the caller cancels.
-async function readUntilStopped(read: CredentialReader, reference: string, signal: AbortSignal) {
+export async function readUntilStopped(read: CredentialReader, reference: string, signal: AbortSignal) {
   signal.throwIfAborted();
   return new Promise<string>((resolve, reject) => {
     const onAbort = () => reject(new Error('凭据读取已取消'));
