@@ -8,6 +8,8 @@ on:
       - '.github/workflows/stage-1.yml'
       - 'apps/**'
       - 'packages/**'
+      - 'examples/**'
+      - 'vitest.config.ts'
       - 'package.json'
       - 'pnpm-*.yaml'
       - 'eslint.config.js'
