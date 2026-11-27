@@ -210,6 +210,35 @@ describe('真实 SQLite 与脚本化成员', () => {
     scheduler.answerAsUser(q.id, '沿用');
     expect(scheduler.board().questions.find((item) => item.id === q.id)?.status).toBe('answered');
   });
+  it('必需审查已绑定执行；上游不兼容使审查重新就绪时同时撤销主卡验收', () => {
+    scheduler.apply({
+      id: 'review-binding',
+      title: '审查',
+      goal: '核对版本',
+      acceptance: ['已审查'],
+      requiredTasks: ['review'],
+      requiredSlots: ['independent'],
+      agents: ['lead', 'supplier', 'writer'].map((id) => ({ id, name: id, connection: id })),
+      slots: ['input', 'independent'].map((id) => ({ id, title: id })),
+      tasks: [
+        { id: 'up', owner: 'supplier', title: '输入', produces: ['input'] },
+        { id: 'review', owner: 'lead', title: '审查', consumes: [{ slotId: 'input' }] },
+        { id: 'other', owner: 'writer', title: '独立交付', produces: ['independent'] },
+      ],
+    });
+    const up = scheduler.claim('up');
+    pub(up.id, 'input', 'v1');
+    const review = scheduler.claim('review');
+    submit(review.id, 'review');
+    const other = scheduler.claim('other');
+    pub(other.id, 'independent', '独立正文');
+    submit(other.id, 'other');
+    scheduler.accept();
+    expect(scheduler.events().at(-1)?.data.acceptedExecutions).toMatchObject({ review: review.id });
+    pub(up.id, 'input', 'v2', true);
+    expect(task('review').status).toBe('ready');
+    expect(scheduler.board().acceptance).toBeNull();
+  });
   it('钉住旧版的任务可继续运行，但基于不兼容旧输入的快照不能验收', () => {
     const spec = demoSpec();
     scheduler.apply(spec);

@@ -21,6 +21,7 @@ export interface Task extends TaskSpec {
   retries: number;
   active?: string;
   progressRef?: string;
+  acceptedExecution?: string;
   reason?: string;
   replyFor?: string;
 }
@@ -182,6 +183,9 @@ export function fence(state: State, task: Task, status: Execution['status'], now
 }
 export function reopen(task: Task, state: State, now: number) {
   fence(state, task, 'obsolete', now);
+  const plan = activePlan(state);
+  if (plan.requiredTasks?.includes(task.id) || !plan.requiredSlots.length) state.acceptance = null;
+  delete task.acceptedExecution;
   task.rework++;
   if (task.rework > task.maxRework) transition(task, 'decision', '返工次数已用尽');
   else refresh(task, state);

@@ -422,8 +422,12 @@ export class Scheduler {
         case 'accept':
         case 'rework':
           if (task.status !== 'review') throw new Error('任务尚未进入审查');
-          if (operation === 'accept') transition(task, 'done');
-          else reopen(task, s, this.deps.now());
+          if (operation === 'accept') {
+            const result = s.executions.findLast((e) => e.taskId === taskId && e.status === 'success');
+            if (!result) throw new Error('任务缺少可验收的执行');
+            task.acceptedExecution = result.id;
+            transition(task, 'done');
+          } else reopen(task, s, this.deps.now());
           break;
         default:
           throw new Error('未知控制指令');
@@ -583,7 +587,16 @@ export class Scheduler {
         throw new Error('必需任务尚未完成审查');
       if (s.questions.some((q) => q.status === 'open' && q.blocking)) throw new Error('尚有未答复的阻塞问题');
       s.acceptance = snapshot;
-      log('plan.accepted', { snapshot, revision: s.revision });
+      const acceptedExecutions = Object.fromEntries(
+        [...new Set([...requiredTasks, ...plan.requiredSlots.map((id) => latest(s, id)!.taskId)])].map(
+          (id) => [
+            id,
+            entity(s.tasks, id).acceptedExecution ??
+              s.executions.findLast((e) => e.taskId === id && e.status === 'success')?.id,
+          ],
+        ),
+      );
+      log('plan.accepted', { snapshot, acceptedExecutions, revision: s.revision });
       return snapshot;
     });
   }
