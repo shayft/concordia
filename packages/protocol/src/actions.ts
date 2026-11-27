@@ -7,7 +7,7 @@ export const actionVariants = [
   z.strictObject({ type: z.literal('assign_task'), taskId: id, assignee: id }),
   z.strictObject({ type: z.literal('publish_artifact'), slotId: id, content: message,
     incompatible: z.boolean().optional(), kind: z.enum(['text', 'git_commit']).optional() }),
-  z.strictObject({ type: z.literal('read_artifact'), slotId: id, versionId: id.optional() }),
+  z.strictObject({ type: z.literal('read_artifact'), slotId: id, versionId: id.optional(), path: z.string().min(1).max(1024).optional() }),
   z.strictObject({ type: z.literal('ask_question'), to: id, question: message, blocking: z.boolean(), replyTo: id.optional() }),
   z.strictObject({ type: z.literal('answer_question'), questionId: id, answer: message }),
   z.strictObject({ type: z.literal('send_message'), to: id, message }),
