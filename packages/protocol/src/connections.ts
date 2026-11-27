@@ -40,7 +40,7 @@ export const connectionSchema = z.union([
     params: params.optional(),
   }),
   z.strictObject({
-    ...base, kind: z.enum(cliKinds),
+    ...base, kind: z.enum(cliKinds), actionChannel: z.enum(['mcp', 'json']).optional(),
     executable: z.string().min(1).max(4096).optional(),
     cwd: z.string().min(1).max(4096).optional(),
   }),
