@@ -1,3 +1,4 @@
+import { BudgetExceeded, meterProvider, registerBudgets, reserveBudget, settleBudget } from './budget-ledger.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import type { FastifyInstance } from 'fastify';
 import { type z } from 'zod';
@@ -98,6 +99,13 @@ function checkConfig(db: DatabaseSync, key: Resource, data: Connection | Catalog
     throw new CatalogError(400, 'mock- 标识供模拟使用，请为真实连接选择其他标识。');
   }
   if (key === 'members' && 'role' in data) {
+    const seen = new Set([data.id]);
+    let superior = data.reportsTo;
+    while (superior) {
+      if (seen.has(superior)) throw new CatalogError(400, '直属上级不能形成循环。');
+      seen.add(superior);
+      superior = find(db, 'members', superior).reportsTo;
+    }
     const connection = find(db, 'connections', data.connectionId);
     if (!data.modelId && 'baseUrl' in connection) throw new CatalogError(400, 'API 成员必须选择模型。');
     if (data.modelId && find(db, 'models', data.modelId).connectionId !== data.connectionId)
@@ -124,6 +132,7 @@ function mutate(db: DatabaseSync, write: () => void) {
 }
 
 export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync, options: CatalogOptions): void {
+  registerBudgets(app,db);
   const probes = new Set<Probe>();
   currentProbes.set(db, probes);
   app.addHook('preClose', async () => { cancelCatalogProbes(db); });
@@ -143,6 +152,7 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
   // Keep this error handler confined to catalog routes. The parent owns session and Origin checks.
   app.register(async api => {
     api.setErrorHandler((error, _request, reply) => {
+      if (error instanceof BudgetExceeded) return reply.code(409).send({error:error.message});
       if (error instanceof CatalogError) return reply.code(error.statusCode).send({ error: error.message });
       if (error instanceof CliDiagnosticError) return reply.code(400).send({ error: error.message });
       const code = typeof error === 'object' && error && 'statusCode' in error ? error.statusCode : undefined;
@@ -204,6 +214,8 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
         if (limitReached({ connectionId: connection.id }, connection.maxConcurrent) ||
             limitReached({ poolId }, pool?.maxConcurrent ?? connection.maxConcurrent))
           throw new CatalogError(409, '连接或额度池并发已满。');
+        const workspace = db.prepare('SELECT id FROM workspaces WHERE active=1').get()?.id;
+        const scope = { workspaceId:workspace ? String(workspace):undefined, memberId:member?.id, connectionId:connection.id, poolId };
         const controller = new AbortController();
         const probe = { controller, connectionId: connection.id, memberId: member?.id, modelId: model?.id, poolId };
         probes.add(probe);
@@ -213,18 +225,22 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
           if ('baseUrl' in connection) {
             if (mode === 'inspect') throw new CatalogError(400, 'API 连接无需 CLI 预检。');
             const start = performance.now();
-            const result = await createModelProvider(providerConfig(connection, model)).validateConnection(controller.signal);
+            const provider = meterProvider(db,scope,createModelProvider(providerConfig(connection, model)));
+            const result = await provider.validateConnection(controller.signal);
             const elapsedMs = Math.round(performance.now() - start);
             return result.ok ? { ...result, elapsedMs } : { ok: false, error: result.error.message,
               httpStatus: result.error.httpStatus, elapsedMs };
           }
-          const cli = { executable: connection.executable, cwd: connection.cwd, model: model?.modelId,
+          const cli = { executable: connection.executable, cwd: connection.cwd, model: model?.modelId, actionChannel:connection.actionChannel,
             confirmUnmanaged: input.confirmUnmanaged, signal: controller.signal };
           if (mode === 'inspect') return await inspectCli(connection.kind, cli);
           if (!('inspectionId' in input) || typeof input.inspectionId !== 'string') throw new CatalogError(400, '请先完成 CLI 预检。');
           const started = performance.now();
-          const result = await runCliProbe(connection.kind, { ...cli, approved: true, inspectionId: input.inspectionId });
-          return { ok: true, text: result.text, elapsedMs: Math.round(performance.now() - started) };
+          const reservation = reserveBudget(db,scope);
+          try {
+            const result = await runCliProbe(connection.kind, { ...cli, approved: true, inspectionId: input.inspectionId });
+            return { ok: true, text: result.text, elapsedMs: Math.round(performance.now() - started) };
+          } finally { settleBudget(db,reservation); }
         } finally {
           reply.raw.off('close', stop);
           probes.delete(probe);

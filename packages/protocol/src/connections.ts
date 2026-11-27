@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { actionTools } from './actions.ts';
 
 const id = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u);
 const label = z.string().trim().min(1).max(256);
@@ -53,7 +54,9 @@ export const catalogModelSchema = z.strictObject({
 });
 export const memberSchema = z.strictObject({
   ...common, role: label, connectionId: id, modelId: id.optional(),
-  systemPrompt: z.string().max(12000).optional(),
+  systemPrompt: z.string().max(12000).optional(), reportsTo: id.optional(),
+  allowedActions: z.array(z.enum(actionTools.map(tool => tool.name))).max(actionTools.length)
+    .refine(items => new Set(items).size === items.length).optional(),
 });
 export const quotaPoolSchema = z.strictObject({ id, name: label, maxConcurrent: count });
 export const catalogSchema = z.strictObject({

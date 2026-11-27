@@ -101,6 +101,17 @@ describe('连接、独立模型、岗位与额度池', () => {
     expect(getCatalog(db).connections).toHaveLength(0);
   });
 
+  it('岗位动作清单可显式为空，直属上级须存在且不能成环', async () => {
+    await setup();
+    const reports = { ...member, id:'junior', reportsTo:'test', allowedActions:[] };
+    expect((await post('members',reports)).statusCode).toBe(201);
+    expect(resolveMember(db,'junior').member.allowedActions).toEqual([]);
+    expect((await put('members/test',{...member,reportsTo:'junior'})).statusCode).toBe(400);
+    expect((await put('members/junior',{...reports,reportsTo:'missing'})).statusCode).toBe(404);
+    expect((await put('members/junior',{...reports,allowedActions:['undeclared']})).statusCode).toBe(400);
+    expect((await del('members/test')).statusCode).toBe(409);
+  });
+
   it('保留模拟命名空间；旧连接可列出、删除，不能实跑或误充模拟成员', async () => {
     const legacy = { ...gateway, id: 'mock-old' };
     expect((await post('connections', legacy)).statusCode).toBe(400);
@@ -173,7 +184,7 @@ describe('连接、独立模型、岗位与额度池', () => {
       for await (const part of req) body += part;
       seen.push({ url: req.url, model: JSON.parse(body).model });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ choices: [{ message: { content: 'CONCORDIA_OK' }, finish_reason:'stop' }] }));
+      res.end(JSON.stringify({ choices: [{ message: { content: 'CONCORDIA_OK' }, finish_reason:'stop' }], usage:{prompt_tokens:2,completion_tokens:3,total_tokens:5} }));
     });
     await new Promise<void>(resolve => mock.listen(0, '127.0.0.1', resolve));
     try {
@@ -189,7 +200,17 @@ describe('连接、独立模型、岗位与额度池', () => {
       for (const id of ['a', 'b']) {
         expect((await run(id, { modelId: id, approved: true })).json()).toMatchObject({ ok: true, text: 'CONCORDIA_OK' });
       }
-      expect(seen).toEqual(['a', 'b'].map(id => ({ url: '/' + id + '/chat/completions', model: '任意/' + id })));
+      await post('models',{...model,id:'alias',connectionId:'a',modelId:'another.model:v2'});
+      expect((await run('a',{modelId:'alias',approved:true})).json()).toMatchObject({ok:true});
+      expect((await app.inject('/api/budgets')).json().usage.find((entry:{scope:string})=>entry.scope==='global'))
+        .toMatchObject({calls:3,tokens:15,active:0});
+      expect((await put('budgets/global/all',{maxCalls:3})).statusCode).toBe(200);
+      expect((await run('a',{modelId:'alias',approved:true})).statusCode).toBe(409);
+      expect(seen).toEqual([
+        {url:'/a/chat/completions',model:'任意/a'},
+        {url:'/b/chat/completions',model:'任意/b'},
+        {url:'/a/chat/completions',model:'another.model:v2'},
+      ]);
     } finally { await new Promise<void>(resolve => mock.close(() => resolve())); }
   });
 });
