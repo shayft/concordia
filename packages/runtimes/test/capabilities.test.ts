@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { inspectCli, runCliProbe } from '../src/cli.ts';
-import { nativeErrorCategory } from '../src/errors.ts';
+import { nativeCliFailure, nativeErrorCategory } from '../src/errors.ts';
 import { parseProbeOutput } from '../src/output.ts';
 import { runProcess } from '../src/process.ts';
 
@@ -92,4 +92,14 @@ it.each([
   const failed = JSON.stringify({ type: 'turn.failed', error: { message } });
   expect(() => parseProbeOutput('codex', failed)).toThrow(category);
   expect(() => parseProbeOutput('codex', failed)).not.toThrow('discard-me');
+});
+
+it.each([
+  ['429 too many requests','rate_limit'], ['401 invalid token','auth'],
+  ['insufficient_quota','budget'], ['dns lookup failed','transient'],
+  ['permission denied','permission'], ['unexpected argument','fatal'],
+])('原生分类 %s 可直接交给调度器', (raw, kind) => {
+  const error = nativeCliFailure(raw + ' OMIT_THIS');
+  expect(error.kind).toBe(kind);
+  expect(error.message).not.toContain('OMIT_THIS');
 });

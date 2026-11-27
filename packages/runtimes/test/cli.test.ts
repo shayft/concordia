@@ -59,7 +59,7 @@ describe('以独立进程执行两种假 CLI', () => {
   afterAll(async () => { await fixture?.dispose(); });
   for (const kind of ['claude', 'codex'] as const) {
     it(kind + ' 在最小 PATH 下接受带空格的工作目录和绝对路径，输出可脱敏回放', async () => {
-      const options = { cwd: fixture.cwd, env, executable: fixture.executable(kind), confirmUnmanaged: true };
+      const options = { cwd: fixture.cwd, env, executable: fixture.executable(kind), confirmUnmanaged: true, model: 'custom/model' };
       const { inspectionId } = await inspectCli(kind, options);
       const result = await runCliProbe(kind, { ...options, approved: true, inspectionId });
       expect(result.text).toBe('CONCORDIA_OK');
@@ -67,6 +67,7 @@ describe('以独立进程执行两种假 CLI', () => {
       expect(result.billing).toBe('未知');
       expect(result.executable).toBe(options.executable);
       expect(result.version).toBe('1.2.3');
+      expect(result.arguments[result.arguments.indexOf('--model') + 1]).toBe(options.model);
       expect(JSON.stringify(result)).not.toMatch(/OMITTED_MARKER|unused-marker/);
       expect(parseProbeOutput(kind, result.recording)).toMatchObject({ text: result.text, recording: result.recording });
     }, 60_000);

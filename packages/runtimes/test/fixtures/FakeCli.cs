@@ -12,7 +12,7 @@ internal static class FakeCli
         if (args.Contains("--version"))
             Console.WriteLine(claude ? "1.2.3 (Claude Code)" : "codex-cli 1.2.3");
         else if (args.Contains("--help"))
-            Console.WriteLine("--print --output-format --safe-mode --permission-mode --tools --disallowedTools --strict-mcp-config --max-turns --no-session-persistence --settings --no-daemon --disable --ask-for-approval --sandbox --ephemeral --skip-git-repo-check --json");
+            Console.WriteLine("--print --output-format --safe-mode --permission-mode --tools --disallowedTools --strict-mcp-config --max-turns --no-session-persistence --settings --no-daemon --disable --ask-for-approval --sandbox --ephemeral --skip-git-repo-check --json --model");
         else if (args.Contains("status"))
         {
             if (claude)

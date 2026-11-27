@@ -14,6 +14,7 @@ export interface CliOptions {
   passEnv?: readonly string[];
   signal?: AbortSignal;
   confirmUnmanaged?: boolean;
+  model?: string;
 }
 
 const claudeArgs = [
@@ -26,9 +27,9 @@ const claudeArgs = [
 
 // Keep the existing model/provider/auth selection. Check the effective MCP list
 // with the same overrides before starting exec; refuse if any server survives.
-const disabledFeatures = ['shell_tool', 'shell_snapshot', 'apps', 'hooks', 'plugins', 'multi_agent',
+export const disabledFeatures = ['shell_tool', 'shell_snapshot', 'apps', 'hooks', 'plugins', 'multi_agent',
   'computer_use', 'browser_use', 'code_mode', 'image_generation'];
-const codexOptions = [
+export const codexOptions = [
   '--no-daemon', ...disabledFeatures.flatMap(feature => ['--disable', feature]),
   '-c', 'notify=[]',
   '-c', 'web_search="disabled"', '-c', 'mcp_servers={}',
@@ -37,6 +38,14 @@ const codexArgs = [
   ...codexOptions, '--ask-for-approval', 'on-request', 'exec',
   '--sandbox', 'read-only', '--ephemeral', '--skip-git-repo-check', '--json', probePrompt,
 ];
+
+export function modelArgs(model?: string): string[] {
+  if (model === undefined) return [];
+  if (!model.trim() || model.length > 200 || model.startsWith('-') || Array.from(model).some(c => c.charCodeAt(0) < 32)) {
+    throw new CliDiagnosticError('CLI 模型名无效。');
+  }
+  return ['--model', model];
+}
 
 async function inWorkspace<T>(options: CliOptions, work: (cwd: string) => Promise<T>) {
   if (options.cwd !== undefined) {
@@ -56,7 +65,7 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
       return await runProcess(executable, args, { cwd, env: childEnv, signal: options.signal, timeoutMs });
     } catch (error) {
       if (options.signal?.aborted) throw new CliDiagnosticError('CLI 执行已取消。');
-      if (error instanceof Error && error.message === '进程运行超时') throw new CliDiagnosticError('CLI 执行超时。');
+      if (error instanceof Error && error.message === '进程运行超时') throw new CliDiagnosticError('CLI 执行超时。','transient');
       throw new CliDiagnosticError('CLI 无法在当前权限、PATH 和输出限制内执行。请检查其绝对路径、运行依赖和进程隔离支持。');
     }
   };
@@ -67,7 +76,8 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   const version = readVersion.stdout.trim().match(pattern)?.[1];
   if (readVersion.exitCode !== 0 || !version) throw new CliDiagnosticError('无法识别官方 CLI 版本。');
   const help = await invoke(kind === 'claude' ? ['--help'] : ['exec', '--help']);
-  const args = kind === 'claude' ? claudeArgs : codexArgs;
+  const baseArgs = kind === 'claude' ? claudeArgs : codexArgs;
+  const args = options.model === undefined ? baseArgs : [...baseArgs.slice(0, -1), ...modelArgs(options.model), probePrompt];
   const rootHelp = kind === 'codex' ? await invoke(['--help']) : help;
   const helpText = help.stdout + '\n' + rootHelp.stdout;
   const flags = args.filter(arg => arg.startsWith('--'));

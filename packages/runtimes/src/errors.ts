@@ -1,5 +1,12 @@
 // Only fixed diagnostic messages from Concordia may reach the command line.
-export class CliDiagnosticError extends Error {}
+export type CliFailure = 'rate_limit' | 'auth' | 'budget' | 'transient' | 'permission' | 'fatal';
+export class CliDiagnosticError extends Error {
+  readonly kind: CliFailure;
+  constructor(message: string, kind: CliFailure = 'fatal') {
+    super(message);
+    this.kind = kind;
+  }
+}
 
 const nativeErrorPatterns: ReadonlyArray<readonly [RegExp, string]> = [
   [/(?:\b401\b|unauthori[sz]ed|not (?:logged|signed) in|invalid[_ -](?:api[_ -]key|token)|authentication (?:failed|required)|token[_ -]expired)/i, '认证失败'],
@@ -18,4 +25,21 @@ export function nativeErrorCategory(message: string) {
   const evidence = message.split('\n').filter(line =>
     !/^warning:\s*proceeding, even though we could not create PATH aliases:/i.test(line.trim())).join('\n');
   return nativeErrorPatterns.find(([pattern]) => pattern.test(evidence))?.[1] ?? '原因未知';
+}
+
+export function nativeCliFailure(evidence: string) {
+  const category = nativeErrorCategory(evidence);
+  let kind: CliFailure;
+  if (/insufficient[_ -](?:quota|credits|balance)|credit balance is too low|billing[_ -]hard[_ -]limit/i.test(evidence)) {
+    kind = 'budget';
+  } else {
+    switch (category) {
+      case '限流或额度不足': kind = 'rate_limit'; break;
+      case '认证失败': kind = 'auth'; break;
+      case '网络、代理或 DNS 异常': case '上游服务异常': kind = 'transient'; break;
+      case '服务拒绝访问': case '本机沙箱或权限限制': kind = 'permission'; break;
+      default: kind = 'fatal';
+    }
+  }
+  return new CliDiagnosticError('CLI 执行失败（' + category + '）。', kind);
 }

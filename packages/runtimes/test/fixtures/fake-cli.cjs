@@ -6,7 +6,7 @@ const claude = kind === 'claude';
 if (args.includes('--version')) {
   console.log(claude ? '1.2.3 (Claude Code)' : 'codex-cli 1.2.3');
 } else if (args.includes('--help')) {
-  console.log('--print --output-format --safe-mode --permission-mode --tools --disallowedTools --strict-mcp-config --max-turns --no-session-persistence --settings --no-daemon --disable --ask-for-approval --sandbox --ephemeral --skip-git-repo-check --json');
+  console.log('--print --output-format --safe-mode --permission-mode --tools --disallowedTools --strict-mcp-config --max-turns --no-session-persistence --settings --no-daemon --disable --ask-for-approval --sandbox --ephemeral --skip-git-repo-check --json --model');
 } else if (args.includes('status')) {
   if (claude) console.log(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', account: 'OMITTED_MARKER' }));
   else console.error('Logged in using ChatGPT');
