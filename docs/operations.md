@@ -18,7 +18,7 @@ pnpm serve
 | macOS | `~/Library/Application Support/Concordia` |
 | Windows | `%LOCALAPPDATA%\Concordia` |
 
-启动前可用 `CONCORDIA_DATA_DIR` 选择一个单独的、本地账户私有的绝对目录。应用目录包含连接和岗位配置、任务状态、消息、工作区记录及项目内容。原始项目仓库、系统凭据和 CLI 账号各自独立。新账户或新机器使用同一网关时，需要在该机的系统存储中按原引用重新录入。CLI 会话恢复还依赖原生 CLI 的当前本地登录和会话。
+启动前可用 `CONCORDIA_DATA_DIR` 选择一个单独的、本地账户私有的绝对目录。请使用真实目录路径；受管理目录及数据库拒绝符号链接、目录联接和数据库硬链接。应用目录包含连接和岗位配置、任务状态、消息、工作区记录及项目内容。原始项目仓库、系统凭据和 CLI 账号各自独立。新账户或新机器使用同一网关时，需要在该机的系统存储中按原引用重新录入。CLI 会话恢复还依赖原生 CLI 的当前本地登录和会话。
 
 ## 备份与恢复
 
@@ -32,7 +32,7 @@ pnpm exec tsx apps/server/src/backup.ts create "/absolute/data" "/absolute/backu
 pnpm exec tsx apps/server/src/backup.ts restore "/absolute/backups/concordia-01" "/absolute/restored"
 ```
 
-备份命令取得服务独占锁，对 `catalog.sqlite`、`worktrees.sqlite` 和各看板的 `workspace.sqlite` 进行完整性及外键检查，再通过 SQLite 备份 API 导出包含已提交 WAL 事务的快照。它一并备份演练目录 `assignee-delivery`（含演练仓库、SQLite 和工作树），并复制 `boards`、`objects` 和 `worktrees` 中的应用数据，包括工作树中尚未提交的文件。工作树内的符号链接只复制链接本身。发布备份前核对内容寻址对象文件名与 SHA-256；恢复时校验整个目录的路径、类型、文件内容和链接目标。只有校验完成才发布目标目录。备份中包含原有的私人讨论和项目源码，应按本地账户的数据保管；SHA-256 用于发现损坏，更换备份介质时请从可信位置取得副本。[Node.js SQLite 备份接口](https://nodejs.org/docs/latest-v24.x/api/sqlite.html#sqlitebackupsource-path-options)
+备份命令取得服务独占锁，对 `catalog.sqlite`、`worktrees.sqlite` 和各看板的 `workspace.sqlite` 进行完整性及外键检查，再通过 SQLite 备份 API 导出包含已提交 WAL 事务的快照。它一并备份演练目录 `assignee-delivery`（含演练仓库、SQLite 和工作树），并复制 `boards`、`objects` 和 `worktrees` 中的应用数据，包括工作树中尚未提交的文件。工作树内的符号链接只复制链接本身。共享硬链接、多链接数据库旁文件或无法校验的文件会使备份停止。发布备份前核对内容寻址对象文件名与 SHA-256；恢复时校验整个目录的路径、类型、文件内容和链接目标。只有校验完成才发布目标目录。备份中包含原有的私人讨论和项目源码，应按本地账户的数据保管；SHA-256 用于发现损坏，更换备份介质时请从可信位置取得副本。[Node.js SQLite 备份接口](https://nodejs.org/docs/latest-v24.x/api/sqlite.html#sqlitebackupsource-path-options)
 
 锁、PID 登记和临时 CLI 工作目录属于运行现场，恢复时由应用重新建立。若源机器刚发生崩溃，应先在该机正常启动并核对遗留进程，停服后再备份。命令不操作系统凭据存储，备份中的连接凭据字段保留原来的 `keychain:` 引用。
 

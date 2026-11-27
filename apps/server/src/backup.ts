@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
+import { assertSingleFile, existingDataDirectory, safeDatabasePath } from '@concordia/store/paths';
 import { acquireDataDirectory } from './data-directory.ts';
 
 const manifest = 'concordia-backup-v1.sha256';
@@ -55,17 +56,11 @@ async function copyState(source: string, target: string, snapshot: boolean) {
       }
     } else if (stat.isFile()) {
       if (dbFile.test(path) && snapshot) {
-        // Reject redirected WAL files before SQLite opens any of them.
-        for (const suffix of ['-wal', '-shm', '-journal']) {
-          const side = await lstat(from + suffix).catch((e: NodeJS.ErrnoException) => {
-            if (e.code !== 'ENOENT') throw e;
-            return null;
-          });
-          if (side && !side.isFile()) throw new Error('数据库旁文件类型无效。');
-        }
-        const db = checkDatabase(from);
+        const db = checkDatabase(safeDatabasePath(source, ...path.split('/')));
         try { await backup(db, to); } finally { db.close(); }
       } else {
+        // The backup never reads files shared with an uncontrolled inode name.
+        assertSingleFile(from);
         await copyFile(from, to);
       }
       // Preserve executable bits for a restored project command while keeping backups private.
@@ -90,8 +85,8 @@ async function copyState(source: string, target: string, snapshot: boolean) {
 export async function copyApplicationState(mode: 'create' | 'restore', source: string, target: string): Promise<void> {
   checkLocation(source);
   checkLocation(target);
-  const from = await realpath(source);
-  const to = join(await realpath(dirname(target)), basename(target));
+  const from = existingDataDirectory(source);
+  const to = join(existingDataDirectory(dirname(target)), basename(target));
   checkLocation(from);
   checkLocation(to);
   const rel = relative(from, to);
@@ -108,7 +103,7 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
     let expected: string | undefined;
     if (mode === 'restore') {
       const file = join(from, manifest);
-      if (!(await lstat(file)).isFile()) throw new Error('备份清单无效。');
+      assertSingleFile(file);
       expected = (await readFile(file, 'utf8')).trim();
       if (!/^[a-f0-9]{64}$/u.test(expected)) throw new Error('备份摘要无效。');
     } else {
