@@ -10,6 +10,7 @@
   "dependencies": {
     "@concordia/protocol": "workspace:*",
     "zod": "4.6.7",
-    "koffi": "3.3.8"
+    "koffi": "3.3.8",
+    "@concordia/providers": "workspace:*"
   }
 }

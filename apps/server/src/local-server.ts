@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { healthResponseSchema } from '@concordia/protocol';
 import Fastify from 'fastify';
+import { registerApplication } from './application.ts';
 
 const webDirectory = fileURLToPath(new URL('../../web/dist/', import.meta.url));
 const cookieName = 'concordia_session';
@@ -62,9 +63,9 @@ async function loadWebFiles(directory: string) {
   return files;
 }
 
-export async function startLocalServer(directory = webDirectory) {
+export async function startLocalServer(directory = webDirectory, dataDirectory?: string) {
   const files = await loadWebFiles(directory);
-  const app = Fastify({ logger: false, bodyLimit: 1024 });
+  const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
   let launchToken: string | undefined = randomBytes(32).toString('base64url');
   const session = randomBytes(32).toString('base64url');
 
@@ -84,6 +85,12 @@ export async function startLocalServer(directory = webDirectory) {
 
     const isRead = request.method === 'GET' || request.method === 'HEAD';
     const origin = request.headers.origin;
+    const mcp = request.method === 'POST' && /^\/mcp\/[A-Za-z0-9_-]{1,96}$/.test(request.url);
+    if (mcp) {
+      if (origin !== undefined && origin !== 'http://' + host) return reply.code(403).send();
+      // The handler verifies the bearer bound to this specific execution.
+      return;
+    }
     if ((!isRead || origin !== undefined) && origin !== 'http://' + host) {
       return reply.code(403).send();
     }
@@ -110,6 +117,12 @@ export async function startLocalServer(directory = webDirectory) {
   for (const [route, file] of files) {
     app.get(route, async (_request, reply) => reply.type(file.type).send(file.content));
   }
-  const url = await app.listen({ host: '127.0.0.1', port: 0 });
-  return { launchUrl: url + '/launch#' + launchToken, close: () => app.close() };
+  try {
+    if (dataDirectory) await registerApplication(app, dataDirectory);
+    const url = await app.listen({ host: '127.0.0.1', port: 0 });
+    return { launchUrl: url + '/launch#' + launchToken, close: () => app.close() };
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
 }
