@@ -7,6 +7,11 @@ on:
     paths:
       - '.github/workflows/native-vault.yml'
       - 'packages/providers/test-native/**'
+      - 'packages/providers/src/credentials.ts'
+      - 'packages/providers/package.json'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
 
 permissions:
   contents: read
