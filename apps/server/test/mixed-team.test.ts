@@ -1,5 +1,6 @@
 import { browserSession } from './browser-session.ts';
 import { once } from 'node:events';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -109,6 +110,7 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
       role: '交付接口',
       connectionId: 'cli',
       systemPrompt: marker,
+      allowedActions: ['publish_artifact', 'submit_result'],
     });
     await post('/api/members', {
       id: 'reviewer',
@@ -148,11 +150,22 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
     });
     const before = await board();
     expect(before.tasks.find((t) => t.id === 'review')?.status).toBe('waiting');
-    const inspection = await post('/api/members/author/inspect', {});
+    const repository = join(root, 'fixture-repo');
+    await mkdir(repository);
+    execFileSync('git', ['init', '-b', 'main', repository], {stdio:'pipe'});
+    execFileSync('git', ['-C', repository, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c','commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'base'], {stdio:'pipe'});
+    await post('/api/worktrees/projects', { id:'project', repository, targetBranch:'main', writeEnabled:true, commands:[] });
+    const tree = await post('/api/worktrees/member', { projectId:'project', taskId:'write' });
+    await writeFile(join(tree.path, 'fixture-project-servers.json'), JSON.stringify(['tree_only']));
+    const target = { projectId:'project', treeId:tree.id };
+    const inspection = await post('/api/tasks/write/inspect', target);
+    expect(inspection.cwd).toBe(tree.path);
+    expect(inspection.disabledMcpServers).toEqual(['tree_only']);
     const launched = await post('/api/tasks/write/run', {
       mode: 'live',
       approved: true,
-      inspectionId: inspection.inspectionId,
+      inspectionId: inspection.inspectionId, ...target,
     });
     await post('/api/dispatch', { maxCalls: 1, approved: true });
     await vi.waitFor(
