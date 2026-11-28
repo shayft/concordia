@@ -11,7 +11,9 @@ const metadata = await verifyCandidate(bundle, commit, expectedDigest);
 const target = resolve(destination);
 await mkdir(target, { mode: 0o700 }); // Never unpack on top of a user's installation.
 try {
-  execFileSync('tar', ['-xf', resolve(bundle, 'concordia-source.tar'), '-C', target], { shell: false });
+  // Git Bash can put a GNU tar on PATH that interprets D: as a remote host.
+  const tar = process.platform === 'win32' ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : '/usr/bin/tar';
+  execFileSync(tar, ['-xf', 'concordia-source.tar', '-C', target], { cwd: resolve(bundle), shell: false });
   const root = join(target, 'concordia');
   if (metadata.license !== 'MIT' || await hashFile(join(root, 'LICENSE')) !== metadata.licenseSha256 ||
       await hashFile(join(root, 'pnpm-lock.yaml')) !== metadata.lockSha256)
