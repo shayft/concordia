@@ -99,3 +99,7 @@ Linux Secret Service、macOS Keychain、Windows Credential Manager 的应用读�
 ## 下一次验收
 
 在选定的目标系统上依 [README](../../README.md) 安装、预检和验证，保留每个系统对应的结果。真实网关先通过隐藏输入命令存入系统凭据，取得对所选模型的一次调用授权。对两个原生 CLI 的成功回显使用 `--record`，再用 `pnpm test` 回放。真实 GUI 验收应从桌面启动同一验证工具，在该会话中核对绝对路径和登录结果。将目标平台、CLI 版本、实际参数、未知或已核实的计费来源及命令结果补入本记录。
+
+### 2026-11-28 带项目设置的 CLI 预检
+
+**模拟测试通过。** 云端 Linux 执行 `pnpm exec vitest run packages/runtimes/test/cli.test.ts packages/runtimes/test/agent-runtime.test.ts apps/server/test/mixed-team.test.ts`，3 个文件、15 项通过。通过正式 HTTP 入口核对任务选中的工作树、原生程序路径和只读权限。假 Codex 在工作树中的 MCP 名称变化后拒绝旧预检，本次执行在两个账本均为零次。重新预检后，下游成员成功收到契约并验收。假 CLI 报告某项停用无效时，任务在模型调用前停止。原生账号诊断和两份固定回显录制仍为**尚未验证**。
