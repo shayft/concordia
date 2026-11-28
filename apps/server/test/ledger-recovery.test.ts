@@ -164,3 +164,62 @@ it('只有项目授权、还未建任务树的安装丢失台账也必须恢复'
   await expect(start()).rejects.toThrow('工作树登记库缺失');
   await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
 });
+
+it.each([
+  ['空 SQLite 文件', 'VACUUM'],
+  ['其他应用的旧库', 'PRAGMA application_id=18; PRAGMA user_version=1'],
+])('已有工作区被换成%s时，不能发布新备份或恢复清单正确的旧副本', async (_label, sql) => {
+  await start();
+  await stop();
+  const legacy = join(scratch, 'legacy-backup');
+  await copyApplicationState('create', data, legacy);
+  for (const root of [data, legacy]) {
+    const workspace = join(root, 'boards', 'default', 'workspace.sqlite');
+    await rm(workspace);
+    const foreign = new DatabaseSync(workspace);
+    try {
+      foreign.exec(sql);
+    } finally {
+      foreign.close();
+    }
+  }
+  await signLegacyFixture(legacy);
+  for (const [mode, from] of [
+    ['create', data],
+    ['restore', legacy],
+  ] as const) {
+    const to = join(scratch, mode);
+    await expect(copyApplicationState(mode, from, to)).rejects.toThrow();
+    await expect(access(to)).rejects.toMatchObject({ code: 'ENOENT' });
+  }
+});
+
+it('匹配旧迁移记录的看板可通过备份检查并在恢复后迁移', async () => {
+  await start();
+  await stop();
+  const relative = join('boards', 'default', 'workspace.sqlite');
+  const workspace = join(data, relative);
+  await rm(workspace);
+  const old = new DatabaseSync(workspace);
+  try {
+    const migration = await readFile(
+      new URL('../../../packages/store/migrations/001-bootstrap.sql', import.meta.url),
+      'utf8',
+    );
+    old.exec(migration);
+    old.prepare('INSERT INTO schema_migrations VALUES(?,?)').run(1, '001-bootstrap.sql');
+    old.exec('PRAGMA user_version=1');
+  } finally {
+    old.close();
+  }
+  const copy = join(scratch, 'snapshot'),
+    restored = join(scratch, 'restored');
+  await copyApplicationState('create', data, copy);
+  await copyApplicationState('restore', copy, restored);
+  const upgraded = openStore(join(restored, relative), { mustExist: true });
+  try {
+    expect(upgraded.prepare('SELECT COUNT(*) AS n FROM workflow_state').get()?.n).toBe(0);
+  } finally {
+    upgraded.close();
+  }
+});

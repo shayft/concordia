@@ -99,7 +99,12 @@ export function verifyBackupReferences(root: string) {
     const dir = join(boards, id);
     const file = join(dir, 'workspace.sqlite');
     if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error('备份缺少工作区数据库。');
-    inspect(file, db => verifyWorkflow(dir, db));
+    inspect(file, db => {
+      // A valid SQLite header and checksum do not establish that an already
+      // registered board is a Concordia database that can be opened after restore.
+      if (!identifyStore(db)) throw new Error('备份中的工作区数据库缺少 Concordia 迁移记录。');
+      verifyWorkflow(dir, db);
+    });
   }
   const rehearsal = join(root, 'assignee-delivery');
   if (lstatSync(rehearsal, { throwIfNoEntry: false })) {
