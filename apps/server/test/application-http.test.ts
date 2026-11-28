@@ -123,6 +123,37 @@ it('README 无账号示例从手工预览到主卡验收均可在空连接目录
   expect(api.seen).toHaveLength(0);
 });
 
+it('同一模板两次新建使用独立实例；从归档修订时显示该计划自己的预算差异', async () => {
+  app = await startLocalServer(web, data);
+  const ui = await login(app);
+  await configure(ui);
+  expect((await ui.post('/api/members', {id:'peer',name:'同事',role:'审查',connectionId:'gateway',modelId:'custom'})).status).toBe(201);
+  for (const type of ['meeting','parallel','review']) {
+    const create = async () => {
+      const response = await ui.post('/api/templates/' + type, {goal:'相同目标',members:['lead','peer']});
+      expect(response.status).toBe(200);
+      return response.json() as Promise<NonNullable<ReturnType<Scheduler['board']>['spec']>>;
+    };
+    const first = await create(), second = await create();
+    expect(first.id).not.toBe(second.id);
+    expect(first.id.startsWith(type + '-')).toBe(true);
+    if (type !== 'meeting') continue;
+    const legacy = {...first, id:'meeting', maxTokens:1234};
+    await apply(ui,legacy);
+    expect((await ui.post('/api/spec/apply', {spec:second,expectedRevision:1,approved:true})).status).toBe(200);
+    const draft = await (await ui.get('/api/plans/meeting/spec')).json() as typeof legacy;
+    expect(draft.maxTokens).toBe(1234);
+    expect(await (await ui.get('/api/plans')).json()).toContainEqual({id:'meeting',title:legacy.title,active:false});
+    const next = {...draft, maxTokens:4567};
+    const preview = await (await ui.post('/api/spec/preview',{spec:next,revisionOf:'meeting'})).json();
+    expect(preview).toMatchObject({baselineId:'meeting',revision:2,settings:[{field:'maxTokens',before:1234,after:4567}]});
+    expect((await ui.post('/api/spec/apply',{spec:next,revisionOf:second.id,approved:true,expectedRevision:2})).status).toBe(409);
+    expect((await ui.post('/api/spec/apply',{spec:next,revisionOf:'meeting',approved:true,expectedRevision:2})).status).toBe(200);
+    expect((await board(ui)).spec?.id).toBe('meeting');
+  }
+  expect(api.seen).toHaveLength(0);
+});
+
 it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计划和调用，最终验收指定版本',async () => {
   app=await startLocalServer(web,data);const ui=await login(app);
   expect((await fetch(ui.origin+'/api/catalog')).status).toBe(401);
@@ -143,7 +174,7 @@ it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计
   const generated=await ui.post('/api/plans/generate',{...goal,approved:true});
   expect(generated.status).toBe(200);
   const proposed=await generated.json() as {spec:typeof spec;preview:unknown};
-  expect(proposed.spec.id).toBe(spec.id);
+  expect(proposed.spec.id).toMatch(/^plan-/);
   expect((await board(ui)).spec).toBeNull();
   expect((await ui.post('/api/spec/preview',{spec:proposed.spec})).status).toBe(200);
   expect((await ui.post('/api/spec/apply',{spec:proposed.spec,expectedRevision:0})).status).toBe(400);

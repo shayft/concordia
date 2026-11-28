@@ -124,6 +124,29 @@ it('修改计划只产生带预览修订号的显式批准', async () => {
   expect(openBoard).toHaveBeenCalledOnce();
 });
 
+it('从界面载入旧计划和原预算，批准携带所选实例标识', async () => {
+  const archived = {id:'meeting',title:'旧会议',goal:'核对',acceptance:['签字'],tasks:[],agents:[],maxCalls:3};
+  serve = path => {
+    if (path === '/api/catalog') return {connections:[],models:[],members:[],pools:[]};
+    if (path === '/api/plans') return [{id:'meeting',title:'旧会议',active:false}];
+    if (path === '/api/plans/meeting/spec') return archived;
+    if (path === '/api/spec/preview') return {spec:archived,baselineId:'meeting',revision:8,added:[],removed:[],changed:[],taskChanges:[],settings:[]};
+    return {};
+  };
+  await render(<PlansPage openBoard={() => {}} />);
+  async function select(selector: string, value: string) {
+    const el=container.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => { el.value=value;el.dispatchEvent(new window.Event('change',{bubbles:true})); });
+  }
+  await select('[aria-label="草案来源"]','revise');
+  await select('#revisionPlan','meeting');
+  await click(button('载入修订版本'));
+  expect(JSON.parse(container.querySelector<HTMLTextAreaElement>('#draft')!.value)).toEqual(archived);
+  await click(button('校验并预览差异'));
+  await click(button('批准并应用此版本'));
+  expect(requests.at(-1)?.body).toMatchObject({revisionOf:'meeting',expectedRevision:8,spec:archived});
+});
+
 it('切换草案来源后，较早返回的预览不能恢复批准按钮', async () => {
   let finishPreview!: (value: unknown) => void;
   const pending = new Promise<unknown>((resolve) => { finishPreview = resolve; });

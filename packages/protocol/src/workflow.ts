@@ -125,6 +125,7 @@ export type TaskSpec = z.infer<typeof taskSchema>;
 export type Agent = z.infer<typeof agentSchema>;
 
 export interface PlanPreview {
+  baselineId: string | null;
   spec: WorkflowSpec;
   revision: number;
   added: string[];

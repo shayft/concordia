@@ -46,6 +46,7 @@ function planDiff(state: State, spec: WorkflowSpec): PlanPreview {
   });
   return {
     spec,
+    baselineId: state.spec?.id ?? null,
     settings,
     revision: state.revision,
     added: spec.tasks.filter((task) => !before.has(task.id)).map((task) => task.id),
@@ -94,6 +95,7 @@ export class Scheduler {
     const next = archive ? (JSON.parse(this.deps.storage.getContent(archive.ref)) as State) : emptyState();
     const archives = [...s.archives.filter((w) => w.id !== id), previous];
     delete s.acceptedSnapshot;
+    delete s.conflicts;
     Object.assign(s, next, { archives, revision: s.revision });
   }
   switchWorkspace(id: string) {
@@ -105,22 +107,40 @@ export class Scheduler {
       log('plan.switched', { id, revision: s.revision });
     });
   }
-  preview(input: unknown) {
-    const state = this.deps.storage.read(),
-      spec = workflowSpecSchema.parse(input);
-    let target = state;
-    if (state.spec && state.spec.id !== spec.id) {
-      const archived = state.archives.find((a) => a.id === spec.id);
-      target = archived ? (JSON.parse(this.deps.storage.getContent(archived.ref)) as State) : emptyState();
-    }
-    validateInputs(target, spec);
-    return planDiff(state, spec);
+  plans() {
+    const state = this.deps.storage.read();
+    return [
+      ...(state.spec ? [{ id:state.spec.id, title:state.spec.title, active:true }] : []),
+      ...state.archives.map(({id,title}) => ({id,title,active:false})),
+    ];
   }
-  apply(input: unknown, expectedRevision?: number) {
+  private stateForPlan(state: State, id: string): State | undefined {
+    if (state.spec?.id === id) return state;
+    const archived = state.archives.find(plan => plan.id === id);
+    if (archived) return JSON.parse(this.deps.storage.getContent(archived.ref)) as State;
+  }
+  planSpec(id: string) {
+    const spec = this.stateForPlan(this.deps.storage.read(), id)?.spec;
+    if (!spec) throw new Error('指定的计划不存在');
+    return spec;
+  }
+  preview(input: unknown, revisionOf?: string) {
+    const state = this.deps.storage.read(), spec = workflowSpecSchema.parse(input);
+    const target = this.stateForPlan(state, spec.id);
+    if (revisionOf !== undefined && (spec.id !== revisionOf || !target))
+      throw new Error('修订草案必须引用所选计划');
+    const baseline = target ?? emptyState();
+    validateInputs(baseline, spec);
+    // Compare against the target instance, but bind approval to the current workspace revision.
+    return { ...planDiff(baseline, spec), revision: state.revision };
+  }
+  apply(input: unknown, expectedRevision?: number, revisionOf?: string) {
     const spec = workflowSpecSchema.parse(input);
     return this.write((s, log) => {
       if (expectedRevision !== undefined && s.revision !== expectedRevision)
         throw new Error('计划版本已改变，请重新预览');
+      if (revisionOf !== undefined && (spec.id !== revisionOf || !this.stateForPlan(s, revisionOf)))
+        throw new Error('修订草案必须引用所选计划');
       const switching = Boolean(s.spec && s.spec.id !== spec.id);
       this.switchState(s, spec.id);
       if (JSON.stringify(spec) === JSON.stringify(s.spec)) {

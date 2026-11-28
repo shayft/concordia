@@ -47,6 +47,8 @@ function ShowChange({ title, before, after }: { title: string; before: unknown; 
 export function PlansPage({ openBoard, workspace }: { openBoard: () => void; workspace?: string }) {
   const catalog = useResource<Catalog>('catalog');
   const [source, setSource] = useState('demo');
+  const plans = useResource<{id:string; title:string; active:boolean}[]>('plans');
+  const [revisionOf, setRevisionOf] = useState('');
   const saved = usePlanDraft(workspace);
   const draft = saved.view.text;
   const [goal, setGoal] = useState('');
@@ -84,7 +86,9 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
       setPreview(result.preview);
     } else {
       const spec =
-        source === 'demo'
+        source === 'revise'
+          ? await api<WorkflowSpec>('plans/' + encodeURIComponent(revisionOf) + '/spec')
+          : source === 'demo'
           ? await api<WorkflowSpec>('templates/demo')
           : await api<WorkflowSpec>('templates/' + source, 'POST', { goal, members });
       if (revision !== draftRevision.current) return;
@@ -118,8 +122,17 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
             <option value="review">成员审查</option>
             <option value="lead">负责人生成计划</option>
             <option value="manual">手工编写</option>
+            <option value="revise">修订已有计划</option>
           </select>
         </div>
+        {source === 'revise' && <Field name="revisionPlan" label="要修订的计划">
+          <select id="revisionPlan" value={revisionOf} onChange={e => { setRevisionOf(e.target.value); edit(''); }}>
+            <option value="">选择当前或归档计划</option>
+            {Array.isArray(plans.data) && plans.data.map(plan => <option key={plan.id} value={plan.id}>
+              {plan.title} · {plan.id}{plan.active ? '（当前）' : ''}
+            </option>)}
+          </select>
+        </Field>}
         {(source === 'lead' || group) && (
           <Field name="goal" label="工作目标">
             <textarea
@@ -229,11 +242,12 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
                     !goal.trim() ||
                     (cli && !inspection) ||
                     (connection?.kind === 'claude' && !unmanaged))) ||
+                (source === 'revise' && !revisionOf) ||
                 (group && (members.length < (source === 'meeting' ? 1 : 2) || !goal.trim()))
               }
               onClick={() => void action.run(load)}
             >
-              {source === 'lead' ? '批准模型调用并生成草案' : '载入模板'}
+              {source === 'lead' ? '批准模型调用并生成草案' : source === 'revise' ? '载入修订版本' : '载入模板'}
             </button>
           </div>
         )}
@@ -270,7 +284,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
                 throw new Error('草案 JSON 语法有误。');
               }
               const revision = draftRevision.current;
-              const result = await api<PlanPreview>('spec/preview', 'POST', { spec });
+              const result = await api<PlanPreview>('spec/preview', 'POST', { spec, ...(source === 'revise' && { revisionOf }) });
               if (revision === draftRevision.current) setPreview(result);
             })
           }
@@ -285,6 +299,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
             <span>基于修订 {preview.revision}</span>
           </div>
           <p>{preview.spec.goal}</p>
+          <p>{preview.baselineId ? '修订计划 ' + preview.baselineId : '新计划 ' + preview.spec.id}</p>
           <p className="muted">
             调用上限 {preview.spec.maxCalls} · {preview.spec.tasks.length} 项任务 ·{' '}
             {preview.spec.agents.length} 位成员
@@ -336,6 +351,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
               void action.run(async () => {
                 await api('spec/apply', 'POST', {
                   spec: preview.spec,
+                  ...(source === 'revise' && { revisionOf }),
                   expectedRevision: preview.revision,
                   approved: true,
                 });

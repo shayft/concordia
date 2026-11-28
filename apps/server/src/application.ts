@@ -261,6 +261,11 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     switchBoard(p.id);
     return { active: current.id };
   });
+  app.get('/api/plans', async () => current.scheduler.plans());
+  app.get<{Params: {id:string}}>('/api/plans/:id/spec', async (req, reply) => {
+    try { return current.scheduler.planSpec(identifier.parse(req.params.id)); }
+    catch (error) { return rejected(reply, error); }
+  });
   for (const type of ['meeting', 'parallel', 'review'])
     post(
       '/api/templates/' + type,
@@ -273,6 +278,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
             : type === 'parallel'
               ? parallelSpec(goal, members)
               : meetingSpec(goal, members);
+        spec.id = type + '-' + randomUUID();
         const catalog = getCatalog(db);
         for (const agent of spec.agents) {
           const member = catalog.members.find((m) => m.id === agent.id);
@@ -283,15 +289,15 @@ export async function registerApplication(app: FastifyInstance, path: string) {
         return checkedSpec(spec);
       },
     );
-  post('/api/spec/preview', z.strictObject({ spec: z.unknown() }), ({ spec }) =>
-    current.scheduler.preview(checkedSpec(spec)),
+  post('/api/spec/preview', z.strictObject({ spec: z.unknown(), revisionOf: identifier.optional() }), ({ spec, revisionOf }) =>
+    current.scheduler.preview(checkedSpec(spec), revisionOf),
   );
   post(
     '/api/spec/apply',
-    z.strictObject({ spec: z.unknown(), expectedRevision: z.number().int().min(0), approved: approval }),
+    z.strictObject({ spec: z.unknown(), revisionOf: identifier.optional(), expectedRevision: z.number().int().min(0), approved: approval }),
     (input) => {
       if (current.worker.occupied()) throw new Error('请先停止当前运行');
-      return current.scheduler.apply(checkedSpec(input.spec), input.expectedRevision);
+      return current.scheduler.apply(checkedSpec(input.spec), input.expectedRevision, input.revisionOf);
     },
   );
   post('/api/demo/run', empty, () => {
@@ -363,7 +369,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     }),
     async (input) => {
       assertRecovered();
-      return current.worker.generate(input.goal, input.agentId, input, checkedSpec);
+      return current.worker.generate(input.goal, input.agentId, input, raw => ({
+        ...checkedSpec(raw), id: 'plan-' + randomUUID(),
+      }));
     },
   );
   app.post<{ Params: { id: string } }>('/mcp/:id', async (req, reply) => {
