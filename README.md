@@ -82,6 +82,10 @@ pnpm credential:set keychain:my_openai_gateway
 pnpm verify run gateway --base-url "https://gateway.example.com/v1" --model "自定义模型ID" --credential keychain:my_openai_gateway --approve-call
 ```
 
+## 比较两种交付方式
+
+运行 `pnpm benchmark:delivery` 可在临时库中比较同一需求的整卡串行和阶段性交付。结果包含前端和测试的开工时间、总工期、等待依赖、排队和等待验收的时间。每类按墙钟区间合并，类别之间可能重叠。脚本使用固定时钟和模拟成员，供核对调度行为。个人试用时可用同一需求和验收条件分别记录实际耗时、返工、调用次数和账单。
+
 ## 验证与人工验收
 
 ```sh
