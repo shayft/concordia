@@ -18,8 +18,9 @@ interface LoopOptions {
   mode: 'json' | 'native';
   signal: AbortSignal;
   maxCalls: number;
+  maxContextBytes?: number;
   allowed: Set<PlatformAction['type']>;
-  beforeCall(round: number): void;
+  beforeCall(round: number, reservationId?: string): void;
   usage(value: { inputTokens?: number; outputTokens?: number }): void;
   dispatch(action: PlatformAction, deliveryId: string): Promise<unknown>;
 }
@@ -54,16 +55,22 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
   let repaired = false;
   for (let round = 0; round < options.maxCalls; round++) {
     options.signal.throwIfAborted();
-    options.beforeCall(round);
+    const nativeTools = options.mode === 'native' ? tools : [];
+    const limit = options.maxContextBytes ?? 128_000;
+    const precise = options.provider.getCapabilities().dispatchSignal;
+    if (!precise && Buffer.byteLength(JSON.stringify({ messages, tools: nativeTools })) > limit)
+      throw new ModelCallError('budget', '本轮消息和工具超过配置的上下文限制。');
+    if (!precise) options.beforeCall(round);
     const calls: ModelAction[] = [];
-    let content = '';
+    const reply: ModelMessage = { role: 'assistant', content: '' };
     let completed = false;
     const meter: { inputTokens?: number; outputTokens?: number } = {};
     // Streams can report cumulative or partial counters repeatedly. Settle this
     // call once, including when it ends in an upstream error or is cancelled.
     try {
-      for await (const event of options.provider.stream(messages, options.mode === 'native' ? tools : [], {
-        signal: options.signal,
+      for await (const event of options.provider.stream(messages, nativeTools, {
+        signal: options.signal, assistantReply: reply, maxContextBytes: limit,
+        onDispatch: precise ? (id) => options.beforeCall(round, id) : undefined,
       })) {
         if (event.type === 'usage') {
           if (event.inputTokens !== undefined) meter.inputTokens = event.inputTokens;
@@ -72,10 +79,10 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
         options.signal.throwIfAborted();
         if (event.type === 'error') throw new ModelCallError(event.kind, event.message, event.httpStatus);
         if (completed) throw new ModelCallError('invalid', '结束事件后收到多余响应');
-        if (event.type === 'text_delta') content += event.text;
+        if (event.type === 'text_delta') reply.content += event.text;
         if (event.type === 'action') calls.push(event);
         if (event.type === 'completed') completed = true;
-        if (content.length > 65536 || calls.length > 32)
+        if (reply.content.length > 65536 || calls.length > 32)
           throw new ModelCallError('budget', '本轮输出超过上限');
       }
     } finally {
@@ -83,12 +90,13 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
     }
     options.signal.throwIfAborted();
     if (!completed) throw new ModelCallError('transport', '响应提前结束');
-    messages.push({ role: 'assistant', content, ...(calls.length ? { toolCalls: calls } : {}) });
+    if (calls.length) reply.toolCalls = calls;
+    messages.push(reply);
     let actions: PlatformAction[];
     try {
       const raw = calls.length
         ? calls.map(({ name, arguments: args }) => ({ ...args, type: name }))
-        : decodeActions(content);
+        : decodeActions(reply.content);
       if (!raw.length || raw.length > 32) throw new Error();
       actions = raw.map((item) => platformActionSchema.parse(item));
       if (
@@ -118,8 +126,6 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
           : { role: 'user', content: action.type + ' 的结果：' + feedback },
       );
     }
-    if (messages.reduce((sum, msg) => sum + msg.content.length, 0) > 128000)
-      throw new ModelCallError('budget', '执行上下文超过上限');
   }
   throw new ModelCallError('budget', '已使用本次批准的全部调用次数');
 }

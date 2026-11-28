@@ -4,14 +4,18 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
+    paths: &vault_sources
       - '.github/workflows/native-vault.yml'
       - 'packages/providers/test-native/**'
       - 'packages/providers/src/credentials.ts'
       - 'packages/providers/package.json'
+      - 'packages/providers/src/credentials-set.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
+  pull_request:
+    branches: [main]
+    paths: *vault_sources
 
 permissions:
   contents: read

@@ -1,3 +1,4 @@
+import { chatOutputLimit, type ChatOutputField } from '@concordia/protocol/chat-output';
 import { z } from 'zod';
 
 export interface GatewayConfig {
@@ -5,6 +6,8 @@ export interface GatewayConfig {
   model: string;
   credentialRef: string;
   timeoutMs?: number;
+  outputTokenField?: ChatOutputField;
+  maxOutputTokens?: number;
 }
 
 type CredentialReader = (reference: string, signal?: AbortSignal) => Promise<string>;
@@ -120,6 +123,9 @@ export async function validateGateway(
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2_147_483_647)
     return failure('超时须为正整数毫秒且不超过系统定时器上限');
 
+  let limit;
+  try { limit = chatOutputLimit(config.outputTokenField, config.maxOutputTokens); }
+  catch { return failure('Chat 输出上限字段或数值无效'); }
   const timeout = AbortSignal.timeout(timeoutMs);
   const stop = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let readingCredential = true;
@@ -135,6 +141,8 @@ export async function validateGateway(
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${credential}` },
       body: JSON.stringify({
         model: config.model,
+        stream: false,
+        ...limit,
         messages: [{ role: 'user', content: `Reply with exactly ${acknowledgement} and nothing else.` }],
       }),
       redirect: 'manual',

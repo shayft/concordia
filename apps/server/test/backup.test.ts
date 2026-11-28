@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { access, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { openStore } from '@concordia/store';
+import { openWorktrees } from '../src/worktrees/service.ts';
 import { copyApplicationState } from '../src/backup.ts';
 import { acquireDataDirectory } from '../src/data-directory.ts';
 
@@ -30,11 +31,41 @@ beforeEach(async () => {
     workflow.prepare('INSERT INTO workflow_events(type,data) VALUES (?,?)').run('version.published', JSON.stringify({ contentRef: hash }));
     workflow.close();
     await writeFile(join(board, 'objects', hash), contents);
+    // A real initialized project layout has a worktree ledger alongside its checkouts.
+    await openWorktrees(source).close();
     await mkdir(join(source, 'worktrees', 'task'), { recursive: true });
     await writeFile(join(source, 'worktrees', 'task', 'project.txt'), '用户尚未提交的代码');
   } finally { lock.release(); }
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+it.skipIf(process.platform === 'win32')('POSIX 新清单校验未提交脚本的执行位并恢复私有权限', async () => {
+  const script = 'worktrees/task/check.sh', plain = 'worktrees/task/project.txt';
+  await writeFile(join(source, script), 'exit 0\n', { mode: 0o700 });
+  await chmod(join(source, plain), 0o600);
+  await copyApplicationState('create', source, snapshot);
+  await copyApplicationState('restore', snapshot, restored);
+  expect((await lstat(join(restored, script))).mode & 0o777).toBe(0o700);
+  expect((await lstat(join(restored, plain))).mode & 0o777).toBe(0o600);
+
+  for (const [path, changed, original] of [[script, 0o600, 0o700], [plain, 0o700, 0o600]] as const) {
+    await chmod(join(snapshot, path), changed);
+    const rejected = join(root, 'rejected');
+    await expect(copyApplicationState('restore', snapshot, rejected)).rejects.toThrow('执行权限已改变');
+    await expect(access(rejected)).rejects.toMatchObject({ code: 'ENOENT' });
+    await chmod(join(snapshot, path), original);
+  }
+});
+
+it.skipIf(process.platform !== 'win32')('Windows 备份将 POSIX 执行位记为未提供，保留文件正文', async () => {
+  const fixture = 'worktrees/task/sample.exe';
+  await writeFile(join(source, fixture), '测试数据');
+  await copyApplicationState('create', source, snapshot);
+  const manifest = JSON.parse(await readFile(join(snapshot, 'concordia-backup-v2.json'), 'utf8'));
+  expect(manifest).toMatchObject({ version: 2, executableFiles: null });
+  await copyApplicationState('restore', snapshot, restored);
+  expect(await readFile(join(restored, fixture), 'utf8')).toBe('测试数据');
+});
 
 it('恢复已提交的 SQLite/WAL、事件、内容对象和未提交的 worktree 文件', async () => {
   const catalog = openStore(join(source, 'catalog.sqlite'));
@@ -57,8 +88,9 @@ it('演练的数据库、示例仓库和内容也位于快照中，运行时 PID
   const demo = join(source, 'assignee-delivery');
   await mkdir(join(demo, 'example-test', '.git'), {recursive:true});
   await writeFile(join(demo, 'example-test', '.git', 'HEAD'), 'ref: refs/heads/main');
+  await openWorktrees(demo).close();
   const ledger = openStore(join(demo, 'delivery.sqlite'));
-  ledger.exec("CREATE TABLE rehearsal (phase TEXT); INSERT INTO rehearsal VALUES ('ready')");
+  ledger.exec("CREATE TABLE delivery_runs(id TEXT PRIMARY KEY,details TEXT NOT NULL); INSERT INTO delivery_runs VALUES ('demo','ready')");
   ledger.close();
   await mkdir(join(source, 'processes'));
   await writeFile(join(source, 'processes', 'placeholder'), '模拟运行登记');
@@ -66,7 +98,7 @@ it('演练的数据库、示例仓库和内容也位于快照中，运行时 PID
   await copyApplicationState('restore', snapshot, restored);
   expect(await readFile(join(restored,'assignee-delivery/example-test/.git/HEAD'),'utf8')).toBe('ref: refs/heads/main');
   const db = openStore(join(restored, 'assignee-delivery/delivery.sqlite'));
-  try { expect(db.prepare('SELECT phase FROM rehearsal').get()?.phase).toBe('ready'); } finally { db.close(); }
+  try { expect(db.prepare('SELECT details FROM delivery_runs').get()?.details).toBe('ready'); } finally { db.close(); }
   await expect(access(join(restored,'processes'))).rejects.toThrow();
 });
 
@@ -104,4 +136,55 @@ it.skipIf(process.platform === 'win32')('备份只保留 worktree 链接本身�
   await rm(boardObjects, {recursive:true});
   await symlink(join(root,'missing'), boardObjects);
   await expect(copyApplicationState('create', source, join(root,'unsafe'))).rejects.toThrow('外部文件');
+});
+
+it('规划结果缺少工作区正文时拒绝发布备份', async () => {
+  const catalog = openStore(join(source, 'catalog.sqlite'));
+  const ref = createHash('sha256').update('尚未备份的规划草案').digest('hex');
+  try {
+    catalog.prepare("INSERT INTO plan_requests(id,workspace,member,connection,started,status,result_ref) VALUES('request','demo','planner','office',1,'proposed',?)").run(ref);
+  } finally { catalog.close(); }
+  await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+  await expect(access(snapshot)).rejects.toThrow();
+});
+
+it('源目录缺少已登记的工作区时拒绝发布', async () => {
+  const catalog = openStore(join(source, 'catalog.sqlite'));
+  catalog.exec("INSERT INTO workspaces VALUES ('missing','旧工作区',0)");
+  catalog.close();
+  await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('已登记的工作区');
+  await expect(access(snapshot)).rejects.toThrow();
+});
+
+it('检查活动状态、历史事件及已归档计划内部的正文引用', async () => {
+  const { emptyState } = await import('@concordia/core/state');
+  const dir = join(source, 'boards/demo');
+  const db = openStore(join(dir, 'workspace.sqlite'));
+  const missing = createHash('sha256').update('尚不存在的正文').digest('hex');
+  const archive = JSON.stringify({ ...emptyState(), plans: [missing] });
+  const ref = createHash('sha256').update(archive).digest('hex');
+  try {
+    await writeFile(join(dir, 'objects', ref), archive);
+    const save = db.prepare('INSERT OR REPLACE INTO workflow_state VALUES(1,?)');
+    save.run(JSON.stringify({ ...emptyState(), archives: [{ id: 'previous', title: '已归档', ref }] }));
+    await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+    save.run(JSON.stringify({ ...emptyState(), tasks: [{ progressRef: missing }] }));
+    await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+    save.run(JSON.stringify(emptyState()));
+    await rm(join(dir, 'objects', hash));
+    await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+    await expect(access(snapshot)).rejects.toThrow();
+  } finally { db.close(); }
+});
+
+it('崩溃遗留登记阻止备份，原机核对并清除后允许备份', async () => {
+  const dir = join(source, 'processes');
+  await mkdir(dir);
+  const record = join(dir, '35c03b8a-e901-4505-8704-88ca79947ae5.json');
+  await writeFile(record, '{}');
+  await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('待核对');
+  expect(await readFile(record, 'utf8')).toBe('{}');
+  await expect(access(snapshot)).rejects.toThrow();
+  await rm(record);
+  await copyApplicationState('create', source, snapshot);
 });

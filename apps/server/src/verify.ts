@@ -2,6 +2,7 @@ import { createExclusiveFile } from '@concordia/runtimes/worktree-files';
 import { existingDataDirectory } from '@concordia/store/paths';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chatOutputField, maxOutputTokens } from '@concordia/protocol/chat-output';
 import { parseArgs } from 'node:util';
 import { readCredential, validateGateway } from '@concordia/providers';
 import { CliDiagnosticError, detectBillingEnvironment, inspectCli, runCliProbe } from '@concordia/runtimes';
@@ -11,6 +12,7 @@ const usage = `用法（从项目根目录运行）
   pnpm verify inspect claude|codex [--executable 绝对路径] [--cwd 工作目录]
   pnpm verify run claude|codex --approve-call --inspection 预检ID [--executable 绝对路径] [--record]
   pnpm verify run gateway --base-url API根路径 --model 模型ID --credential keychain:条目 --approve-call
+     [--output-token-field max_completion_tokens|max_tokens] [--max-output-tokens 整数]
 
 inspect 检查版本、权限参数和原生登录状态，生成与这次诊断绑定的 inspectionId。
 run 启动一次 CLI 回显任务，或向网关发一次 POST。CLI 的内部网络重试由原生程序控制。
@@ -26,6 +28,7 @@ function argumentsFor(argv: string[]) {
       help: { type: 'boolean', short: 'h' }, 'confirm-unmanaged': { type: 'boolean' }, executable: { type: 'string' },
       cwd: { type: 'string' }, inspection: { type: 'string' }, 'approve-call': { type: 'boolean' }, record: { type: 'boolean' },
       'base-url': { type: 'string' }, model: { type: 'string' }, credential: { type: 'string' },
+      'output-token-field': { type: 'string' }, 'max-output-tokens': { type: 'string' },
       'pass-env': { type: 'string', multiple: true },
     } });
   } catch {
@@ -75,8 +78,13 @@ async function main(signal: AbortSignal) {
   if (target === 'gateway') {
     if (command !== 'run' || !values['base-url'] || !values.model || !values.credential
       || values['confirm-unmanaged'] || values.executable || values.cwd || values.inspection || values.record || values['pass-env']) throw new UsageError(usage);
+    const field = chatOutputField.safeParse(values['output-token-field'] ?? 'max_completion_tokens');
+    const cap = values['max-output-tokens'];
+    const limit = maxOutputTokens.safeParse(cap === undefined ? 1024 : /^[0-9]+$/.test(cap) ? Number(cap) : NaN);
+    if (!field.success || !limit.success) throw new UsageError('输出字段须为 max_completion_tokens 或 max_tokens，上限须为 1 至 65536 的整数。');
     const result = await validateGateway({
       baseUrl: values['base-url'], model: values.model, credentialRef: values.credential,
+      outputTokenField: field.data, maxOutputTokens: limit.data,
     }, readCredential, signal);
     print(result);
     if (!result.ok) process.exitCode = 1;
@@ -84,6 +92,7 @@ async function main(signal: AbortSignal) {
   }
 
   if ((target !== 'claude' && target !== 'codex') || values['base-url'] || values.credential || values.model
+    || values['output-token-field'] !== undefined || values['max-output-tokens'] !== undefined
     || (target !== 'claude' && values['confirm-unmanaged']))
     throw new UsageError(usage);
   const options = {

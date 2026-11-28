@@ -1,3 +1,4 @@
+import { throwUpstreamError } from './upstream-error.ts';
 import type { ModelEvent, ModelMessage, ModelTool, ProviderConfig } from './model-types.ts';
 import { action, list, obj, readJson, sse, string, usage, type Dictionary } from './wire.ts';
 
@@ -45,6 +46,7 @@ function finished(reason: unknown) {
 export async function* anthropicEvents(res: Response, stream: boolean): AsyncGenerator<ModelEvent> {
   if (!stream) {
     const body = await readJson(res);
+    if (body.error) throwUpstreamError(body.error);
     if (!finished(body.stop_reason)) throw new Error('incomplete');
     for (const raw of list(body.content)) {
       const block = obj(raw);
@@ -97,7 +99,8 @@ export async function* anthropicEvents(res: Response, stream: boolean): AsyncGen
       if (!stopped || calls.size) throw new Error('incomplete');
       yield* usage(inputTokens, outputTokens, undefined);
       return;
-    } else if (frame.type !== 'ping') throw new Error('upstream error');
+    } else if (frame.type === 'error') throwUpstreamError(frame.error);
+    else if (frame.type !== 'ping') throw new Error('upstream error');
   }
   throw new Error('unfinished stream');
 }

@@ -1,3 +1,4 @@
+import { proposedSpec, proposalStamp, proposals, sameStamp, type ProposalStamp } from './proposals.ts';
 import { captureLegacyWaits, recordWaits, waitTime } from './timing.ts';
 import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import { exhausted } from './budget.ts';
@@ -23,7 +24,9 @@ import {
   type State,
   type WorkflowStorage,
 } from './state.ts';
-import { applyAction, scheduleReply } from './workflow-actions.ts';
+import { acceptanceCandidate, sameAcceptance, reviewExecution } from './acceptance.ts';
+import type { AcceptanceSnapshot } from '@concordia/protocol/workflow';
+import { applyAction, scheduleReply, reconcileReplies } from './workflow-actions.ts';
 export * from './state.ts';
 export * from './templates.ts';
 
@@ -44,6 +47,7 @@ function planDiff(state: State, spec: WorkflowSpec): PlanPreview {
   });
   return {
     spec,
+    baselineId: state.spec?.id ?? null,
     settings,
     revision: state.revision,
     added: spec.tasks.filter((task) => !before.has(task.id)).map((task) => task.id),
@@ -71,6 +75,11 @@ export class Scheduler {
       const now = this.deps.now();
       captureLegacyWaits(state);
       const result = callback(state, (type, data) => append(type, { ...data, time: now }));
+      if (state.acceptance && typeof acceptanceCandidate(state) === 'string') {
+        state.acceptance = null;
+        append('plan.acceptance_invalidated', { time: now });
+      }
+      if (!state.acceptance) delete state.acceptedSnapshot;
       recordWaits(state, now);
       return result;
     });
@@ -86,6 +95,8 @@ export class Scheduler {
     };
     const next = archive ? (JSON.parse(this.deps.storage.getContent(archive.ref)) as State) : emptyState();
     const archives = [...s.archives.filter((w) => w.id !== id), previous];
+    delete s.acceptedSnapshot;
+    delete s.conflicts;
     Object.assign(s, next, { archives, revision: s.revision });
   }
   switchWorkspace(id: string) {
@@ -97,89 +108,146 @@ export class Scheduler {
       log('plan.switched', { id, revision: s.revision });
     });
   }
-  preview(input: unknown) {
-    const state = this.deps.storage.read(),
-      spec = workflowSpecSchema.parse(input);
-    let target = state;
-    if (state.spec && state.spec.id !== spec.id) {
-      const archived = state.archives.find((a) => a.id === spec.id);
-      target = archived ? (JSON.parse(this.deps.storage.getContent(archived.ref)) as State) : emptyState();
-    }
-    validateInputs(target, spec);
-    return planDiff(state, spec);
+  plans() {
+    const state = this.deps.storage.read();
+    return [
+      ...(state.spec ? [{ id:state.spec.id, title:state.spec.title, active:true }] : []),
+      ...state.archives.map(({id,title}) => ({id,title,active:false})),
+    ];
   }
-  apply(input: unknown, expectedRevision?: number) {
+  private stateForPlan(state: State, id: string): State | undefined {
+    if (state.spec?.id === id) return state;
+    const archived = state.archives.find(plan => plan.id === id);
+    if (archived) return JSON.parse(this.deps.storage.getContent(archived.ref)) as State;
+  }
+  planSpec(id: string) {
+    const spec = this.stateForPlan(this.deps.storage.read(), id)?.spec;
+    if (!spec) throw new Error('指定的计划不存在');
+    return spec;
+  }
+  preview(input: unknown, revisionOf?: string) {
+    const state = this.deps.storage.read(), spec = workflowSpecSchema.parse(input);
+    const target = this.stateForPlan(state, spec.id);
+    if (revisionOf !== undefined && (spec.id !== revisionOf || !target))
+      throw new Error('修订草案必须引用所选计划');
+    const baseline = target ?? emptyState();
+    validateInputs(baseline, spec);
+    // Compare against the target instance, but bind approval to the current workspace revision.
+    return { ...planDiff(baseline, spec), revision: state.revision };
+  }
+  apply(input: unknown, expectedRevision?: number, revisionOf?: string) {
     const spec = workflowSpecSchema.parse(input);
-    return this.write((s, log) => {
-      if (expectedRevision !== undefined && s.revision !== expectedRevision)
-        throw new Error('计划版本已改变，请重新预览');
-      const switching = Boolean(s.spec && s.spec.id !== spec.id);
-      this.switchState(s, spec.id);
-      if (JSON.stringify(spec) === JSON.stringify(s.spec)) {
-        if (switching) {
-          s.revision++;
-          log('plan.switched', { id: spec.id, revision: s.revision });
-        }
-        return { revision: s.revision };
+    return this.write((s, log) => this.applySpec(s, log, spec, expectedRevision, revisionOf));
+  }
+  private applySpec(s: State, log: Append, spec: WorkflowSpec, expectedRevision?: number, revisionOf?: string, reassignId?: string) {
+    if (expectedRevision !== undefined && s.revision !== expectedRevision)
+      throw new Error('计划版本已改变，请重新预览');
+    if (revisionOf !== undefined && (spec.id !== revisionOf || !this.stateForPlan(s, revisionOf)))
+      throw new Error('修订草案必须引用所选计划');
+    const switching = Boolean(s.spec && s.spec.id !== spec.id);
+    this.switchState(s, spec.id);
+    if (JSON.stringify(spec) === JSON.stringify(s.spec)) {
+      if (switching) {
+        s.revision++;
+        log('plan.switched', { id: spec.id, revision: s.revision });
       }
-      const diff = planDiff(s, spec);
-
-      if (s.tasks.some((t) => t.active)) throw new Error('请先暂停运行中的任务');
-      const revised = new Set([...diff.removed, ...diff.changed]);
-      // Budget edits are safe between executions; existing lineage and ownership are immutable in a spec edit.
-      const structure = ({
-        maxCalls: _calls,
-        maxRetries: _tries,
-        maxRework: _rework,
-        maxCallsPerExecution: _execCalls,
-        maxTokens: _tokens,
-        priority: _priority,
-        ...rest
-      }: WorkflowSpec['tasks'][number]) => JSON.stringify(rest);
-      for (const id of revised) {
-        if (!s.executions.some((e) => e.taskId === id)) continue;
-        const old = s.spec?.tasks.find((t) => t.id === id),
-          replacement = spec.tasks.find((t) => t.id === id);
-        if (!old || !replacement || structure(old) !== structure(replacement))
-          throw new Error('已有执行的任务须通过改派或返工更新');
-        const task = entity(s.tasks, id);
-        task.maxCalls = replacement.maxCalls;
-        task.maxCallsPerExecution = replacement.maxCallsPerExecution;
-        task.maxTokens = replacement.maxTokens;
-        task.priority = replacement.priority;
-        task.maxRetries = replacement.maxRetries;
-        task.maxRework = replacement.maxRework;
-        revised.delete(id);
-      }
-      if (
-        s.questions.some(
-          (q) => q.status === 'open' && q.to !== 'user' && !spec.agents.some((a) => a.id === q.to),
-        )
-      )
-        throw new Error('仍有问题等待该成员答复');
-      validateInputs(s, spec);
-      s.spec = spec;
-      s.tasks = [
-        ...spec.tasks.map((t) => {
-          const old = s.tasks.find((task) => task.id === t.id);
-          if (old && !revised.has(t.id)) return old;
-          const task = makeTask(t);
-          if (old) task.waitHistory = old.waitHistory;
-          return task;
-        }),
-        ...s.tasks.filter((t) => t.replyFor),
-      ];
-      for (const task of s.tasks) if (task.status === 'ready' || task.status === 'waiting') refresh(task, s);
-      s.revision++;
-      s.plans.push(this.deps.storage.putContent(JSON.stringify(spec)));
-      s.acceptance = null;
-      log('plan.applied', {
-        revision: s.revision,
-        added: diff.added,
-        removed: diff.removed,
-        changed: diff.changed,
-      });
       return { revision: s.revision };
+    }
+    const diff = planDiff(s, spec);
+
+    if (s.tasks.some((t) => t.active)) throw new Error('请先暂停运行中的任务');
+    const revised = new Set([...diff.removed, ...diff.changed]);
+    // Budget edits are safe between executions; existing lineage and ownership are immutable in a spec edit.
+    const structure = ({
+      maxCalls: _calls,
+      maxRetries: _tries,
+      maxRework: _rework,
+      maxCallsPerExecution: _execCalls,
+      maxTokens: _tokens,
+      priority: _priority,
+      ...rest
+    }: WorkflowSpec['tasks'][number]) => JSON.stringify(rest);
+    for (const id of revised) {
+      const old = s.spec?.tasks.find((t) => t.id === id),
+        replacement = spec.tasks.find((t) => t.id === id);
+      if (id === reassignId && old && replacement && structure({ ...old, owner: replacement.owner }) === structure(replacement)) {
+        this.changeOwner(s, log, id, replacement.owner);
+        revised.delete(id);
+        continue;
+      }
+      if (!s.executions.some((e) => e.taskId === id)) continue;
+      if (!old || !replacement || structure(old) !== structure(replacement))
+        throw new Error('已有执行的任务须通过改派或返工更新');
+      const task = entity(s.tasks, id);
+      task.maxCalls = replacement.maxCalls;
+      task.maxCallsPerExecution = replacement.maxCallsPerExecution;
+      task.maxTokens = replacement.maxTokens;
+      task.priority = replacement.priority;
+      task.maxRetries = replacement.maxRetries;
+      task.maxRework = replacement.maxRework;
+      revised.delete(id);
+    }
+    if (
+      s.questions.some(
+        (q) => q.status === 'open' && q.to !== 'user' && !spec.agents.some((a) => a.id === q.to),
+      )
+    )
+      throw new Error('仍有问题等待该成员答复');
+    validateInputs(s, spec);
+    s.spec = spec;
+    s.tasks = [
+      ...spec.tasks.map((t) => {
+        const old = s.tasks.find((task) => task.id === t.id);
+        if (old && !revised.has(t.id)) return old;
+        const task = makeTask(t);
+        if (old) task.waitHistory = old.waitHistory;
+        return task;
+      }),
+      ...s.tasks.filter((t) => t.replyFor),
+    ];
+    for (const task of s.tasks) if (task.status === 'ready' || task.status === 'waiting') refresh(task, s);
+    s.revision++;
+    s.plans.push(this.deps.storage.putContent(JSON.stringify(spec)));
+    s.acceptance = null;
+    log('plan.applied', {
+      revision: s.revision,
+      added: diff.added,
+      removed: diff.removed,
+      changed: diff.changed,
+    });
+    return { revision: s.revision };
+  }
+  previewProposal(id: string) {
+    const state = this.deps.storage.read();
+    const proposal = entity(proposals(state), id);
+    const stamp = proposalStamp(state, proposal);
+    let diff: PlanPreview | null = null, blocker: string | null = null;
+    if (proposal.status === 'pending') {
+      try { diff = planDiff(state, proposedSpec(state, proposal.action)); }
+      catch (error) { blocker = error instanceof Error && !(error instanceof SyntaxError) &&
+        /^[\u4e00-\u9fff]+$/u.test(error.message) ? error.message : '提议无法应用到当前计划'; }
+    }
+    return { proposal, stamp, diff, blocker, queued: state.tasks.some(t => t.active) };
+  }
+  decideProposal(id: string, decision: 'approved' | 'rejected', expected: ProposalStamp, check?: (spec: WorkflowSpec) => void) {
+    return this.write((state, log) => {
+      const records = proposals(state), proposal = entity(records, id);
+      if (proposal.status !== 'pending') {
+        if (proposal.status === decision && proposal.decision && sameStamp(expected, proposal.decision)) return proposal;
+        throw new Error('提议已经处理');
+      }
+      if (!sameStamp(expected, proposalStamp(state, proposal))) throw new Error('提议或任务状态已改变，请重新预览');
+      if (decision === 'approved') {
+        const spec = proposedSpec(state, proposal.action);
+        check?.(spec);
+        this.applySpec(state, log, spec, expected.revision, expected.planId,
+          proposal.action.type === 'assign_task' ? proposal.action.taskId : undefined);
+      }
+      proposal.status = decision;
+      proposal.decision = expected;
+      state.proposals = records;
+      log('plan.proposal_decided', { id, decision, revision: state.revision });
+      return proposal;
     });
   }
   board() {
@@ -191,6 +259,7 @@ export class Scheduler {
         const inputs = inputsFor(t, s);
         const card = {
           ...t,
+          reviewExecutionId: t.status === 'review' ? reviewExecution(s, t)?.id : undefined,
           waitTime: waitTime(t, s, now),
           column: column(t),
           missing: t.consumes.filter((c) => !inputs[c.slotId]).map((c) => c.slotId),
@@ -212,12 +281,19 @@ export class Scheduler {
         .filter(([slot, id]) => latest(s, slot)?.id !== id)
         .map(([slot]) => slot),
     }));
+    const candidate = acceptanceCandidate(s);
+    const eligible = typeof candidate !== 'string';
     const nextSlot = [...slots].sort((a, b) => b.unblocks - a.unblocks)[0];
     return {
       ...s,
+      proposals: proposals(s),
       tasks,
       slots,
       versions,
+      acceptance: eligible ? s.acceptance : null,
+      acceptedSnapshot: eligible && s.acceptance ? s.acceptedSnapshot ?? null : null,
+      acceptanceCandidate: eligible ? candidate : null,
+      acceptanceBlocker: eligible ? null : candidate,
       criticalSlot: nextSlot?.unblocks ? nextSlot.id : null,
       agents: s.spec?.agents ?? [],
     };
@@ -232,7 +308,7 @@ export class Scheduler {
       goal: string;
       acceptance: string[];
       task: string;
-      inputs: Record<string, string>;
+      inputs: Record<string, string | { versionId: string; utf8Bytes: number; readWith: 'read_artifact' }>;
       questions: State['questions'];
       messages: State['messages'];
     };
@@ -256,7 +332,7 @@ export class Scheduler {
           (!filter.poolId || e.pool === filter.poolId),
       );
   }
-  claim(taskId: string, model?: ModelSnapshot): Execution {
+  claim(taskId: string, model?: ModelSnapshot, options: { deferCall?: boolean; readArtifacts?: boolean; approvalId?: string } = {}): Execution {
     const result = this.write((s, log) => {
       const task = entity(s.tasks, taskId),
         plan = activePlan(s),
@@ -274,18 +350,27 @@ export class Scheduler {
         log('budget.exhausted', { taskId });
         return null;
       }
+      if (task.replyFor) {
+        for (const q of s.questions)
+          if (q.to === agent.id && q.taskId === task.replyFor && q.status === 'open') q.replyTaskId = task.id;
+      }
       const id = this.deps.nextId(),
         inputs = inputsFor(task, s);
       if (Object.keys(inputs).length !== task.consumes.length) throw new Error('依赖尚未满足');
       const context = {
         goal: plan.goal,
         acceptance: plan.acceptance,
-        task: task.title,
+        task: task.description ?? task.title,
         inputs: Object.fromEntries(
-          Object.entries(inputs).map(([slot, ver]) => [
-            slot,
-            this.deps.storage.getContent(entity(s.versions, ver).contentRef),
-          ]),
+          Object.entries(inputs).map(([slot, ver]) => {
+            const version = entity(s.versions, ver);
+            const content = this.deps.storage.getContent(version.contentRef);
+            const utf8Bytes = new TextEncoder().encode(content).byteLength;
+            const inlineLimit = Math.min(4096, Math.floor((plan.maxContextTokens ?? 128_000) / 8));
+            return [slot, options.readArtifacts && version.kind === 'text' && utf8Bytes > inlineLimit
+              ? { versionId: ver, utf8Bytes, readWith: 'read_artifact' }
+              : content];
+          }),
         ),
         questions: s.questions.filter(
           (q) => q.to === agent.id && q.status === 'open' && (!task.replyFor || q.taskId === task.replyFor),
@@ -302,6 +387,7 @@ export class Scheduler {
       if (new TextEncoder().encode(encoded).byteLength > (plan.maxContextTokens ?? 128_000))
         throw new Error('输入超过上下文限制');
       const execution: Execution = {
+        ...(options.approvalId && { approvalId: options.approvalId }),
         ...(model && {
           modelSnapshot: {
             modelId: model.modelId,
@@ -317,8 +403,8 @@ export class Scheduler {
         outputs: {},
         contextRef: this.deps.storage.putContent(encoded),
         started: this.deps.now(),
-        calls: 1,
-        meters: [{ reserved: plan.estimatedTokensPerCall ?? 1024 }],
+        calls: options.deferCall ? 0 : 1,
+        meters: options.deferCall ? [] : [{ reserved: plan.estimatedTokensPerCall ?? 1024 }],
         status: 'running',
       };
       for (const message of context.messages) message.deliveredTo = task.id;
@@ -365,7 +451,7 @@ export class Scheduler {
       return result;
     });
   }
-  reserveCall(executionId: string) {
+  reserveCall(executionId: string, reservationId?: string) {
     const ok = this.write((s, log) => {
       const exec = entity(s.executions, executionId),
         task = entity(s.tasks, exec.taskId),
@@ -374,18 +460,31 @@ export class Scheduler {
       if (exhausted(plan, s, task, exec)) {
         fence(s, task, 'failed', this.deps.now());
         transition(task, 'decision', '调用预算已用尽');
+        reconcileReplies(s, exec.owner, log, this.deps);
         log('budget.exhausted', { taskId: task.id, id: exec.id });
         return false;
       }
       exec.meters ??= Array.from({ length: exec.calls }, () => ({
         reserved: plan.estimatedTokensPerCall ?? 1024,
       }));
-      exec.meters.push({ reserved: plan.estimatedTokensPerCall ?? 1024 });
+      exec.meters.push({ reserved: plan.estimatedTokensPerCall ?? 1024, ...(reservationId && { reservationId }) });
       exec.calls++;
       log('call.reserved', { id: exec.id, calls: exec.calls });
       return true;
     });
     if (!ok) throw new Error('调用预算已用尽');
+  }
+  /** The catalog ledger or trusted supervisor confirmed that this exact request never left. */
+  refundUnstartedCall(executionId: string, reservationId: string) {
+    this.write((s, log) => {
+      const exec = entity(s.executions, executionId);
+      const meters = exec.meters;
+      const index = meters?.findIndex(m => m.reservationId === reservationId) ?? -1;
+      if (!meters || index < 0 || meters[index].input !== undefined || meters[index].output !== undefined) return;
+      meters.splice(index, 1);
+      exec.calls--;
+      log('call.not_sent', { id: executionId, calls: exec.calls });
+    });
   }
   recordUsage(executionId: string, usage: { inputTokens?: number; outputTokens?: number }) {
     this.write((s, log) => {
@@ -420,6 +519,7 @@ export class Scheduler {
         task.retries++;
         refresh(task, s);
       } else transition(task, kind === 'fatal' || kind === 'transient' ? 'failed' : 'decision', kind);
+      reconcileReplies(s, exec.owner, log, this.deps);
       log('execution.failed', { id: exec.id, kind, status: task.status });
     });
   }
@@ -429,7 +529,7 @@ export class Scheduler {
       log('pool.resumed', { pool });
     });
   }
-  control(taskId: string, operation: Control) {
+  control(taskId: string, operation: Control, expectedExecutionId?: string) {
     return this.write((s, log) => {
       const task = entity(s.tasks, taskId);
       switch (operation) {
@@ -438,6 +538,7 @@ export class Scheduler {
           if (['done', 'failed', 'cancelled'].includes(task.status)) throw new Error('任务已经结束');
           fence(s, task, 'cancelled', this.deps.now());
           transition(task, operation === 'pause' ? 'paused' : 'cancelled');
+          reconcileReplies(s, task.owner, log, this.deps);
           break;
         case 'resume':
         case 'retry':
@@ -445,15 +546,17 @@ export class Scheduler {
           refresh(task, s);
           break;
         case 'accept':
-        case 'rework':
+        case 'rework': {
           if (task.status !== 'review') throw new Error('任务尚未进入审查');
+          const result = reviewExecution(s, task);
+          if (!result || (expectedExecutionId !== undefined && result.id !== expectedExecutionId))
+            throw new Error('待审执行已改变，请重新核对');
           if (operation === 'accept') {
-            const result = s.executions.findLast((e) => e.taskId === taskId && e.status === 'success');
-            if (!result) throw new Error('任务缺少可验收的执行');
             task.acceptedExecution = result.id;
             transition(task, 'done');
           } else reopen(task, s, this.deps.now());
           break;
+        }
         default:
           throw new Error('未知控制指令');
       }
@@ -463,20 +566,25 @@ export class Scheduler {
   }
   reassign(taskId: string, owner: string) {
     return this.write((s, log) => {
-      const task = entity(s.tasks, taskId),
-        plan = activePlan(s);
-      entity(plan.agents, owner);
-      if (task.replyFor || ['done', 'cancelled'].includes(task.status)) throw new Error('此任务不能改派');
-      fence(s, task, 'obsolete', this.deps.now());
-      task.owner = owner;
-      entity(plan.tasks, taskId).owner = owner;
+      const task = this.changeOwner(s, log, taskId, owner);
       s.revision++;
-      s.plans.push(this.deps.storage.putContent(JSON.stringify(plan)));
-      refresh(task, s);
-      s.acceptance = null;
-      log('task.reassigned', { taskId, owner, revision: s.revision });
+      s.plans.push(this.deps.storage.putContent(JSON.stringify(activePlan(s))));
       return task;
     });
+  }
+  private changeOwner(s: State, log: Append, taskId: string, owner: string) {
+    const task = entity(s.tasks, taskId), plan = activePlan(s);
+    entity(plan.agents, owner);
+    if (task.replyFor || ['done', 'cancelled'].includes(task.status)) throw new Error('此任务不能改派');
+    fence(s, task, 'obsolete', this.deps.now());
+    const previousOwner = task.owner;
+    task.owner = owner;
+    reconcileReplies(s, previousOwner, log, this.deps);
+    entity(plan.tasks, taskId).owner = owner;
+    refresh(task, s);
+    s.acceptance = null;
+    log('task.reassigned', { taskId, owner, revision: s.revision + 1 });
+    return task;
   }
   reportConflict(issue: { id: string; taskIds: string[]; paths: string[] }) {
     if (
@@ -582,47 +690,29 @@ export class Scheduler {
   recover() {
     return this.write((s, log) => {
       let count = 0;
+      const interrupted = new Set<string>();
       for (const task of s.tasks)
         if (task.active) {
           const id = task.active;
           fence(s, task, 'interrupted', this.deps.now());
           transition(task, 'decision', '上次执行中断');
+          interrupted.add(task.owner);
           log('execution.interrupted', { id, taskId: task.id });
           count++;
         }
+      for (const owner of interrupted) reconcileReplies(s, owner, log, this.deps);
       return count;
     });
   }
-  accept() {
+  accept(expected?: AcceptanceSnapshot) {
     return this.write((s, log) => {
-      const plan = activePlan(s),
-        snapshot: Record<string, string> = {};
-      for (const slot of plan.requiredSlots) {
-        const v = latest(s, slot);
-        if (!v || v.stale || entity(s.tasks, v.taskId).status !== 'done')
-          throw new Error('必需交付物未验收或已过期');
-        snapshot[slot] = v.id;
-      }
-      const requiredTasks = plan.requiredTasks?.length
-        ? plan.requiredTasks
-        : plan.requiredSlots.length
-          ? []
-          : plan.tasks.map((t) => t.id);
-      if (requiredTasks.some((id) => entity(s.tasks, id).status !== 'done'))
-        throw new Error('必需任务尚未完成审查');
-      if (s.questions.some((q) => q.status === 'open' && q.blocking)) throw new Error('尚有未答复的阻塞问题');
-      s.acceptance = snapshot;
-      const acceptedExecutions = Object.fromEntries(
-        [...new Set([...requiredTasks, ...plan.requiredSlots.map((id) => latest(s, id)!.taskId)])].map(
-          (id) => [
-            id,
-            entity(s.tasks, id).acceptedExecution ??
-              s.executions.findLast((e) => e.taskId === id && e.status === 'success')?.id,
-          ],
-        ),
-      );
-      log('plan.accepted', { snapshot, acceptedExecutions, revision: s.revision });
-      return snapshot;
+      const candidate = acceptanceCandidate(s);
+      if (typeof candidate === 'string') throw new Error(candidate);
+      if (expected && !sameAcceptance(candidate, expected)) throw new Error('验收快照已改变，请重新核对');
+      s.acceptance = candidate.versions;
+      s.acceptedSnapshot = candidate;
+      log('plan.accepted', { snapshot: candidate.versions, acceptedExecutions: candidate.executions, revision: s.revision });
+      return candidate.versions;
     });
   }
 }

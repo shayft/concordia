@@ -716,3 +716,15 @@ pre {
 .action-list .check {
   margin: 0;
 }
+
+.skip-navigation {
+  position: fixed;
+  left: 1rem;
+  top: 0;
+  z-index: 10;
+  transform: translateY(-150%);
+  padding: .6rem 1rem;
+  color: var(--green);
+  background: var(--paper);
+}
+.skip-navigation:focus { transform: translateY(.5rem); }

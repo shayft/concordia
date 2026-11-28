@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import type { ModelProvider } from '@concordia/providers';
+import { createModelProvider, type ModelProvider } from '@concordia/providers';
+import { runProcess } from '@concordia/runtimes/process';
+import { collect, listen } from '../../../packages/providers/test/fixture.ts';
 import { openStore } from '@concordia/store';
 import {
   budgetReport,
@@ -15,6 +17,8 @@ import {
   meterProvider,
   registerBudgets,
   reserveBudget,
+  dispatchBudget,
+  noTargetStarted,
   settleBudget,
 } from '../src/budget-ledger.ts';
 
@@ -168,4 +172,61 @@ it.each([429, 402])('上游 %s 暂停共享池，换看板或重启仍阻止派�
   await caps('global', 'all', { maxCalls: 1 });
   expect(() => reserveBudget(db, scope)).toThrow(BudgetExceeded);
   expect(pausedPools(db)).toEqual([]);
+});
+
+it('准备只占名额，重启退回未派发的预留，已派发且未知的用量仍保留', async () => {
+  await caps('global', 'all', {maxCalls:2});
+  const preparing = reserveBudget(db, scope, 'preparing');
+  const sent = reserveBudget(db, scope, 'preparing');
+  dispatchBudget(db, sent);
+  expect(budgetReport(db).usage.every(u => u.calls === 1 && u.tokens === 100 && u.active === 2)).toBe(true);
+  expect(() => reserveBudget(db, scope)).toThrow(BudgetExceeded);
+  await app.close();
+  db.close();
+  db = openStore(join(dir, 'catalog.sqlite'));
+  app = Fastify();
+  registerBudgets(app, db);
+  expect(db.prepare('SELECT status FROM budget_calls WHERE id=?').get(preparing)?.status).toBe('not_sent');
+  expect(db.prepare('SELECT status FROM budget_calls WHERE id=?').get(sent)?.status).toBe('interrupted');
+  settleBudget(db, preparing, {totalTokens:40});
+  settleBudget(db, sent, {totalTokens:0});
+  expect(budgetReport(db).usage.every(u => u.calls === 1 && u.tokens === 100 && u.active === 0)).toBe(true);
+});
+
+it('凭据未就绪、上下文超限或本地门禁拒绝不占调用，流内余额拒绝只在发送后暂停同池', async () => {
+  await caps('global', 'all', {maxCalls:1});
+  let received = 0;
+  const baseUrl = await listen((_req, res) => {
+    received++;
+    res.writeHead(200, {'content-type':'text/event-stream'}).end('data: {"error":{"code":"insufficient_quota"}}\n\n');
+  });
+  const config = {model:'custom', protocol:'chat-completions' as const, baseUrl};
+  const locked = meterProvider(db, scope, createModelProvider({...config, credentialRef:'keychain:missing'}, async () => { throw new Error('模拟锁定'); }));
+  expect(await locked.validateConnection()).toMatchObject({ok:false, error:{kind:'auth'}});
+  const provider = meterProvider(db, scope, createModelProvider(config));
+  const messages = [{role:'user' as const, content:'测试'}];
+  expect(await collect(provider.stream(messages, [], {maxContextBytes:32}))).toMatchObject([{kind:'budget'}]);
+  await expect(collect(provider.stream(messages, [], {onDispatch:()=>{ throw new BudgetExceeded(); }}))).rejects.toThrow(BudgetExceeded);
+  expect(received).toBe(0);
+  expect(pausedPools(db)).toEqual([]);
+  expect(budgetReport(db).usage.every(row => !row.calls && !row.tokens && !row.active)).toBe(true);
+  expect(await collect(provider.stream(messages))).toMatchObject([{kind:'budget',httpStatus:200}]);
+  expect(received).toBe(1);
+  expect(pausedPools(db)).toEqual(['shared']);
+  await expect(provider.validateConnection()).rejects.toThrow(PoolSuspended);
+  expect(budgetReport(db).usage.every(row => row.calls === 1 && row.tokens === 100 && !row.active)).toBe(true);
+});
+
+it('监督进程确认 CLI 未能启动后退回所有范围的预算；重复通知不会二次退款', async () => {
+  const id = reserveBudget(db, scope, 'preparing');
+  let attempted = false;
+  let rejected = false;
+  await expect(runProcess(join(dir, 'missing.exe'), [], {
+    onDispatch: () => { dispatchBudget(db, id); attempted = true; },
+    onSpawnRejected: () => { noTargetStarted(db, id); rejected = true; },
+  })).rejects.toThrow();
+  noTargetStarted(db, id);
+  settleBudget(db, id);
+  expect([attempted,rejected]).toEqual([true,true]);
+  expect(budgetReport(db).usage.every(row => !row.calls && !row.tokens && !row.active)).toBe(true);
 });

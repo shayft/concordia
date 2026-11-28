@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,7 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
-import { activeProcessGroups, recoverProcessGroups, runProcess } from '../src/process.ts';
+import { activeProcessGroups, recoverProcessGroups, startProcessRecovery, runProcess } from '../src/process.ts';
 
 import { compileWindowsFixture } from './fixtures/compile-windows.ts';
 
@@ -63,7 +64,8 @@ async function hasExited(pid: number) {
     const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    // An exiting process can disappear after procfs opens the file but before the read.
+    if (['ENOENT', 'ESRCH'].includes((err as NodeJS.ErrnoException).code ?? '')) return true;
     throw err;
   }
 }
@@ -177,3 +179,26 @@ it('过期登记指向另一个活进程组时保留记录，绝不向该组发�
     expect(await hasExited(other.pid!)).toBe(false);
   } finally { other.kill('SIGKILL'); }
 },10000);
+
+it('重新核对只处理初次遗留的登记，旧组退出后解除限制且不干扰新登记', async () => {
+  const dir = await mkdtemp(join(tmpdir(),'concordia recheck '));
+  scratch.push(dir);
+  const other = spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore',shell:false});
+  const register = async (executionId:string) => {
+    const id = randomUUID();
+    await writeFile(join(dir,id+'.json'),JSON.stringify({id,pid:other.pid,startedAtMs:1,executionId}));
+    return id;
+  };
+  try {
+    await register('old');
+    const recovery = await startProcessRecovery(dir);
+    expect(recovery.report()).toEqual({recovered:[],unresolved:['old']});
+    const active = await register('new');
+    const exit = once(other, 'exit');
+    other.kill('SIGKILL');
+    await exit;
+    const reports = await Promise.all([recovery.recheck(), recovery.recheck()]);
+    for (const report of reports) expect(report).toEqual({recovered:['old'],unresolved:[]});
+    expect(await readdir(dir)).toEqual([active+'.json']);
+  } finally { if (!other.killed) other.kill('SIGKILL'); }
+}, 15_000);

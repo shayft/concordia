@@ -22,8 +22,16 @@ export interface Tree {
   base: string;
   status: string;
   sha: string | null;
+  publishedShas: string[];
   conflicts: string[];
   snapshot: { treeId: string; sha: string }[];
+}
+interface MemberDiff {
+  treeId: string;
+  baseSha: string;
+  sha: string | null;
+  diff: string;
+  untracked: string[];
 }
 interface Approval {
   id: string;
@@ -36,6 +44,18 @@ interface Approval {
   executable?: string;
   args?: string[];
   diff?: string;
+  targetSha?: string;
+  acceptance?: {
+    workspaceId: string;
+    planId: string;
+    revision: number;
+    sources: { versionId: string; treeId: string; sha: string }[];
+  } | null;
+  check?: {
+    id: string;
+    name: string;
+    result: { exitCode: number | null; elapsedMs: number; passed: boolean };
+  };
 }
 export interface Worktrees {
   activeScope: string | null;
@@ -56,6 +76,7 @@ export function WorktreesPage() {
   const [editing, setEditing] = useState<Project | null>();
   const [inspect, setInspect] = useState<Approval>();
   const [removing, setRemoving] = useState<Tree>();
+  const [memberDiff, setMemberDiff] = useState<MemberDiff>();
   const cancel = useAction();
   const [review, setReview] = useState('');
   const selectedProject = state.data?.projects.find((p) => p.id === projectId) ?? state.data?.projects[0];
@@ -88,6 +109,11 @@ export function WorktreesPage() {
       setProjectId(id);
       setEditing(undefined);
     }, '已保存项目授权。');
+  }
+  function showDiff(treeId: string, sha?: string) {
+    void feedback.run(async () =>
+      setMemberDiff(await api<MemberDiff>(base + 'diff', 'POST', { treeId, ...(sha && { sha }) })),
+    );
   }
   function command(tree: Tree, name: string) {
     void feedback.run(async () => {
@@ -181,7 +207,7 @@ export function WorktreesPage() {
                     {t.path} · {t.sha?.slice(0, 12) ?? t.status}
                   </p>
                   {t.conflicts?.length > 0 && <p>冲突文件：{t.conflicts.join('、')}</p>}
-                  {t.kind === 'member' && t.sha && (
+                  {t.kind === 'member' && t.sha && t.publishedShas?.includes(t.sha) && (
                     <label className="check">
                       <input
                         type="checkbox"
@@ -199,6 +225,35 @@ export function WorktreesPage() {
                   )}
                 </div>
                 <div className="actions">
+                  {t.kind === 'member' && (
+                    <>
+                      <button disabled={feedback.busy} onClick={() => showDiff(t.id)}>
+                        查看未提交差异
+                      </button>
+                      {t.publishedShas?.length > 0 && (
+                        <form
+                          className="actions"
+                          key={t.publishedShas[0]}
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            showDiff(t.id, String(new FormData(event.currentTarget).get('sha')));
+                          }}
+                        >
+                          <label>
+                            已发布版本{' '}
+                            <select name="sha" defaultValue={t.publishedShas[0]}>
+                              {t.publishedShas.map((sha) => (
+                                <option key={sha} value={sha}>{sha.slice(0, 12)}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <button type="submit" disabled={feedback.busy}>
+                            查看已发布差异
+                          </button>
+                        </form>
+                      )}
+                    </>
+                  )}
                   {t.kind === 'member' && (
                     <button
                       disabled={feedback.busy}
@@ -375,12 +430,64 @@ export function WorktreesPage() {
           </form>
         </Modal>
       )}
+      {memberDiff && (
+        <Modal
+          title={memberDiff.sha ? '已发布提交差异' : '未提交的工作树差异'}
+          onClose={() => setMemberDiff(undefined)}
+        >
+          <p>
+            工作树 {memberDiff.treeId} · 基线 {memberDiff.baseSha}
+          </p>
+          {memberDiff.sha && <p>发布提交 {memberDiff.sha}</p>}
+          <pre>{memberDiff.diff || '没有已跟踪文件的差异。'}</pre>
+          {memberDiff.untracked.length > 0 && (
+            <>
+              <h3>未跟踪的文件</h3>
+              <ul>
+                {memberDiff.untracked.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </Modal>
+      )}
       {inspect && (
         <Modal
           title={inspect.kind === 'merge' ? '审查合并差异' : '审批项目命令'}
           onClose={() => setInspect(undefined)}
         >
           <p>提交 {inspect.sha}</p>
+          {inspect.kind === 'merge' && (
+            <>
+              <p>目标基线 {inspect.targetSha ?? '未知'}</p>
+              {inspect.acceptance && (
+                <section>
+                  <h3>已验收的版本</h3>
+                  <p>
+                    工作区 {inspect.acceptance.workspaceId} · 计划 {inspect.acceptance.planId} · 修订{' '}
+                    {inspect.acceptance.revision}
+                  </p>
+                  <ul>
+                    {inspect.acceptance.sources.map((item) => (
+                      <li key={item.versionId}>
+                        版本 {item.versionId} · 工作树 {item.treeId} · 提交 {item.sha}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              {inspect.check && (
+                <section>
+                  <h3>联调测试</h3>
+                  <p>
+                    {inspect.check.name} · {inspect.check.result.passed ? '通过' : '失败'} · 退出码{' '}
+                    {inspect.check.result.exitCode ?? '未知'} · 耗时 {inspect.check.result.elapsedMs} ms
+                  </p>
+                </section>
+              )}
+            </>
+          )}
           <pre>
             {inspect.kind === 'merge'
               ? inspect.diff

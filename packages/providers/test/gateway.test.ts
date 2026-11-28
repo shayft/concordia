@@ -58,7 +58,7 @@ describe('Chat Completions 单次验证', () => {
       });
       expect(requests).toEqual([{
         path: root.replace(/\/$/, '') + '/chat/completions', method: 'POST', authorized: true,
-        body: { model, messages: [{ role: 'user', content: expect.stringContaining('CONCORDIA_OK') }] },
+        body: { model, stream: false, max_completion_tokens: 1024, messages: [{ role: 'user', content: expect.stringContaining('CONCORDIA_OK') }] },
       }]);
     }
   });

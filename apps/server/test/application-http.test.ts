@@ -1,3 +1,4 @@
+import { browserSession } from './browser-session.ts';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { State, WorkflowEvent } from '@concordia/core/workflow';
+import type { Scheduler, WorkflowEvent } from '@concordia/core/workflow';
 import { startLocalServer } from '../src/local-server.ts';
 import { git } from '../src/worktrees/git.ts';
 
@@ -22,23 +23,8 @@ const actions = [
   { type:'submit_result', summary:'请对照样例验收' },
 ];
 interface Application { launchUrl: string; close(): Promise<void> }
-interface Client {
-  origin: string;
-  cookie: string;
-  get(path: string): Promise<Response>;
-  post(path: string, body: unknown): Promise<Response>;
-}
-async function login(app: Application): Promise<Client> {
-  const launch = new URL(app.launchUrl);
-  const response = await fetch(launch.origin + '/session', {method:'POST',
-    headers:{origin:launch.origin,'content-type':'application/json'}, body:JSON.stringify({token:launch.hash.slice(1)})});
-  expect(response.status).toBe(204);
-  const cookie = response.headers.get('set-cookie')!.split(';')[0];
-  return { origin:launch.origin, cookie,
-    get: path => fetch(launch.origin + path,{headers:{cookie}}),
-    post: (path, body) => fetch(launch.origin + path,{method:'POST',headers:{cookie,origin:launch.origin,'content-type':'application/json'}, body:JSON.stringify(body)}),
-  };
-}
+type Client = Awaited<ReturnType<typeof browserSession>>;
+function login(app: Application) { return browserSession(new URL(app.launchUrl)); }
 
 function finish(res: ServerResponse, content: unknown) {
   const encoded = JSON.stringify(content);
@@ -100,8 +86,8 @@ async function configure(ui: Client, stream?:boolean) {
   ];
   expect(responses.map(r=>r.status)).toEqual([201,201,201]);
 }
-async function board(ui: Client): Promise<State> {
-  const response=await ui.get('/api/board');expect(response.status).toBe(200);return response.json() as Promise<State>;
+async function board(ui: Client): Promise<ReturnType<Scheduler['board']>> {
+  const response=await ui.get('/api/board');expect(response.status).toBe(200);return response.json() as Promise<ReturnType<Scheduler['board']>>;
 }
 async function history(ui:Client,after=0):Promise<WorkflowEvent[]> {
   return (await ui.get('/api/history?after='+after)).json() as Promise<WorkflowEvent[]>;
@@ -127,8 +113,44 @@ it('README 无账号示例从手工预览到主卡验收均可在空连接目录
   expect(executions[0]).toMatchObject({ status: 'success', connection: 'mock-editor' });
   expect(version.slotId).toBe('title-card');
   expect(await (await ui.get('/api/versions/' + version.id)).json()).toMatchObject({ content: '模拟交付 · 发布标题卡' });
-  expect((await ui.post(task + '/control', { action: 'accept' })).status).toBe(200);
-  expect(await (await ui.post('/api/accept', {})).json()).toEqual({ snapshot: { 'title-card': version.id } });
+  expect((await ui.post(task + '/control', { action: 'accept' })).status).toBe(400);
+  expect((await ui.post(task + '/control', { action: 'accept', expectedExecutionId: 'old' })).status).toBe(409);
+  expect((await ui.post(task + '/control', { action: 'accept', expectedExecutionId: executions[0].id })).status).toBe(200);
+  const expected = (await board(ui)).acceptanceCandidate!;
+  expect((await ui.post('/api/accept', {})).status).toBe(400);
+  expect((await ui.post('/api/accept', {expected: {...expected, versions: {}}})).status).toBe(409);
+  expect(await (await ui.post('/api/accept', { expected: (await board(ui)).acceptanceCandidate })).json()).toEqual({ snapshot: { 'title-card': version.id } });
+  expect(api.seen).toHaveLength(0);
+}, 30_000); // Includes cold OS permission checks, service startup and a complete browser session.
+
+it('同一模板两次新建使用独立实例；从归档修订时显示该计划自己的预算差异', async () => {
+  app = await startLocalServer(web, data);
+  const ui = await login(app);
+  await configure(ui);
+  expect((await ui.post('/api/members', {id:'peer',name:'同事',role:'审查',connectionId:'gateway',modelId:'custom'})).status).toBe(201);
+  for (const type of ['meeting','parallel','review']) {
+    const create = async () => {
+      const response = await ui.post('/api/templates/' + type, {goal:'相同目标',members:['lead','peer']});
+      expect(response.status).toBe(200);
+      return response.json() as Promise<NonNullable<ReturnType<Scheduler['board']>['spec']>>;
+    };
+    const first = await create(), second = await create();
+    expect(first.id).not.toBe(second.id);
+    expect(first.id.startsWith(type + '-')).toBe(true);
+    if (type !== 'meeting') continue;
+    const legacy = {...first, id:'meeting', maxTokens:1234};
+    await apply(ui,legacy);
+    expect((await ui.post('/api/spec/apply', {spec:second,expectedRevision:1,approved:true})).status).toBe(200);
+    const draft = await (await ui.get('/api/plans/meeting/spec')).json() as typeof legacy;
+    expect(draft.maxTokens).toBe(1234);
+    expect(await (await ui.get('/api/plans')).json()).toContainEqual({id:'meeting',title:legacy.title,active:false});
+    const next = {...draft, maxTokens:4567};
+    const preview = await (await ui.post('/api/spec/preview',{spec:next,revisionOf:'meeting'})).json();
+    expect(preview).toMatchObject({baselineId:'meeting',revision:2,settings:[{field:'maxTokens',before:1234,after:4567}]});
+    expect((await ui.post('/api/spec/apply',{spec:next,revisionOf:second.id,approved:true,expectedRevision:2})).status).toBe(409);
+    expect((await ui.post('/api/spec/apply',{spec:next,revisionOf:'meeting',approved:true,expectedRevision:2})).status).toBe(200);
+    expect((await board(ui)).spec?.id).toBe('meeting');
+  }
   expect(api.seen).toHaveLength(0);
 });
 
@@ -145,14 +167,14 @@ it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计
   });
   expect(hostStatus).toBe(403);
   await configure(ui);
-  const goal={goal:spec.goal,agentId:'lead'};
+  const goal={goal:spec.goal,agentId:'lead',members:['lead']};
   expect((await ui.post('/api/plans/generate',goal)).status).toBe(400);
   expect(api.seen).toHaveLength(0);
   api.queue.push(res=>finish(res,spec));
   const generated=await ui.post('/api/plans/generate',{...goal,approved:true});
   expect(generated.status).toBe(200);
   const proposed=await generated.json() as {spec:typeof spec;preview:unknown};
-  expect(proposed.spec.id).toBe(spec.id);
+  expect(proposed.spec.id).toMatch(/^plan-/);
   expect((await board(ui)).spec).toBeNull();
   expect((await ui.post('/api/spec/preview',{spec:proposed.spec})).status).toBe(200);
   expect((await ui.post('/api/spec/apply',{spec:proposed.spec,expectedRevision:0})).status).toBe(400);
@@ -170,8 +192,8 @@ it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计
   const version=current.versions[0];
   expect(version).toMatchObject({slotId:'sample',executionId});
   expect(JSON.stringify(await (await ui.get('/api/versions/'+version.id)).json())).toContain(actions[0].content);
-  expect((await ui.post('/api/tasks/write/control',{action:'accept'})).status).toBe(200);
-  expect(await (await ui.post('/api/accept',{})).json()).toEqual({snapshot:{sample:version.id}});
+  expect((await ui.post('/api/tasks/write/control',{action:'accept',expectedExecutionId:executionId})).status).toBe(200);
+  expect(await (await ui.post('/api/accept',{expected:(await board(ui)).acceptanceCandidate})).json()).toEqual({snapshot:{sample:version.id}});
   expect(api.seen).toEqual(Array.from({length:2},()=>({stream:true,model:'dev/任意模型',url:'/custom/v1/chat/completions',authorization:false})));
 },20_000);
 
@@ -202,7 +224,7 @@ it('仅支持 JSON 的网关从持久化配置完成连接验证、生成计划�
   api.queue.push(send(JSON.stringify(spec)));
   const generated = await ui.post('/api/plans/generate', {
     goal: spec.goal,
-    agentId: 'lead',
+    agentId: 'lead', members: ['lead'],
     approved: true,
   });
   expect(generated.status).toBe(200);
@@ -227,9 +249,7 @@ it('阶段 5：取消正在接收的流；迟到的完整动作不能发布版�
   // A busy member is immutable. A successful no-op edit establishes that
   // the runtime and its finally block have finished processing the late frame.
   await vi.waitFor(async () => {
-    const res=await fetch(ui.origin+'/api/members/lead',{ method:'PUT',
-      headers:{origin:ui.origin,cookie:ui.cookie,'content-type':'application/json'},
-      body:JSON.stringify({id:'lead',name:'负责人',role:'负责验收',connectionId:'gateway',modelId:'custom'})});
+    const res = await ui.post('/api/members/lead', { id:'lead',name:'负责人',role:'负责验收',connectionId:'gateway',modelId:'custom' }, 'PUT');
     expect(res.status).toBe(200);
   });
   const current=await board(ui);
@@ -276,7 +296,7 @@ it('阶段 5：强制终止 HTTP 服务后，同一目录重新启动可追赶 S
   expect(replay.length).toBeGreaterThan(0);
   const controller=new AbortController();
   try {
-    const response=await fetch(restored.origin+'/api/events',{headers:{cookie:restored.cookie,'Last-Event-ID':String(after)},signal:controller.signal});
+    const response=await fetch(restored.origin+'/api/events',{headers:{...restored.headers,'Last-Event-ID':String(after)},signal:controller.signal});
     expect(response.headers.get('content-type')).toContain('text/event-stream');
     const reader=response.body!.getReader();let received='';
     while(!received.includes('id: '+replay.at(-1)!.seq+'\n')) {
@@ -431,3 +451,69 @@ it('共享账户限流后，切换工作区仍须手动恢复，未恢复前不�
   expect((await board(first)).stoppedPools).toEqual([]);
   expect(api.seen).toHaveLength(1);
 }, 20_000);
+
+it('普通项目合并在发票和批准时复核主卡、工作区、当前计划版本与命令证据', async () => {
+  const repository = join(directory,'acceptance-repo');
+  await mkdir(repository);
+  git(repository,['init','-b','main','--template=']);
+  git(repository,['commit','--allow-empty','-m','base']);
+  const baseline = git(repository,['rev-parse','HEAD']).trim();
+  app = await startLocalServer(web,data);
+  const ui = await login(app);
+  await configure(ui);
+  await apply(ui);
+  const projectId = 'repo';
+  await ui.post('/api/worktrees/projects',{id:projectId,repository,targetBranch:'main',writeEnabled:true,
+    commands:[{name:'check',executable:process.execPath,args:['--version']}]});
+  const member = await (await ui.post('/api/worktrees/member',{projectId,taskId:'write'})).json() as {id:string;path:string};
+  api.queue.push(res=>finish(res,{actions:[
+    {type:'write_file',path:'sample.txt',content:'accepted source'},
+    {type:'commit_artifact',slotId:'sample'},
+    {type:'request_review',taskId:'write'},
+  ]}));
+  expect((await ui.post('/api/tasks/write/run',{mode:'live',approved:true,projectId,treeId:member.id})).status).toBe(200);
+  await vi.waitFor(async()=>expect((await board(ui)).tasks[0].status).toBe('review'),{timeout:10000});
+  const b = await board(ui);
+  const version = b.versions[0];
+  const publication = await (await ui.get('/api/versions/'+version.id)).json() as {content:string};
+  const result = await ui.post('/api/worktrees/integrate',{projectId, snapshot:[{treeId:member.id,sha:publication.content}]});
+  expect(result.status).toBe(200);
+  const treeId = ((await result.json()) as {tree:{id:string}}).tree.id;
+  const command = await (await ui.post('/api/worktrees/request-command',{treeId,name:'check'})).json() as {id:string};
+  expect((await ui.post('/api/worktrees/approve-command',{id:command.id})).status).toBe(200);
+  const review = () => ui.post('/api/worktrees/review-merge',{treeId});
+  expect((await review()).status).toBe(409);
+  expect((await ui.post('/api/tasks/write/control',{action:'accept',expectedExecutionId:version.executionId})).status).toBe(200);
+  const accept = async () => {
+    expect((await ui.post('/api/accept',{expected:(await board(ui)).acceptanceCandidate})).status).toBe(200);
+  };
+  await accept();
+  const pending = await review();
+  expect(pending.status).toBe(200);
+  const old = await pending.json() as {id:string};
+  expect(old).toMatchObject({checkId:command.id,acceptance:{workspaceId:'default',planId:spec.id,
+    sources:[{versionId:version.id,treeId:member.id,sha:publication.content}]}});
+  // Another real commit from the same member tree is not the accepted slot version.
+  await writeFile(join(member.path,'later.txt'),'not part of the accepted snapshot');
+  const later = await (await ui.post('/api/worktrees/publish',{treeId:member.id})).json() as {treeId:string;sha:string};
+  const other = await (await ui.post('/api/worktrees/integrate',{projectId,snapshot:[later]})).json() as {tree:{id:string}};
+  const laterCommand = await (await ui.post('/api/worktrees/request-command',{treeId:other.tree.id,name:'check'})).json() as {id:string};
+  expect((await ui.post('/api/worktrees/approve-command',{id:laterCommand.id})).status).toBe(200);
+  expect((await ui.post('/api/worktrees/review-merge',{treeId:other.tree.id})).status).toBe(409);
+  // Selecting another board cannot approve or consume a ticket from this one.
+  expect((await ui.post('/api/workspaces',{name:'other board'})).status).toBe(200);
+  expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);
+  expect((await ui.post('/api/workspaces/default/select',{})).status).toBe(200);
+  const revision = (await board(ui)).revision;
+  expect((await ui.post('/api/spec/apply',{spec:{...spec,title:'重新核对的需求'},expectedRevision:revision,approved:true})).status).toBe(200);
+  expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);
+  await accept();
+  expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);
+  expect(git(repository,['rev-parse','HEAD']).trim()).toBe(baseline);
+  const fresh = await review();
+  expect(fresh.status).toBe(200);
+  const ticket = await fresh.json() as {id:string;sha:string};
+  const approved = await ui.post('/api/worktrees/approve-merge',{id:ticket.id});
+  expect(await approved.json()).toMatchObject({merged:true});
+  expect(git(repository,['rev-parse','HEAD']).trim()).toBe(ticket.sha);
+}, 40_000);

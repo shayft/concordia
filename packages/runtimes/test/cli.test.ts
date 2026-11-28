@@ -1,5 +1,7 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { inspectCli, runCliProbe } from '../src/cli.ts';
 import { prepareEnvironment, resolveExecutable } from '../src/environment.ts';
 import { parseAuth, parseProbeOutput } from '../src/output.ts';
@@ -61,7 +63,9 @@ describe('以独立进程执行两种假 CLI', () => {
     it(kind + ' 在最小 PATH 下接受带空格的工作目录和绝对路径，输出可脱敏回放', async () => {
       const options = { cwd: fixture.cwd, env, executable: fixture.executable(kind), confirmUnmanaged: true, model: 'custom/model' };
       const { inspectionId } = await inspectCli(kind, options);
-      const result = await runCliProbe(kind, { ...options, approved: true, inspectionId });
+      const onDispatch = vi.fn();
+      const result = await runCliProbe(kind, { ...options, approved: true, inspectionId, onDispatch });
+      expect(onDispatch).toHaveBeenCalledTimes(1);
       expect(result.text).toBe('CONCORDIA_OK');
       expect(result.login).toBe('已登录');
       expect(result.billing).toBe('未知');
@@ -72,10 +76,35 @@ describe('以独立进程执行两种假 CLI', () => {
       expect(parseProbeOutput(kind, result.recording)).toMatchObject({ text: result.text, recording: result.recording });
     }, 60_000);
   }
+  // The Windows fake CLI is a compiled C# program without user MCP emulation; the
+  // cross-platform agent-runtime case covers the same overrides through the Node fake.
+  it.skipIf(process.platform === 'win32')('codex 按名称停用本机配置的 MCP 服务器后才运行，无法停用时停止', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'concordia-codex-home-'));
+    const servers = (names: string[]) => writeFile(join(home, '.codex-fake-mcp.json'), JSON.stringify(names));
+    try {
+      const options = { cwd: fixture.cwd, env: { ...env, HOME: home }, executable: fixture.executable('codex') };
+      await servers(['node_repl', 'computer-use']);
+      const inspected = await inspectCli('codex', options);
+      expect(inspected.disabledMcpServers).toEqual(['computer-use', 'node_repl']);
+      const disable = inspected.arguments.indexOf('mcp_servers.node_repl.enabled=false');
+      expect(disable).toBeGreaterThan(inspected.arguments.indexOf('mcp_servers={}'));
+      const result = await runCliProbe('codex', { ...options, approved: true, inspectionId: inspected.inspectionId });
+      expect(result.text).toBe('CONCORDIA_OK');
+      await servers(['node_repl']);
+      await expect(runCliProbe('codex', { ...options, approved: true, inspectionId: inspected.inspectionId })).rejects.toThrow(/重新预检/);
+      await servers(['concordia']);
+      expect((await inspectCli('codex', options)).disabledMcpServers).toEqual(['concordia']);
+      await expect(inspectCli('codex', { ...options, requiresPlatformMcp: true })).rejects.toThrow(/重名/);
+      await servers(['team.tools']);
+      await expect(inspectCli('codex', options)).rejects.toThrow(/无法按名称停用/);
+    } finally { await rm(home, { recursive: true, force: true }); }
+  }, 60_000);
   it('预检中的计费变量有变化即停止', async () => {
     const options = { cwd: fixture.cwd, env, executable: fixture.executable('claude'), confirmUnmanaged: true };
     const { inspectionId } = await inspectCli('claude', options);
-    await expect(runCliProbe('claude', { ...options, env: fixture.env, approved: true, inspectionId })).rejects.toThrow(/重新预检/);
+    const onDispatch = vi.fn();
+    await expect(runCliProbe('claude', { ...options, env: fixture.env, approved: true, inspectionId, onDispatch })).rejects.toThrow(/重新预检/);
+    expect(onDispatch).not.toHaveBeenCalled();
   }, 45_000);
   it('管理策略未知仅可做 Claude 预检', async () => {
     const options = { cwd: fixture.cwd, env, executable: fixture.executable('claude') };

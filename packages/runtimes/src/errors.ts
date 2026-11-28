@@ -1,5 +1,5 @@
 // Only fixed diagnostic messages from Concordia may reach the command line.
-export type CliFailure = 'rate_limit' | 'auth' | 'budget' | 'transient' | 'permission' | 'fatal';
+export type CliFailure = 'rate_limit' | 'auth' | 'budget' | 'transient' | 'permission' | 'context' | 'fatal';
 export class CliDiagnosticError extends Error {
   readonly kind: CliFailure;
   constructor(message: string, kind: CliFailure = 'fatal') {

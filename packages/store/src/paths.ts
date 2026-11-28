@@ -1,4 +1,5 @@
-import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { checkPrivateDirectory } from './private-directory.ts';
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync } from 'node:fs';
 import { isAbsolute, join, parse, resolve, sep } from 'node:path';
 
 function checkPath(path: string): void {
@@ -30,19 +31,29 @@ function ensureDirectory(path: string, create: boolean): void {
 }
 
 /** Return the physical application path. Validate parents before accessing children. */
-function directory(root: string, segments: string[], create: boolean): string {
+function directory(root: string, segments: string[], create: boolean, privateRoot = false): string {
   checkPath(root);
   for (const segment of segments) checkSegment(segment);
   const full = resolve(root, ...segments);
   checkPath(full);
   let path = parse(full).root;
-  for (const segment of full.slice(path.length).split(sep).filter(Boolean)) {
+  if (privateRoot && (path === full || (process.platform === 'win32' && !/^[a-z]:[\\/]/iu.test(root))))
+    throw new Error('请选择本机磁盘上的专用绝对目录。');
+  const parts = full.slice(path.length).split(sep).filter(Boolean);
+  for (const [index, segment] of parts.entries()) {
     checkSegment(segment);
     path = join(path, segment);
     // macOS ships /var and /tmp as OS aliases; verify the canonical destination.
     if (process.platform === 'darwin' && (path === '/tmp' || path === '/var') &&
         realpathSync(path) === '/private' + path) path = '/private' + path;
-    ensureDirectory(path, create);
+    const privateLeaf = privateRoot && index === parts.length - 1;
+    if (privateLeaf && process.platform === 'win32' && !lstatSync(path, { throwIfNoEntry: false })) {
+      checkPrivateDirectory(path, 'create');
+      ensureDirectory(path, false);
+    } else {
+      ensureDirectory(path, create);
+      if (privateLeaf) checkPrivateDirectory(path, 'inspect');
+    }
     // Expand existing Windows short names before traversing the next component.
     if (process.platform === 'win32') {
       path = realpathSync.native(path);
@@ -56,8 +67,13 @@ export function safeDataDirectory(root: string, ...segments: string[]): string {
   return directory(root, segments, true);
 }
 
-export function existingDataDirectory(root: string): string {
-  return directory(root, [], false);
+/** Used only for the application data root, never to change an existing user's ACL. */
+export function privateDataDirectory(path: string): string {
+  return directory(path, [], true, true);
+}
+
+export function existingDataDirectory(root: string, ...segments: string[]): string {
+  return directory(root, segments, false);
 }
 
 /** Reject symlinks, junctions, devices, directories, and files sharing another inode name. */
@@ -77,4 +93,17 @@ export function safeDatabasePath(root: string, ...segments: string[]): string {
   const path = join(directory, name);
   for (const suffix of ['', '-wal', '-shm', '-journal']) assertSingleFile(path + suffix);
   return path;
+}
+
+export function privateTemporaryDirectory(parent: string, prefix: string): string {
+  checkSegment(prefix);
+  const dir = mkdtempSync(join(existingDataDirectory(parent), prefix));
+  try {
+    // Only tighten the empty directory atomically allocated by this process.
+    checkPrivateDirectory(dir, 'secure-new-temp');
+    return dir;
+  } catch (error) {
+    rmdirSync(dir);
+    throw error;
+  }
 }

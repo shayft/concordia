@@ -26,7 +26,9 @@ beforeEach(async () => {
     vi.fn(async (path: string, options: RequestInit) => {
       const body = options.body ? JSON.parse(String(options.body)) : undefined;
       requests.push({ path, method: options.method ?? 'GET', body });
-      const reply = await serve(path, body);
+      const reply = path.startsWith('/api/approval-route?')
+        ? { stamp: 'reviewed', revision: 1, routes: [{ connection: '测试', protocol: 'chat-completions', destination: '本机', model: '测试模型', credentials: [], permissions: '仅生成文本', pool: '测试' }] }
+        : await serve(path, body);
       return reply instanceof Response ? reply : Response.json(reply);
     }),
   );
@@ -61,12 +63,20 @@ it('CLI 连接先预检，再按批准请求调用一次，切换模型后清空
     path === '/api/catalog'
       ? catalog
       : path.endsWith('inspect')
-        ? { inspectionId: 'inspection-1', login: '已登录', billing: '未知', version: '1.0' }
+        ? {
+            inspectionId: 'inspection-1',
+            login: '已登录',
+            billing: '未知',
+            version: '1.0',
+            disabledMcpServers: ['computer-use', 'node_repl'],
+          }
         : { ok: true, text: 'CONCORDIA_OK' };
   await render(<CatalogPage />);
   await click(button('验证'));
   expect(button('批准一次真实调用').disabled).toBe(true);
+  expect(container.textContent).not.toContain('停用本机 Codex 配置的 MCP 服务器');
   await click(button('预检路径、版本和登录状态'));
+  expect(container.textContent).toContain('本次调用停用本机 Codex 配置的 MCP 服务器：computer-use、node_repl');
   expect(requests.some((r) => r.path.endsWith('/test'))).toBe(false);
   await click(button('批准一次真实调用'));
   expect(requests.filter((r) => r.path.endsWith('/test'))).toEqual([
@@ -114,6 +124,29 @@ it('修改计划只产生带预览修订号的显式批准', async () => {
   await click(button('批准并应用此版本'));
   expect(requests.at(-1)?.body).toEqual({ spec, expectedRevision: 3, approved: true });
   expect(openBoard).toHaveBeenCalledOnce();
+});
+
+it('从界面载入旧计划和原预算，批准携带所选实例标识', async () => {
+  const archived = {id:'meeting',title:'旧会议',goal:'核对',acceptance:['签字'],tasks:[],agents:[],maxCalls:3};
+  serve = path => {
+    if (path === '/api/catalog') return {connections:[],models:[],members:[],pools:[]};
+    if (path === '/api/plans') return [{id:'meeting',title:'旧会议',active:false}];
+    if (path === '/api/plans/meeting/spec') return archived;
+    if (path === '/api/spec/preview') return {spec:archived,baselineId:'meeting',revision:8,added:[],removed:[],changed:[],taskChanges:[],settings:[]};
+    return {};
+  };
+  await render(<PlansPage openBoard={() => {}} />);
+  async function select(selector: string, value: string) {
+    const el=container.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => { el.value=value;el.dispatchEvent(new window.Event('change',{bubbles:true})); });
+  }
+  await select('[aria-label="草案来源"]','revise');
+  await select('#revisionPlan','meeting');
+  await click(button('载入修订版本'));
+  expect(JSON.parse(container.querySelector<HTMLTextAreaElement>('#draft')!.value)).toEqual(archived);
+  await click(button('校验并预览差异'));
+  await click(button('批准并应用此版本'));
+  expect(requests.at(-1)?.body).toMatchObject({revisionOf:'meeting',expectedRevision:8,spec:archived});
 });
 
 it('切换草案来源后，较早返回的预览不能恢复批准按钮', async () => {
@@ -209,6 +242,29 @@ it('看板按负责人、未分配和全部筛选，保留后端计算的阻塞�
   expect(container.querySelectorAll('.card')).toHaveLength(3);
 });
 
+it('主卡验收弹窗保持打开时看到的快照，看板刷新不会替换批准内容', async () => {
+  const { BoardPage } = await import('../src/board.tsx');
+  const first = {planId:'meeting',revision:1,versions:{minutes:'v1'},executions:{summary:'run1'}};
+  const latest = {...first,versions:{minutes:'v2'},executions:{summary:'run2'}};
+  let candidate=first;
+  serve = path => {
+    if (path === '/api/board') return {
+      spec:{id:'meeting',title:'会议',goal:'总结',acceptance:[],maxCalls:2},revision:1,
+      tasks:[],agents:[],slots:[],executions:[],versions:[],messages:[],questions:[],stoppedPools:[],acceptanceCandidate:candidate,
+    };
+    if (path === '/api/accept') return new Response(JSON.stringify({error:'验收快照已改变，请重新核对'}),{status:409});
+    return {connections:[],members:[],models:[],pools:[]};
+  };
+  await render(<BoardPage openPlans={() => {}} events={0}/>);
+  await click(button('验收主卡'));
+  candidate=latest;
+  await render(<BoardPage openPlans={() => {}} events={1}/>);
+  expect(container.textContent).toContain('run1');
+  await click(button('检查并验收'));
+  expect(requests.filter(r=>r.path==='/api/accept').at(-1)?.body).toEqual({expected:first});
+  expect(container.textContent).toContain('验收快照已改变');
+});
+
 it('任务详情区分依赖等待和排队，旧记录保留未知，普通进度按需加载', async () => {
   const { BoardPage } = await import('../src/board.tsx');
   const task = {
@@ -258,7 +314,7 @@ it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
     writeEnabled: true,
     commands: [],
   };
-  let sha = 'a'.repeat(40);
+  const publishedShas = ['a'.repeat(40)];
   const tree = () => ({
     id: 'tree',
     projectId: 'app',
@@ -268,14 +324,15 @@ it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
     branch: 'concordia/task1',
     base: 'base',
     status: 'ready',
-    sha,
+    sha: publishedShas[0],
+    publishedShas,
     conflicts: [],
     snapshot: [],
   });
   serve = (path) => {
     if (path === '/api/worktrees/state')
       return { projects: [project], trees: [tree()], approvals: [], issues: [], results: [] };
-    if (path === '/api/worktrees/publish') sha = 'b'.repeat(40);
+    if (path === '/api/worktrees/publish') publishedShas.unshift('b'.repeat(40));
     if (path === '/api/board') return { tasks: [] };
     if (path === '/api/delivery') return { phase: 'idle' };
     return {};
@@ -409,12 +466,14 @@ it('岗位保存直属上级和显式空动作白名单，重新打开仍为受�
 
 it('活动页的下载使用当前会话的固定 JSON 摘要端点', async () => {
   const { HistoryPage } = await import('../src/history.tsx');
-  serve = (path) => (path === '/api/recovery' ? { recovered: [], unresolved: [] } : []);
+  serve = (path) => path === '/api/governance' ? {items:[],next:null} : path.startsWith('/api/history/page') ? { events:[], hasMore:false } : path === '/api/recovery' ? { recovered: [], unresolved: [] } : [];
   await render(<HistoryPage events={0} />);
-  const link = container.querySelector<HTMLAnchorElement>('a[download]')!;
-  expect(link.getAttribute('href')).toBe('/api/export/audit');
-  expect(link.download).toBe('concordia-audit.json');
   expect(requests.some((r) => r.path === '/api/export/audit')).toBe(false);
+  const clickLink = vi.spyOn(dom.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  await click(button('下载脱敏审计摘要'));
+  expect(requests.filter((r) => r.path === '/api/export/audit')).toHaveLength(1);
+  expect(clickLink).toHaveBeenCalledOnce();
+  clickLink.mockRestore();
 });
 
 it('模型可跳过定价、设置零输入单价并保留独立的输入和输出报价', async () => {
@@ -467,11 +526,11 @@ it('活动页显示任务执行时价格、已知成本和未知用量，并随�
     amount: 0.00002,
   };
   serve = (path) =>
-    path === '/api/execution-costs'
+    path === '/api/governance' ? {items:[],next:null} : path === '/api/execution-costs'
       ? [first, { ...first, id: 'e2', modelId: null, pricing: null, amount: null, inputTokens: null }]
       : path === '/api/recovery'
         ? { recovered: 0, unresolved: [] }
-        : [];
+        : {events:[],hasMore:false};
   await render(<HistoryPage events={0} />);
   expect(container.textContent).toContain('0.00002 USD');
   expect(container.textContent).toContain('未知模型');
@@ -568,4 +627,380 @@ it('API 连接验证展示实际 HTTP 状态、毫秒数和已知用量，缺失
   await click(button('批准一次真实调用'));
   expect(container.textContent).toContain('HTTP 401');
   expect(container.textContent).toContain('Token 用量 · 未知');
+});
+
+it.each([
+  ['/opt/concordia/codex', '/var/tmp/任务'],
+  ['/Applications/Tools/codex', '/Users/test/工作区'],
+  ['C:\\Program Files\\Tools\\codex.exe', 'D:\\工作区'],
+])('预检后才能核对实际可执行文件 %s 及工作目录，核对时不启动 CLI', async (executable, cwd) => {
+  serve = (path) =>
+    path === '/api/catalog'
+      ? {
+          connections: [{ id: 'probe', name: '本机', kind: 'codex', enabled: true }],
+          models: [],
+          members: [],
+          pools: [],
+        }
+      : { inspectionId: 'i', executable, cwd, version: '1.0' };
+  await render(<CatalogPage />);
+  await click(button('验证'));
+  await click(button('预检路径、版本和登录状态'));
+  expect(container.textContent).toContain(executable);
+  expect(container.textContent).toContain(cwd);
+  expect(requests.some((r) => r.path.endsWith('/test'))).toBe(false);
+});
+
+it('读取旧活动页时 SSE 不移动页码，回到最新后按游标增量；人工复核解除阻塞', async () => {
+  const { HistoryPage } = await import('../src/history.tsx');
+  let unresolved = ['未完成'];
+  const record = (seq: number) => ({ seq, type: '事件' + seq, data: {} });
+  let latest = 102;
+  serve = (path) => {
+    if (path.includes('history/page')) {
+      if (path.includes('before=101')) return { events: [record(100)], hasMore: false };
+      if (path.includes('after=102')) return { events: [record(103)], hasMore: false };
+      return { events: [record(101), record(latest)], hasMore: true };
+    }
+    if (path === '/api/governance') return {items:[],next:null};
+    if (path === '/api/recovery/recheck') unresolved = [];
+    if (path.startsWith('/api/recovery')) return { recovered: [], unresolved };
+    return [];
+  };
+  await render(<HistoryPage events={0} />);
+  await click(button('重新核对进程'));
+  expect(container.textContent).not.toContain('历史进程待人工核对');
+  await click(button('更早的记录'));
+  expect(container.textContent).toContain('事件100');
+  await render(<HistoryPage events={1} />);
+  expect(container.textContent).not.toContain('事件102');
+  await click(button('返回最新记录'));
+  latest = 103;
+  await render(<HistoryPage events={2} />);
+  expect(container.textContent).toContain('事件103');
+  expect(requests.some((r) => r.path === '/api/history')).toBe(false);
+  expect(requests.some((r) => r.path.endsWith('after=102'))).toBe(true);
+});
+
+it('从成员树分别查看未提交和固定提交的差异，不创建交付或审批票', async () => {
+  const { WorktreesPage } = await import('../src/worktrees.tsx');
+  const sha = 'b'.repeat(40);
+  const older = 'c'.repeat(40);
+  serve = (path, body) => {
+    if (path === '/api/worktrees/state')
+      return {
+        projects: [
+          { id: 'app', repository: 'test', targetBranch: 'main', writeEnabled: true, commands: [] },
+        ],
+        trees: [
+          {
+            id: 'member',
+            projectId: 'app',
+            kind: 'member',
+            status: 'ready',
+            sha,
+            publishedShas: [sha, older],
+            conflicts: [],
+            snapshot: [],
+          },
+          { id: 'new', projectId: 'app', kind: 'member', status: 'ready', sha, publishedShas: [] },
+        ],
+        approvals: [],
+        issues: [],
+        results: [],
+      };
+    if (path === '/api/worktrees/diff')
+      return {
+        treeId: 'member',
+        baseSha: 'a'.repeat(40),
+        sha: (body as { sha?: string }).sha ?? null,
+        diff: '+ change',
+        untracked: ['draft.txt'],
+      };
+    if (path === '/api/board') return { tasks: [] };
+    return { phase: 'idle' };
+  };
+  await render(<WorktreesPage />);
+  await click(button('查看未提交差异'));
+  expect(container.querySelector('dialog')?.textContent).toContain('draft.txt');
+  await click(container.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!);
+  const selectors = container.querySelectorAll<HTMLSelectElement>('select[name="sha"]');
+  expect(selectors).toHaveLength(1);
+  const versions = selectors[0]!;
+  expect([...versions.options].map((option) => option.value)).toEqual([sha, older]);
+  expect(versions.value).toBe(sha);
+  versions.value = older;
+  await click(button('查看已发布差异'));
+  expect(container.querySelector('dialog')?.textContent).toContain(older);
+  expect(requests.filter((r) => r.method === 'POST')).toEqual([
+    { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member' } },
+    { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member', sha: older } },
+  ]);
+});
+
+it('保存工作区草稿，切换到另一工作区无内容，返回时需重新预览', async () => {
+  const draft = new Map<string, { text: string; revision: number }>();
+  const spec = {
+    id: 'mock',
+    goal: '内部测试',
+    title: '任务',
+    acceptance: [],
+    tasks: [],
+    agents: [],
+    maxCalls: 1,
+  };
+  serve = (path, body) => {
+    if (path.startsWith('/api/plan-draft/')) {
+      const saved = draft.get(path) ?? { text: '', revision: 0 };
+      if (!body) return saved;
+      const value = body as typeof saved;
+      expect(value.revision).toBe(saved.revision);
+      const result = { text: value.text, revision: value.revision + 1 };
+      draft.set(path, result);
+      return result;
+    }
+    if (path === '/api/templates/demo') return spec;
+    if (path === '/api/spec/preview')
+      return { revision: 2, spec, settings: [], taskChanges: [], added: [], removed: [], changed: [] };
+    return { connections: [], members: [], models: [], pools: [] };
+  };
+  await render(<PlansPage key="a" workspace="a" openBoard={() => {}} />);
+  await click(button('载入模板'));
+  await click(button('校验并预览差异'));
+  expect(button('批准并应用此版本')).toBeTruthy();
+  await render(<PlansPage key="b" workspace="b" openBoard={() => {}} />);
+  expect(container.querySelector<HTMLTextAreaElement>('#draft')?.value).toBe('');
+  await render(<PlansPage key="a" workspace="a" openBoard={() => {}} />);
+  expect(container.querySelector<HTMLTextAreaElement>('#draft')?.value).toContain('内部测试');
+  expect(container.textContent).not.toContain('批准并应用此版本');
+  expect(requests.filter((r) => r.method === 'PUT')).toHaveLength(1);
+  expect(requests.filter((r) => r.path.endsWith('/apply') || r.path.endsWith('/generate'))).toHaveLength(0);
+});
+
+it('合并确认前能核对已验收修订、来源 SHA 和通过的项目命令', async () => {
+  const { WorktreesPage } = await import('../src/worktrees.tsx');
+  const sha = 'b'.repeat(40);
+  serve = (path) => {
+    if (path === '/api/worktrees/state')
+      return {
+        projects: [{ id: 'p', repository: 'repo', targetBranch: 'main', commands: [] }],
+        trees: [
+          {
+            id: 'tree',
+            projectId: 'p',
+            kind: 'integration',
+            status: 'ready',
+            sha,
+            conflicts: [],
+            snapshot: [],
+          },
+        ],
+        approvals: [
+          {
+            id: 'ticket',
+            treeId: 'tree',
+            kind: 'merge',
+            available: true,
+            sha,
+            targetSha: 'a'.repeat(40),
+            diff: '+ allow',
+            acceptance: {
+              workspaceId: 'research',
+              planId: 'review',
+              revision: 7,
+              sources: [{ versionId: 'api-v1', treeId: 'author', sha }],
+            },
+            check: { id: 'check1', name: '合同测试', result: { exitCode: 0, elapsedMs: 32, passed: true } },
+          },
+        ],
+        issues: [],
+        results: [],
+      };
+    if (path === '/api/board') return { tasks: [] };
+    return { phase: 'idle' };
+  };
+  await render(<WorktreesPage />);
+  await click(button('查看并审批'));
+  const dialog = container.querySelector('dialog')!;
+  for (const value of ['修订 7', 'api-v1', 'author', sha, '合同测试', '退出码 0', '32 ms'])
+    expect(dialog.textContent).toContain(value);
+  expect(requests.some((r) => r.path.endsWith('approve-merge'))).toBe(false);
+});
+
+it('任务与负责人在各自预检入口显示实际目录和权限，核对时不发模型请求', async () => {
+  const { BoardPage } = await import('../src/board.tsx');
+  const agent = { id: 'dev', name: '开发', connection: 'code', role: 'lead' };
+  const catalog = {
+    connections: [{ id: 'code', enabled: true, name: '本机 Codex', kind: 'codex' }],
+    models: [],
+    pools: [],
+    members: [{ id: 'dev', name: '开发', enabled: true, role: 'lead', connectionId: 'code' }],
+  };
+  const task = {
+    id: 'task',
+    title: '查询示例',
+    owner: 'dev',
+    status: 'ready',
+    column: 'waiting',
+    missing: [],
+    consumes: [],
+    produces: [],
+    maxCalls: 2,
+  };
+  const board = {
+    tasks: [task],
+    agents: [agent],
+    slots: [],
+    messages: [],
+    questions: [],
+    versions: [],
+    executions: [],
+    stoppedPools: [],
+    revision: 1,
+    spec: { id: 'plan', title: '示例', goal: '验证预检', maxCalls: 2, acceptance: [] },
+  };
+  serve = (path) => {
+    if (path === '/api/catalog') return catalog;
+    if (path === '/api/board') return board;
+    if (path === '/api/worktrees/state') return { activeScope: 'workspace', trees: [] };
+    if (path.endsWith('/inspect'))
+      return {
+        inspectionId: 'inspect',
+        cwd: path.includes('/tasks/') ? 'C:\\项目\\工作树' : '临时的空目录',
+        executable: 'C:\\工具\\codex.exe',
+        executionAccess: '只读任务',
+        selectedChannel: 'json',
+      };
+    return {};
+  };
+  await render(<BoardPage openPlans={() => {}} events={0} />);
+  await click(container.querySelector<HTMLButtonElement>('.card')!);
+  await click(button('预检所选 CLI'));
+  expect(container.textContent).toContain('C:\\项目\\工作树');
+  expect(container.textContent).toContain('C:\\工具\\codex.exe');
+  expect(container.textContent).toContain('只读任务');
+  await render(<PlansPage openBoard={() => {}} />);
+  async function choose(selector: string, value: string) {
+    const select = container.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => {
+      select.value = value;
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    });
+  }
+  await choose('select[aria-label="草案来源"]', 'lead');
+  await choose('#lead', 'dev');
+  await click(button('预检负责人 CLI'));
+  expect(container.textContent).toContain('临时的空目录');
+  expect(container.textContent).toContain('C:\\工具\\codex.exe');
+  expect(requests.filter((r) => r.method === 'POST').map((r) => r.path)).toEqual([
+    '/api/tasks/task/inspect',
+    '/api/plans/inspect',
+  ]);
+});
+
+it('从看板逐项预览分工，运行期间仅可拒绝，刷新后批准所见修订', async () => {
+  const { ProposalReview } = await import('../src/proposals.tsx');
+  const proposal = {id:'p',planId:'board',submittedRevision:1,executionId:'lead-run',status:'pending' as const,
+    action:{type:'create_task' as const,taskId:'card',description:'说明',assignee:'member'}};
+  const stamp = {proposalId:'p',planId:'board',revision:2,target:null};
+  let queued = true;
+  serve = path => path.endsWith('/preview') ? {proposal,stamp,queued,blocker:null,diff:{
+    spec:{tasks:[{id:'card',owner:'member',maxCalls:6,maxRework:1,maxRetries:1}]},taskChanges:[],
+  }} : {};
+  const refresh = vi.fn(async () => {});
+  await render(<ProposalReview proposals={[proposal]} refresh={refresh} />);
+  await click(button('预览提议'));
+  expect(container.textContent).toContain('说明');
+  expect(button('批准此项变更').disabled).toBe(true);
+  expect(button('拒绝提议').disabled).toBe(false);
+  queued = false;
+  await click(button('刷新差异'));
+  await click(button('批准此项变更'));
+  expect(requests.at(-1)).toMatchObject({path:'/api/proposals/p/decide',body:{decision:'approved',expected:stamp}});
+  expect(refresh).toHaveBeenCalledOnce();
+});
+
+it('空连接目录给出免费模拟入口，进入任务板不自动批准运行', async () => {
+  serve = () => ({ connections: [], members: [], models: [], pools: [] });
+  await render(<CatalogPage />);
+  const link = [...container.querySelectorAll('a')].find((el) => el.textContent.includes('免费模拟'));
+  expect(link?.getAttribute('href')).toBe('#board');
+  expect(requests.filter((request) => request.method !== 'GET')).toHaveLength(0);
+});
+it('在第二个网关验证框添加首个模型，取消或保存均回到原网关，未授权前不发请求', async () => {
+  const connections = ['alpha', 'beta'].map((id) => ({
+    id,
+    name: id,
+    enabled: true,
+    kind: 'chat-completions',
+    baseUrl: 'https://fixture.invalid/v1',
+  }));
+  const models: Record<string, unknown>[] = [];
+  serve = (path, body) => {
+    if (path === '/api/catalog') return { connections, models, members: [], pools: [] };
+    if (path === '/api/models') models.push(body as Record<string, unknown>);
+    return {};
+  };
+  await render(<CatalogPage />);
+  await click([...container.querySelectorAll('button')].filter((b) => b.textContent === '验证')[1]);
+  expect(button('批准一次真实调用').disabled).toBe(true);
+  await click(button('为此连接添加模型'));
+  expect(container.querySelector<HTMLSelectElement>('#connectionId')?.value).toBe('beta');
+  expect(container.querySelector<HTMLSelectElement>('#connectionId')?.disabled).toBe(true);
+  await click(button('取消'));
+  expect(container.querySelector('dialog h2')?.textContent).toBe('验证 · beta');
+  await click(button('为此连接添加模型'));
+  for (const [id, value] of [
+    ['name', '模型 B'],
+    ['id', 'model-b'],
+    ['modelId', 'vendor-model'],
+  ]) {
+    container.querySelector<HTMLInputElement>('#' + id)!.value = value;
+  }
+  await click(button('保存模型'));
+  expect(models[0]).toMatchObject({ id: 'model-b', connectionId: 'beta', modelId: 'vendor-model' });
+  expect(container.querySelector('dialog h2')?.textContent).toBe('验证 · beta');
+  expect(container.querySelector<HTMLSelectElement>('#testModel')?.value).toBe('model-b');
+  expect(button('批准一次真实调用').disabled).toBe(false);
+  expect(requests.filter((r) => r.method === 'POST').map((r) => r.path)).toEqual(['/api/models']);
+});
+
+it('负责人选择不会自动选取参与岗位，只有用户勾选的岗位会进入批准请求', async () => {
+  const members = ['lead', 'editor', 'other'].map(id => ({ id, name: id, role: id, enabled: true, connectionId: 'g' }));
+  serve = path => path === '/api/catalog' ? { members, connections: [{ id: 'g', kind: 'chat-completions' }], models: [], pools: [] } : [];
+  await render(<PlansPage openBoard={() => {}}/>);
+  for (const [selector, value] of [['select[aria-label="草案来源"]', 'lead'], ['#lead', 'lead']]) {
+    const element = container.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => { element.value = value; element.dispatchEvent(new window.Event('change', { bubbles: true })); });
+  }
+  expect(container.querySelectorAll('fieldset input:checked')).toHaveLength(0);
+  expect(requests.filter(r => r.path.includes('approval-route?'))).toHaveLength(0);
+  await click([...container.querySelectorAll<HTMLLabelElement>('fieldset label')].find(label => label.textContent.trim() === 'editor')!.querySelector('input')!);
+  const preview = requests.find(r => r.path.includes('approval-route?'));
+  expect(new URL(preview!.path, window.location.origin).searchParams.get('roster')).toBe('editor');
+  expect(requests.some(r => r.path.endsWith('plans/generate'))).toBe(false);
+});
+
+it('重新打开规划页只读原请求状态和进度，取消，只针对所选请求', async () => {
+  const { PlanningHistory } = await import('../src/planning-history.tsx');
+  let status = 'running';
+  let listCount = 0;
+  const path = '/api/workspaces/office/plan-requests';
+  serve = requested => {
+    if (requested === path) {
+      listCount++;
+      return [{ id: 'one', member: 'lead', memberIds: ['editor'], started: 1, phase: 'receiving', progressBytes: 42, status }];
+    }
+    if (requested === path + '/one/cancel') { status = 'cancelled'; return { status }; }
+    throw new Error('无此测试请求');
+  };
+  await render(<PlanningHistory workspace="office" refreshKey={0} onLoad={() => {}}/>);
+  expect(container.textContent).toContain('已记录回复 42 字节');
+  await render(<div/>);
+  await render(<PlanningHistory workspace="office" refreshKey={0} onLoad={() => {}}/>);
+  expect(listCount).toBe(2);
+  expect(requests.every(r => r.method === 'GET')).toBe(true);
+  await click(button('取消本次规划'));
+  expect(container.textContent).toContain('已取消');
+  expect(requests.filter(r => r.method === 'POST').map(r => r.path)).toEqual([path + '/one/cancel']);
 });

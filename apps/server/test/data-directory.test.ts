@@ -1,14 +1,17 @@
-import { lstat, mkdir, mkdtemp, link, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, lstat, mkdir, mkdtemp, link, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { acquireDataDirectory, safeDatabasePath, safeDataDirectory } from '../src/data-directory.ts';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { acquireDataDirectory, safeDatabasePath, safeDataDirectory, defaultDataDirectory } from '../src/data-directory.ts';
+
+import { privateDataDirectory, privateTemporaryDirectory } from '@concordia/store/paths';
 
 let root: string, data: string, outside: string;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'concordia-private-root-'));
   data = join(root, 'data'); outside = join(root, 'outside');
-  await mkdir(data); await mkdir(outside);
+  privateDataDirectory(data); await mkdir(outside);
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
@@ -56,4 +59,47 @@ describe('应用管理的数据库与数据目录', () => {
     try { expect(()=>acquireDataDirectory(data)).toThrow('占用'); } finally { first.release(); }
     acquireDataDirectory(data).release();
   });
+});
+
+it('自定义路径必须为绝对路径', () => {
+  vi.stubEnv('CONCORDIA_DATA_DIR', './relative-data');
+  try { expect(() => defaultDataDirectory()).toThrow('绝对路径'); }
+  finally { vi.unstubAllEnvs(); }
+  expect(() => acquireDataDirectory('./relative-data')).toThrow();
+});
+
+it.skipIf(process.platform === 'win32')('既有共享数据根不被接管或修改', async () => {
+  await chmod(data, 0o750);
+  const before = (await lstat(data)).mode;
+  expect(() => acquireDataDirectory(data)).toThrow('仅允许该用户');
+  expect((await lstat(data)).mode).toBe(before);
+  await expect(lstat(join(data, 'server-lock.sqlite'))).rejects.toThrow();
+});
+
+it.skipIf(process.platform !== 'darwin')('macOS 的扩展 ACL 可使 mode 0700 的目录也被拒绝', async () => {
+  const changed = spawnSync('/bin/chmod', ['+a', 'everyone allow list,search', data], { shell: false });
+  expect(changed.status).toBe(0);
+  expect(() => acquireDataDirectory(data)).toThrow();
+  await expect(lstat(join(data, 'server-lock.sqlite'))).rejects.toThrow();
+});
+
+it.skipIf(process.platform !== 'win32')('Windows 私有目录通过，添加 Everyone 读权限后拒绝且保留原 ACL', async () => {
+  const shared = join(root, 'shared');
+  privateDataDirectory(shared);
+  const exe = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe');
+  const run = (args: string[]) => spawnSync(exe, args, { shell: false, encoding: 'utf8' });
+  expect(run([shared, '/grant', '*S-1-1-0:(OI)(CI)(RX)']).status).toBe(0);
+  const before = run([shared]);
+  expect(before.status).toBe(0);
+  expect(() => acquireDataDirectory(shared)).toThrow('Windows');
+  expect(run([shared]).stdout).toBe(before.stdout);
+  await expect(lstat(join(shared, 'server-lock.sqlite'))).rejects.toThrow();
+});
+
+it('临时 SQLite 检查目录也不得进入 CLI 私有目录或重定向父目录', async () => {
+  expect(() => privateTemporaryDirectory(join(root, '.codex'), 'inspection-')).toThrow();
+  const linked = join(root, 'redirected-temp');
+  await symlink(outside, linked, process.platform === 'win32' ? 'junction' : 'dir');
+  expect(() => privateTemporaryDirectory(linked, 'inspection-')).toThrow();
+  expect(() => privateTemporaryDirectory(root, '../elsewhere')).toThrow();
 });

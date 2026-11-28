@@ -4,15 +4,23 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
+    paths: &cli_sources
       - '.github/workflows/official-cli.yml'
       - 'packages/runtimes/test-native/**'
       - 'packages/runtimes/src/**'
       - 'packages/runtimes/package.json'
       - 'apps/server/src/verify.ts'
+      - 'apps/server/package.json'
+      - 'packages/providers/src/**'
+      - 'packages/protocol/src/**'
+      - 'packages/store/src/paths.ts'
+      - 'packages/store/src/private-directory.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
+  pull_request:
+    branches: [main]
+    paths: *cli_sources
 
 permissions:
   contents: read

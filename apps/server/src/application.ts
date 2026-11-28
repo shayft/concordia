@@ -1,28 +1,43 @@
+import { PlanningRequests } from './planning-requests.ts';
+import { planningRosterSchema } from '@concordia/protocol/planning';
+import { servePlanDraft } from './plan-draft.ts';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { CliDiagnosticError } from '@concordia/runtimes';
 import { z } from 'zod';
 import { demoSpec, meetingSpec, parallelSpec, reviewSpec, Scheduler } from '@concordia/core/workflow';
 import { runDemo } from '@concordia/core/demo';
-import { workflowSpecSchema } from '@concordia/protocol/workflow';
-import { openStore } from '@concordia/store';
+import { acceptanceSnapshotSchema, workflowSpecSchema } from '@concordia/protocol/workflow';
+import { openCatalog, worktreeLedgerExpected } from './ledger-presence.ts';
+import { initialWorkspace, openWorkspaceStore } from './workspace-storage.ts';
 import { WorkflowStore } from '@concordia/store/workflow';
-import { recoverProcessGroups } from '@concordia/runtimes/process';
-import { acquireDataDirectory, safeDatabasePath, safeDataDirectory } from './data-directory.ts';
+import { startProcessRecovery } from '@concordia/runtimes/process';
+import { acquireDataDirectory, safeDataDirectory } from './data-directory.ts';
 import { getCatalog, registerConnectionRoutes, resolveMember, cancelCatalogProbes } from './connections.ts';
 import type { WorktreeIssue } from './worktrees/service.ts';
 import { openWorktrees, serveWorktrees } from './worktrees.ts';
+import { acceptedCommits } from './worktrees/acceptance.ts';
 import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
-import { auditEvent, serveAuditExport } from './audit.ts';
+import { reconcileApprovedExecutions, registerGovernance } from './governance.ts';
+import { serveAuditExport } from './audit.ts';
+import { eventPage, historyQuery, streamHistory } from './event-history.ts';
 import { serveExecutionCosts } from './execution-cost.ts';
+import { protectPaidCalls } from './approval-route.ts';
+import { protectWorkspaceWrites } from './workspace-scope.ts';
 import { serveDelivery } from './delivery.ts';
 
 const text = z.string().trim().min(1).max(8000);
 const approval = z.literal(true);
 const identifier = z.string().min(1).max(128);
-const taskOp = z.enum(['cancel', 'pause', 'resume', 'retry', 'accept', 'rework', 'reassign']);
+const taskControl = z.discriminatedUnion('action', [
+  z.strictObject({ action: z.enum(['cancel', 'pause', 'resume', 'retry']) }),
+  z.strictObject({ action: z.enum(['accept', 'rework']), expectedExecutionId: identifier }),
+  z.strictObject({ action: z.literal('reassign'), owner: identifier }),
+]);
 const empty = z.strictObject({});
 function rejected(reply: FastifyReply, error: unknown) {
+  if (error instanceof CliDiagnosticError) return reply.code(409).send({ error: error.message });
   if (error instanceof z.ZodError)
     return reply.code(400).send({
       error: '参数、动作或工作流格式无效',
@@ -39,35 +54,37 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   const lease = acquireDataDirectory(path),
     directory = lease.directory;
   app.addHook('onClose', async () => lease.release());
-  const recovery = await recoverProcessGroups(safeDataDirectory(directory, 'processes'));
-  const assertRecovered = () => {
-    if (recovery.unresolved.length) throw new Error('上次执行的进程尚待人工核对');
-  };
-  const db = openStore(safeDatabasePath(directory, 'catalog.sqlite'));
+  const db = openCatalog(directory);
   app.addHook('onClose', async () => db.close());
-  db.prepare("UPDATE plan_requests SET status='interrupted',finished=? WHERE status='running'").run(
+  const recovery = await startProcessRecovery(safeDataDirectory(directory, 'processes'));
+  const assertRecovered = () => {
+    if (recovery.report().unresolved.length) throw new Error('上次执行的进程尚待人工核对');
+  };
+  db.prepare("UPDATE plan_requests SET status='interrupted',phase='finished',finished=? WHERE status='running'").run(
     Date.now(),
   );
-  db.prepare("INSERT OR IGNORE INTO workspaces VALUES('default','默认工作区',1)").run();
-  const trees = openWorktrees(directory, syncConflict);
+  const trees = openWorktrees(directory, syncConflict, undefined, (scope, project, inputs) =>
+    acceptedCommits(current.scheduler, db, current.id, scope, project, inputs), worktreeLedgerExpected(directory, db));
   app.addHook('onClose', async () => trees.close());
   const workspaces = () =>
     db.prepare('SELECT id,name FROM workspaces ORDER BY rowid').all() as { id: string; name: string }[];
-  function openBoard(id: string) {
-    const dir = safeDataDirectory(directory, 'boards', id);
-    const boardDb = openStore(safeDatabasePath(dir, 'workspace.sqlite'));
+  function openBoard(id: string, create: boolean) {
+    const { dir, boardDb } = openWorkspaceStore(directory, id, create);
     try {
+      const storage = new WorkflowStore(boardDb, dir);
       const scheduler = new Scheduler({
-        storage: new WorkflowStore(boardDb, dir),
+        storage,
         now: Date.now,
         nextId: randomUUID,
       });
-      const worker = new Worker(scheduler, db, trees, directory, id, () => {
+      const requests = new PlanningRequests(db, id, dir);
+      const worker = new Worker(scheduler, db, trees, directory, id, requests, () => {
         const address = app.server.address();
         if (!address || typeof address === 'string') throw new Error('本地服务未监听');
         return 'http://127.0.0.1:' + address.port;
       });
       scheduler.recover();
+      reconcileApprovedExecutions(db, id, storage);
       // A user may have resumed a shared account from a different workspace.
       const board = scheduler.board();
       const shared = pausedPools(db);
@@ -79,13 +96,13 @@ export async function registerApplication(app: FastifyInstance, path: string) {
           scheduler.resumePool(pool);
         }
       }
-      return { id, scheduler, worker, close: () => boardDb.close() };
+      return { id, boardDb, scheduler, worker, close: () => boardDb.close() };
     } catch (error) {
       boardDb.close();
       throw error;
     }
   }
-  let current = openBoard(String(db.prepare('SELECT id FROM workspaces WHERE active=1').get()!.id));
+  let current = initialWorkspace(db, directory, openBoard);
   const feeds = new Set<() => void>();
   function closeFeeds() {
     for (const stop of [...feeds]) stop();
@@ -126,11 +143,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     current.scheduler.reportConflict({ ...issue, paths });
   }
   for (const issue of trees.issues()) syncConflict(issue);
-  app.addHook('onRequest', async (req, reply) => {
-    const scope = req.headers['x-concordia-workspace'];
-    if (scope !== undefined && scope !== current.id && req.method !== 'GET')
-      return reply.code(409).send({ error: '活动工作区已变更，请刷新页面' });
-  });
+  let browserWorkspace = { active: current.id, generation: randomUUID() };
+  protectWorkspaceWrites(app, () => browserWorkspace);
+  protectPaidCalls(app, db, () => ({ ...current, generation: browserWorkspace.generation }));
   registerConnectionRoutes(app, db, {
     isRunning: (f) => current.worker.editingBlocked(f),
     runningCount: (f) => current.worker.count(f),
@@ -138,7 +153,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   });
   serveWorktrees(app, trees, assertRecovered, () =>
     current.scheduler.board().spec ? current.worker.treeScope() : undefined,
+    (id) => current.worker.revokeProjectWrites(id),
   );
+  registerGovernance(app, db, () => current.id);
   serveAuditExport(app, () => current.scheduler.board());
   serveExecutionCosts(app, () => current.scheduler.board().executions);
   const delivery = serveDelivery(app, directory, assertRecovered);
@@ -146,8 +163,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   function switchBoard(id: string, newName?: string) {
     if (current.id === id) return;
     if (current.worker.occupied()) throw new Error('工作区仍有执行或已授权批次');
+    current.worker.requests.flushInterrupted();
     if (!newName && !workspaces().some((w) => w.id === id)) throw new Error('工作区不存在');
-    const next = openBoard(id);
+    const next = openBoard(id, newName !== undefined);
     try {
       db.exec('BEGIN IMMEDIATE');
       if (newName) db.prepare('INSERT INTO workspaces(id,name,active) VALUES(?,?,0)').run(id, newName);
@@ -162,6 +180,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     closeFeeds();
     current.close();
     current = next;
+    browserWorkspace = { active: id, generation: randomUUID() };
     for (const issue of trees.issues()) syncConflict(issue);
   }
   function checkedSpec(raw: unknown) {
@@ -184,8 +203,13 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     void __;
     return { ...board, stoppedPools: [...new Set([...board.stoppedPools, ...pausedPools(db)])] };
   });
-  app.get('/api/workspaces', async () => ({ active: current.id, workspaces: workspaces() }));
-  app.get('/api/recovery', async () => recovery);
+  servePlanDraft(app, () => current);
+  app.get('/api/workspaces', async () => ({ ...browserWorkspace, workspaces: workspaces() }));
+  app.get('/api/recovery', async () => recovery.report());
+  app.post('/api/recovery/recheck', async (req, reply) => {
+    if (!empty.safeParse(req.body).success) return reply.code(400).send();
+    return recovery.recheck();
+  });
   app.get('/api/templates/demo', async () => demoSpec());
   app.get('/api/tasks/:id/progress', async (req, reply) => {
     try {
@@ -201,17 +225,26 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       return rejected(reply, e);
     }
   });
+  app.get('/api/history/page', async (req, reply) => {
+    try {
+      return eventPage(current.boardDb, historyQuery.parse(req.query));
+    } catch (error) { return rejected(reply, error); }
+  });
   app.get('/api/history', async (req, reply) => {
     try {
-      return current.scheduler
-        .events(z.object({ after: z.coerce.number().int().min(0).default(0) }).parse(req.query).after)
-        .map(auditEvent);
-    } catch (e) {
-      return rejected(reply, e);
-    }
+      const { after, limit } = historyQuery.parse(req.query);
+      const page = eventPage(current.boardDb, { after: after ?? 0, limit });
+      if (page.hasMore) reply.header('link', '</api/history?after=' + page.events.at(-1)!.seq + '>; rel="next"');
+      return page.events;
+    } catch (error) { return rejected(reply, error); }
   });
   app.get('/api/events', async (req, reply) => {
-    let sequence = Number(req.headers['last-event-id'] ?? 0);
+    const query = z.strictObject({ tail: z.literal('1').optional() }).safeParse(req.query);
+    if (!query.success) return reply.code(400).send();
+    const tail = query.data.tail && req.headers['last-event-id'] === undefined;
+    const sequence = tail
+      ? Number(current.boardDb.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM workflow_events').get()!.seq)
+      : Number(req.headers['last-event-id'] ?? 0);
     if (!Number.isSafeInteger(sequence) || sequence < 0) return reply.code(400).send();
     reply.hijack();
     const output = reply.raw;
@@ -220,29 +253,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
     });
-    output.write(': connected\n\n');
-    const send = () => {
-      if (output.destroyed || output.writableEnded) return stop();
-      try {
-        for (const event of current.scheduler.events(sequence)) {
-          if (output.writableLength > 262144) return stop();
-          output.write('id: ' + event.seq + '\ndata: ' + JSON.stringify(auditEvent(event)) + '\n\n');
-          sequence = event.seq;
-        }
-      } catch {
-        stop();
-      }
-    };
-    const timer = setInterval(send, 250);
-    timer.unref();
-    function stop() {
-      clearInterval(timer);
-      feeds.delete(stop);
-      output.end();
-    }
+    output.write(tail ? 'id: ' + sequence + '\n: connected\n\n' : ': connected\n\n');
+    const stop = streamHistory(output, current.boardDb, sequence, () => feeds.delete(stop));
     feeds.add(stop);
-    output.once('close', stop);
-    send();
   });
   function post<T extends z.ZodType>(
     url: string,
@@ -267,6 +280,11 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     switchBoard(p.id);
     return { active: current.id };
   });
+  app.get('/api/plans', async () => current.scheduler.plans());
+  app.get<{Params: {id:string}}>('/api/plans/:id/spec', async (req, reply) => {
+    try { return current.scheduler.planSpec(identifier.parse(req.params.id)); }
+    catch (error) { return rejected(reply, error); }
+  });
   for (const type of ['meeting', 'parallel', 'review'])
     post(
       '/api/templates/' + type,
@@ -279,6 +297,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
             : type === 'parallel'
               ? parallelSpec(goal, members)
               : meetingSpec(goal, members);
+        spec.id = type + '-' + randomUUID();
         const catalog = getCatalog(db);
         for (const agent of spec.agents) {
           const member = catalog.members.find((m) => m.id === agent.id);
@@ -289,20 +308,45 @@ export async function registerApplication(app: FastifyInstance, path: string) {
         return checkedSpec(spec);
       },
     );
-  post('/api/spec/preview', z.strictObject({ spec: z.unknown() }), ({ spec }) =>
-    current.scheduler.preview(checkedSpec(spec)),
+  post('/api/spec/preview', z.strictObject({ spec: z.unknown(), revisionOf: identifier.optional() }), ({ spec, revisionOf }) =>
+    current.scheduler.preview(checkedSpec(spec), revisionOf),
   );
   post(
     '/api/spec/apply',
-    z.strictObject({ spec: z.unknown(), expectedRevision: z.number().int().min(0), approved: approval }),
+    z.strictObject({ spec: z.unknown(), revisionOf: identifier.optional(), expectedRevision: z.number().int().min(0), approved: approval }),
     (input) => {
       if (current.worker.occupied()) throw new Error('请先停止当前运行');
-      return current.scheduler.apply(checkedSpec(input.spec), input.expectedRevision);
+      return current.scheduler.apply(checkedSpec(input.spec), input.expectedRevision, input.revisionOf);
     },
   );
+  post('/api/proposals/:id/preview', empty, (_, p) => current.scheduler.previewProposal(identifier.parse(p.id)));
+  post('/api/proposals/:id/decide', z.strictObject({
+    decision: z.enum(['approved', 'rejected']),
+    expected: z.strictObject({
+      proposalId: identifier, planId: identifier, revision: z.number().int().min(0),
+      target: z.strictObject({
+        status: z.enum(['waiting','ready','running','decision','review','paused','done','failed','cancelled']),
+        executionId: identifier.nullable(),
+      }).nullable(),
+    }),
+  }), ({ decision, expected }, p) =>
+    current.scheduler.decideProposal(identifier.parse(p.id), decision, expected, spec => {
+      if (current.worker.occupied()) throw new Error('请先停止当前运行');
+      if (JSON.stringify(checkedSpec(spec)) !== JSON.stringify(spec)) throw new Error('成员配置已改变，请重新核对计划');
+    }));
   post('/api/demo/run', empty, () => {
     if (current.worker.occupied()) throw new Error('请先停止当前运行');
     return runDemo(current.scheduler);
+  });
+  post('/api/tasks/:id/inspect', z.strictObject({
+    confirmUnmanaged: z.boolean().optional(), projectId: identifier.optional(), treeId: z.uuid().optional(),
+  }).refine(x => Boolean(x.projectId) === Boolean(x.treeId)), (input, p) => {
+    assertRecovered();
+    return current.worker.inspectExecution({ taskId: p.id, projectId: input.projectId, treeId: input.treeId }, input.confirmUnmanaged);
+  });
+  post('/api/plans/inspect', z.strictObject({ agentId: identifier, confirmUnmanaged: z.boolean().optional() }), input => {
+    assertRecovered();
+    return current.worker.inspectExecution({ planner: input.agentId }, input.confirmUnmanaged);
   });
   post('/api/tasks/:id/run', runOptions, (opts, p) => {
     assertRecovered();
@@ -310,15 +354,17 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   });
   post(
     '/api/tasks/:id/control',
-    z.strictObject({ action: taskOp, owner: identifier.optional() }),
+    taskControl,
     (data, p) => {
       if (data.action === 'reassign') current.scheduler.reassign(p.id, identifier.parse(data.owner));
-      else current.scheduler.control(p.id, data.action);
+      else current.scheduler.control(p.id, data.action, 'expectedExecutionId' in data ? data.expectedExecutionId : undefined);
       if (['reassign', 'pause', 'cancel', 'rework'].includes(data.action)) current.worker.cancelTask(p.id);
       return { ok: true };
     },
   );
-  post('/api/accept', empty, () => ({ snapshot: current.scheduler.accept() }));
+  post('/api/accept', z.strictObject({ expected: acceptanceSnapshotSchema }), ({ expected }) => ({
+    snapshot: current.scheduler.accept(expected),
+  }));
   post(
     '/api/dispatch',
     z.strictObject({ maxCalls: z.number().int().min(1).max(50), approved: approval }),
@@ -346,18 +392,44 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     current.scheduler.sendAsUser(p.id, message);
     return { ok: true };
   });
+  const planningPath = '/api/workspaces/:workspace/plan-requests';
+  function planningWorker(workspace: string) {
+    if (workspace !== current.id) throw new Error('请选择所属工作区');
+    return current.worker;
+  }
+  app.get<{ Params: { workspace: string } }>(planningPath, async (req, reply) => {
+    try { return planningWorker(req.params.workspace).requests.list(); }
+    catch (error) { return rejected(reply, error); }
+  });
+  app.get<{ Params: { workspace: string; id: string } }>(planningPath + '/:id/result', async (req, reply) => {
+    try {
+      const worker = planningWorker(req.params.workspace);
+      const spec = worker.requests.result(req.params.id);
+      // Old approved roster entries may since have been disabled. The original draft
+      // remains readable; applying it still requires validation against today's catalog.
+      try { return { spec, preview: worker.scheduler.preview(checkedSpec(spec)) }; }
+      catch { return { spec, preview: null }; }
+    } catch (error) { return rejected(reply, error); }
+  });
+  post(planningPath + '/:id/cancel', empty, (_, p) => planningWorker(p.workspace).cancelPlanning(p.id));
   post(
     '/api/plans/generate',
     z.strictObject({
       goal: text,
       agentId: identifier,
+      members: planningRosterSchema,
+      requestKey: z.uuid().optional(),
+      background: z.boolean().optional(),
       approved: approval,
       confirmUnmanaged: z.boolean().optional(),
       inspectionId: z.string().max(128).optional(),
     }),
     async (input) => {
       assertRecovered();
-      return current.worker.generate(input.goal, input.agentId, input, checkedSpec);
+      if (input.background && !input.requestKey) throw new Error('后台规划需要请求标识');
+      return current.worker.generate(input.goal, input.agentId, input, raw => ({
+        ...checkedSpec(raw), id: 'plan-' + randomUUID(),
+      }));
     },
   );
   app.post<{ Params: { id: string } }>('/mcp/:id', async (req, reply) => {

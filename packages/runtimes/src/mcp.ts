@@ -11,6 +11,7 @@ interface Lease {
   protocol?: string;
   allowed: ReadonlySet<PlatformAction['type']>;
   observe?: (action: PlatformAction) => void;
+  admitContext?: (bytes: number) => boolean;
   calls: Map<RpcId, { signature: string; result: Promise<McpReply> }>;
 }
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -32,10 +33,11 @@ export class ExecutionMcpServer {
     private readonly now: () => number = Date.now,
   ) {}
 
-  open(executionId: string, observe?: (action: PlatformAction) => void, allowed?: ReadonlySet<PlatformAction['type']>): string {
+  open(executionId: string, observe?: (action: PlatformAction) => void, allowed?: ReadonlySet<PlatformAction['type']>,
+    admitContext?: (bytes: number) => boolean): string {
     if (this.leases.has(executionId)) throw new Error('执行已经拥有动作通道');
     const token = randomBytes(32);
-    this.leases.set(executionId, { token, expires: this.now() + 180_000, calls: new Map(), observe, allowed: new Set(allowed) });
+    this.leases.set(executionId, { token, expires: this.now() + 180_000, calls: new Map(), observe, admitContext, allowed: new Set(allowed) });
     return token.toString('hex');
   }
 
@@ -79,6 +81,8 @@ export class ExecutionMcpServer {
     const previous = lease.calls.get(id);
     if (previous) return previous.signature === signature ? previous.result : rpcError(id, -32600, '请求编号重复');
     if (lease.calls.size >= 256) return rpcError(id, -32000, '单次执行的动作上限已达');
+    if (lease.admitContext && !lease.admitContext(Buffer.byteLength(signature)))
+      return rpcError(id, -32000, '本轮动作超过上下文限制');
     const result = this.dispatchOnce(request.executionId, id, lease, action.data);
     lease.calls.set(id, { signature, result });
     return result;
@@ -91,7 +95,10 @@ export class ExecutionMcpServer {
       const content=JSON.stringify(value ?? { accepted:true });
       if (content.toLowerCase().includes(lease.token.toString('hex'))) return rpcError(id,-32603,'动作回复包含传输凭证');
       lease.observe?.(action);
-      return rpcReply(id, { content: [{ type: 'text', text: content }] });
+      const reply = rpcReply(id, { content: [{ type: 'text', text: content }] });
+      if (lease.admitContext && !lease.admitContext(Buffer.byteLength(JSON.stringify(reply.body))))
+        return rpcError(id, -32000, '本轮工具回复超过上下文限制');
+      return reply;
     } catch {
       return rpcReply(id, { isError: true, content: [{ type: 'text', text: '当前执行无权执行此动作或其状态已改变。' }] });
     }

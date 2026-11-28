@@ -8,31 +8,70 @@ import Fastify from 'fastify';
 import { registerApplication } from './application.ts';
 
 const webDirectory = fileURLToPath(new URL('../../web/dist/', import.meta.url));
-const cookieName = 'concordia_session';
+const proofHeader = 'x-concordia-session';
 
 const bootstrapScript = `
 const token = location.hash.slice(1);
 history.replaceState(null, '', '/launch');
+const message = document.querySelector('p');
+const key = 'concordia.session';
+const reopen = '请回到已经打开的 Concordia 窗口。如需新会话，先在原窗口结束正在运行的任务，再在服务终端按 Ctrl+C，运行 pnpm serve 并打开新链接。';
+async function verify(proof) {
+  const response = await fetch('/api/health', {
+    headers: { 'x-concordia-session': proof },
+    credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+  });
+  if (response.ok) { location.replace('/'); return true; }
+  if (response.status !== 401 && response.status !== 403) throw new Error('health');
+  return false;
+}
 async function openConcordia() {
-  if (token) {
-    const response = await fetch('/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token }),
-    });
-    if (response.ok) {
-      location.replace('/');
-      return;
-    }
+  let previous;
+  try { previous = localStorage.getItem(key); }
+  catch {
+    message.textContent = '浏览器阻止了本机站点读取存储。请允许本机站点存储，然后重新打开终端中的完整链接。';
+    return;
   }
-  document.querySelector('p').textContent = '请使用终端本次启动时显示的完整链接。';
+  if (previous && await verify(previous)) return;
+  if (!token) {
+    message.textContent = '此页缺少有效会话。首次使用时，请打开终端显示的完整启动链接。' + reopen;
+    return;
+  }
+  // Detect a storage restriction before exchanging the one-use token.
+  try {
+    localStorage.setItem('concordia.storage-check', '1');
+    localStorage.removeItem('concordia.storage-check');
+  } catch {
+    message.textContent = '浏览器阻止了本机站点写入存储。请允许本机站点存储，然后重新打开终端中的完整链接。';
+    return;
+  }
+  const response = await fetch('/session', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+    body: JSON.stringify({ token }),
+  });
+  if (response.status === 401) {
+    // Another tab can finish the same exchange while this page loads.
+    const current = localStorage.getItem(key);
+    if (current && current !== previous && await verify(current)) return;
+    message.textContent = '该一次性链接已使用或已失效。' + reopen;
+    return;
+  }
+  const proof = response.headers.get('x-concordia-session');
+  if (!response.ok || !proof) throw new Error('session');
+  try { localStorage.setItem(key, proof); }
+  catch {
+    message.textContent = '链接已兑换，但浏览器未能保存会话。请允许本机站点存储并检查剩余空间。' + reopen;
+    return;
+  }
+  if (!await verify(proof)) message.textContent = '浏览器未建立会话。请允许此站点使用 Cookie 和本地存储。' + reopen;
 }
 openConcordia().catch(() => {
-  document.querySelector('p').textContent = '无法连接到 Concordia。请检查终端中的服务状态。';
+  message.textContent = '无法访问本地服务。请检查启动服务的终端，使用仍在运行的实例地址。';
 });
 `;
-const bootstrapHtml = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>Concordia</title>
-<p>正在打开 Concordia…</p><script>${bootstrapScript}</script></html>`;
+const bootstrapHtml = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>打开 Concordia</title>
+<p role="status">正在打开 Concordia…</p><script>${bootstrapScript}</script></html>`;
 const scriptHash = createHash('sha256').update(bootstrapScript).digest('base64');
 const policy = `default-src 'none'; script-src 'self' 'sha256-${scriptHash}'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
 
@@ -42,7 +81,7 @@ function matches(received: unknown, expected: string | undefined): boolean {
   return timingSafeEqual(Buffer.from(received), Buffer.from(expected));
 }
 
-function sessionCookie(header: string | undefined): string | undefined {
+function sessionCookie(header: string | undefined, cookieName: string): string | undefined {
   const prefix = cookieName + '=';
   const entries = header?.split(';').map(part => part.trim()).filter(part => part.startsWith(prefix));
   if (entries?.length === 1) return entries[0].slice(prefix.length);
@@ -68,6 +107,11 @@ export async function startLocalServer(directory = webDirectory, dataDirectory?:
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
   let launchToken: string | undefined = randomBytes(32).toString('base64url');
   const session = randomBytes(32).toString('base64url');
+  // Cookies on loopback are shared across ports. Static assets use an instance-specific
+  // cookie; application data additionally requires a proof held by this browser origin.
+  const cookieName = 'concordia_' + randomBytes(12).toString('hex');
+  const proof = randomBytes(32).toString('base64url');
+  let sessionHost: string | undefined;
 
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
@@ -96,7 +140,10 @@ export async function startLocalServer(directory = webDirectory, dataDirectory?:
     }
     if ((isRead && request.url === '/launch') ||
         (request.method === 'POST' && request.url === '/session')) return;
-    if (!matches(sessionCookie(request.headers.cookie), session)) return reply.code(401).send();
+    if (host !== sessionHost || !matches(sessionCookie(request.headers.cookie, cookieName), session))
+      return reply.code(401).send();
+    if (request.routeOptions.url?.startsWith('/api/') && !matches(request.headers[proofHeader], proof))
+      return reply.code(401).send();
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -109,7 +156,8 @@ export async function startLocalServer(directory = webDirectory, dataDirectory?:
   app.post<{ Body: { token?: unknown } | null }>('/session', async (request, reply) => {
     if (!matches(request.body?.token, launchToken)) return reply.code(401).send();
     launchToken = undefined;
-    return reply.header('set-cookie', cookieName + '=' + session + '; Path=/; HttpOnly; SameSite=Strict')
+    sessionHost = request.headers.host;
+    return reply.header(proofHeader, proof).header('set-cookie', cookieName + '=' + session + '; Path=/; HttpOnly; SameSite=Strict')
       .code(204).send();
   });
 

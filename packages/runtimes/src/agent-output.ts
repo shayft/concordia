@@ -46,7 +46,8 @@ export function decodeAgentOutput(kind: CliKind, output: string) {
       started = true;
     } else if (type === 'item.completed' && item?.type === 'agent_message') {
       if (!started || item.text === undefined) throw new CliDiagnosticError('Codex CLI 文本事件无效。');
-      text += item.text;
+      // Each completed item is a whole message. Codex exposes the last one as its final answer.
+      text = item.text;
     } else if (type === 'turn.completed') {
       if (!started) throw new CliDiagnosticError('Codex CLI 未启动执行。');
       completed = true;

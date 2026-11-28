@@ -1,3 +1,4 @@
+import { throwUpstreamError } from './upstream-error.ts';
 import type {
   ModelEvent,
   ModelMessage,
@@ -49,7 +50,8 @@ export function responsesBody(
   };
 }
 function* result(body: Dictionary, emitted: string): Generator<ModelEvent> {
-  if (body.status !== 'completed' || body.error) throw new Error('incomplete');
+  if (body.error) throwUpstreamError(body.error);
+  if (body.status !== 'completed') throw new Error('incomplete');
   let text = '';
   const reasoning: ResponseReasoning[] = [];
   for (const raw of list(body.output)) {
@@ -94,8 +96,10 @@ export async function* responsesEvents(res: Response, stream: boolean): AsyncGen
     } else if (frame.type === 'response.completed') {
       yield* result(obj(frame.response), emitted);
       return;
-    } else if (['error', 'response.failed', 'response.incomplete'].includes(string(frame.type)))
-      throw new Error('upstream error');
+     } else if (frame.type === 'error') throwUpstreamError(frame.error ?? frame);
+    else if (frame.type === 'response.failed' || frame.type === 'response.incomplete') {
+      throwUpstreamError(obj(frame.response ?? {}).error);
+    }
   }
   throw new Error('unfinished stream');
 }

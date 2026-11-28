@@ -1,11 +1,13 @@
+import { browserSession } from './browser-session.ts';
 import { once } from 'node:events';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
 import { expect, it, vi } from 'vitest';
-import type { State } from '@concordia/core/workflow';
+import type { Scheduler } from '@concordia/core/workflow';
 import { startLocalServer } from '../src/local-server.ts';
 
 // The service configures the real Node executable on each OS. Only its argv
@@ -73,24 +75,14 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
     await writeFile(join(web, 'index.html'), '<title>mixed team</title>');
     app = await startLocalServer(web, join(root, 'data'));
     const launch = new URL(app.launchUrl);
-    const exchange = await fetch(launch.origin + '/session', {
-      method: 'POST',
-      headers: { origin: launch.origin, 'content-type': 'application/json' },
-      body: JSON.stringify({ token: launch.hash.slice(1) }),
-    });
-    expect(exchange.status).toBe(204);
-    const cookie = exchange.headers.get('set-cookie')!.split(';')[0];
+    const client = await browserSession(launch);
     const post = async (path: string, body: unknown) => {
-      const result = await fetch(launch.origin + path, {
-        method: 'POST',
-        headers: { cookie, origin: launch.origin, 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const result = await client.post(path, body);
       expect(result.ok, path + ' HTTP ' + result.status).toBe(true);
       return result.json();
     };
     const board = async () =>
-      (await fetch(launch.origin + '/api/board', { headers: { cookie } })).json() as Promise<State>;
+      (await client.get('/api/board')).json() as Promise<ReturnType<Scheduler['board']>>;
     await post('/api/connections', {
       id: 'cli',
       name: '脚本化 Codex',
@@ -118,6 +110,7 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
       role: '交付接口',
       connectionId: 'cli',
       systemPrompt: marker,
+      allowedActions: ['publish_artifact', 'submit_result'],
     });
     await post('/api/members', {
       id: 'reviewer',
@@ -157,11 +150,35 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
     });
     const before = await board();
     expect(before.tasks.find((t) => t.id === 'review')?.status).toBe('waiting');
-    const inspection = await post('/api/members/author/inspect', {});
+    const repository = join(root, 'fixture-repo');
+    await mkdir(repository);
+    execFileSync('git', ['init', '-b', 'main', repository], {stdio:'pipe'});
+    execFileSync('git', ['-C', repository, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c','commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'base'], {stdio:'pipe'});
+    await post('/api/worktrees/projects', { id:'project', repository, targetBranch:'main', writeEnabled:true, commands:[] });
+    const tree = await post('/api/worktrees/member', { projectId:'project', taskId:'write' });
+    await writeFile(join(tree.path, 'fixture-project-servers.json'), JSON.stringify(['tree_only']));
+    const target = { projectId:'project', treeId:tree.id };
+    const inspection = await post('/api/tasks/write/inspect', target);
+    expect(inspection).toMatchObject({ cwd:tree.path, executionAccess:'只读任务', selectedChannel:'mcp' });
+    expect(inspection.disabledMcpServers).toEqual(['tree_only']);
+    // A changed worktree setting invalidates the inspection. Neither SQLite
+    // ledger may count the rejected invocation against the subsequent approval.
+    await writeFile(join(tree.path, 'fixture-project-servers.json'), JSON.stringify(['new_tree_setting']));
+    const blocked = await post('/api/tasks/write/run', {mode:'live',approved:true,inspectionId:inspection.inspectionId,...target});
+    await vi.waitFor(async () => {
+      const snapshot = await board();
+      expect(snapshot.executions.find(e => e.id === blocked.executionId)).toMatchObject({status:'failed',calls:0,meters:[]});
+    }, {timeout:30_000});
+    expect((await (await client.get('/api/budgets')).json()).usage).toContainEqual({
+      scope:'global',id:'all',calls:0,tokens:0,active:0,
+    });
+    await post('/api/tasks/write/control', {action:'retry'});
+    const refreshed = await post('/api/tasks/write/inspect',target);
     const launched = await post('/api/tasks/write/run', {
       mode: 'live',
       approved: true,
-      inspectionId: inspection.inspectionId,
+      inspectionId: refreshed.inspectionId, ...target,
     });
     await post('/api/dispatch', { maxCalls: 1, approved: true });
     await vi.waitFor(
@@ -186,8 +203,11 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
       async () => expect((await board()).tasks.find((t) => t.id === 'write')?.status).toBe('review'),
       { timeout: 10_000 },
     );
-    for (const id of ['write', 'review']) await post('/api/tasks/' + id + '/control', { action: 'accept' });
-    expect(await post('/api/accept', {})).toEqual({
+    for (const id of ['write', 'review']) {
+      const card = (await board()).tasks.find(t => t.id === id)!;
+      await post('/api/tasks/' + id + '/control', { action: 'accept', expectedExecutionId: card.reviewExecutionId });
+    }
+    expect(await post('/api/accept', { expected: (await board()).acceptanceCandidate })).toEqual({
       snapshot: { contract: contract.id, verdict: verdict.id },
     });
   } finally {

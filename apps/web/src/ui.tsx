@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 
 export function Notice({ error, message }: { error?: string; message?: string }) {
   return error ? (
@@ -14,6 +14,12 @@ export function Notice({ error, message }: { error?: string; message?: string })
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }
+/** Codex precheck: the user's own MCP servers that this call disables by name. */
+export function DisabledMcpServers({ names }: { names?: readonly string[] }) {
+  return names?.length ? (
+    <p className="help">本次调用停用本机 Codex 配置的 MCP 服务器：{names.join('、')}。原生配置文件不会被修改。</p>
+  ) : null;
+}
 export function Modal({
   title,
   children,
@@ -24,21 +30,27 @@ export function Modal({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
   useEffect(() => {
     const d = ref.current;
+    const trigger = document.activeElement;
     d?.showModal();
-    return () => d?.close();
+    return () => {
+      d?.close();
+      if (trigger instanceof window.HTMLElement && trigger.isConnected) trigger.focus();
+    };
   }, []);
   return (
     <dialog
       ref={ref}
+      aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
       }}
     >
       <div className="modal-heading">
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         <button type="button" aria-label="关闭" className="icon-button" onClick={onClose}>
           ×
         </button>

@@ -3,7 +3,7 @@ import { resolveCliDirectory } from './cli-path.ts';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { actionTools, type ActionName, type PlatformAction } from '@concordia/protocol';
-import { codexOptions, inspectCli, modelArgs, type CliOptions } from './cli.ts';
+import { codexMcpDisables, codexOptions, inspectCli, modelArgs, type CliOptions } from './cli.ts';
 import { prepareEnvironment, type CliKind } from './environment.ts';
 import { CliDiagnosticError, nativeCliFailure } from './errors.ts';
 import { ExecutionMcpServer } from './mcp.ts';
@@ -21,17 +21,20 @@ export type AgentRuntimeEvent =
 
 export interface AgentExecutionInput {
   executionId: string; memberId: string; taskId: string; prompt: string; cwd: string;
+  maxContextBytes?: number; onDispatch?: () => void; onSpawnRejected?: () => void;
   permission: 'read-only' | 'worktree-write'; authorizedWorktree?: string;
-  mcpOrigin: string; outputOnly?: boolean; approvedDiagnostic?: Awaited<ReturnType<typeof inspectCli>>; allowedActions?: ReadonlySet<ActionName>; recoveryDir?: string; signal?: AbortSignal;
+  mcpOrigin: string; outputOnly?: boolean; approvedInspectionId?: string; allowedActions?: ReadonlySet<ActionName>; recoveryDir?: string; signal?: AbortSignal;
 }
 export interface CliSessionStore { get(key: string): string | undefined; set(key: string, session: string): void }
 interface RuntimeConfig extends CliOptions { kind: CliKind; connectionId: string }
 const activeSessions = new Set<string>();
-const observedServers = z.tuple([z.object({ name: z.literal('concordia'), enabled: z.literal(true), transport: z.object({
+// The user's own MCP servers stay listed but must be disabled; only the platform server may run.
+const listedServers = z.array(z.object({ name: z.string(), enabled: z.boolean() }));
+const observedServer = z.object({ name: z.literal('concordia'), enabled: z.literal(true), transport: z.object({
   type: z.literal('streamable_http'), url: z.string(), bearer_token_env_var: z.literal('CONCORDIA_MCP_TOKEN'),
   http_headers_helper: z.null().optional(), http_headers: z.record(z.string(), z.never()).nullish(),
   env_http_headers: z.record(z.string(), z.never()).nullish(),
-}) })]);
+}) });
 
 function actionUrl(origin: string, executionId: string) {
   const url = new URL(origin);
@@ -97,15 +100,13 @@ export class CliAgentRuntime {
     input.signal?.addEventListener('abort', abort, { once: true });
     if (input.signal?.aborted) abort();
     let opened = false;
+    let contextExceeded = false;
     try {
       const signal = controller.signal;
-      const diagnostic = await inspectCli(kind, { ...this.config, cwd, signal });
-      if (input.approvedDiagnostic) {
-        // The working tree can differ from the inspected connection directory.
-        // Reject a different executable, credential method, model or environment.
-        const profile = (d: typeof diagnostic) => JSON.stringify([d.kind, d.executable, d.version,
-          d.login, d.authMethod, d.billing, d.billingEnvironment, d.unmanagedConfirmed, d.actionChannel, d.arguments]);
-        if (profile(input.approvedDiagnostic) !== profile(diagnostic)) throw new CliDiagnosticError('工作目录中的 CLI 连接与批准的预检结果不符。');
+      const diagnostic = await inspectCli(kind, { ...this.config, cwd, signal,
+        requiresPlatformMcp: !input.outputOnly && this.config.actionChannel !== 'json' });
+      if (input.approvedInspectionId !== undefined && input.approvedInspectionId !== diagnostic.inspectionId) {
+        throw new CliDiagnosticError('工作目录中的 CLI 连接与批准的预检结果不符，请重新预检。');
       }
       if (kind === 'claude' && !diagnostic.unmanagedConfirmed) throw new CliDiagnosticError('需要确认 Claude 无受管策略。','permission');
       if (diagnostic.login === '未登录') throw new CliDiagnosticError('CLI 未登录。','auth');
@@ -137,11 +138,17 @@ export class CliAgentRuntime {
         const cfg = [...codexOptions];
         if (channel === 'mcp') {
           cfg.splice(-2, 2, '-c', 'mcp_servers={concordia={url=' + JSON.stringify(url) + ',bearer_token_env_var="CONCORDIA_MCP_TOKEN",required=true}}');
+        }
+        // Must follow the table assignment above, which would otherwise re-enable them.
+        cfg.push(...codexMcpDisables(diagnostic.disabledMcpServers ?? []));
+        if (channel === 'mcp') {
           const list = await runProcess(diagnostic.executable, [...cfg, 'mcp','list','--json'], options);
           let observed: unknown;
           try { observed = JSON.parse(list.stdout); } catch { /* Fail closed below. */ }
-          const parsed = observedServers.safeParse(observed);
-          if (list.exitCode !== 0 || !parsed.success || parsed.data[0].transport.url !== url) {
+          const listed = listedServers.safeParse(observed);
+          const active = listed.success ? (observed as unknown[]).filter((_, index) => listed.data[index].enabled) : [];
+          const parsed = observedServer.safeParse(active[0]);
+          if (list.exitCode !== 0 || active.length !== 1 || !parsed.success || parsed.data.transport.url !== url) {
             throw new CliDiagnosticError('Codex 的实际 MCP 配置不匹配。');
           }
         }
@@ -151,11 +158,23 @@ export class CliAgentRuntime {
         args = [...cfg,'--ask-for-approval','on-request','exec','--sandbox', nativeWrite ? 'workspace-write' : 'read-only',
           '--skip-git-repo-check','--json',...modelArgs(model), ...(previous ? ['resume',previous] : []), '-'];
       }
-      const token = this.mcp.open(executionId, action => emit({ type: 'action', action }), allowed);
-      opened = true;
-      const env = channel === 'mcp' ? { ...childEnv, CONCORDIA_MCP_TOKEN: token } : childEnv;
       const stdin = channel === 'json' ? JSON.stringify({ task:prompt, tools,
         instruction:'仅返回 JSON 动作或 {"actions":[...]}，每个动作的 type 等于工具名。提交结果时把 submit_result 放在最后。' }) : prompt;
+      let remaining = (input.maxContextBytes ?? 128_000) - Buffer.byteLength(stdin);
+      if (channel === 'mcp') remaining -= Buffer.byteLength(JSON.stringify({ tools }));
+      if (remaining < 0)
+        throw new CliDiagnosticError('本轮 CLI 输入和工具超过配置的上下文限制。', 'context');
+      const admitContext = (bytes: number) => {
+        remaining -= bytes;
+        if (remaining >= 0) return true;
+        contextExceeded = true;
+        this.cancel(executionId);
+        return false;
+      };
+      const token = this.mcp.open(executionId, action => emit({ type: 'action', action }), allowed,
+        channel === 'mcp' ? admitContext : undefined);
+      opened = true;
+      const env = channel === 'mcp' ? { ...childEnv, CONCORDIA_MCP_TOKEN: token } : childEnv;
       let saved: string | undefined;
       const bind = (session: string) => {
         if (saved === session) return;
@@ -168,6 +187,7 @@ export class CliAgentRuntime {
         saved = session;
       };
       const result = await runProcess(diagnostic.executable, args, { ...options, env, stdin, timeoutMs: 120_000,
+        onDispatch: input.onDispatch, onSpawnRejected: input.onSpawnRejected,
         observeStdout:watchSessionStart(kind, bind) });
       if (signal.aborted) throw new CliDiagnosticError('执行已取消。');
       if (result.exitCode !== 0) throw nativeCliFailure(result.stderr + '\n' + result.stdout);
@@ -184,6 +204,7 @@ export class CliAgentRuntime {
       if (output.usage) emit({ type: 'usage', inputTokens: output.usage.input_tokens, outputTokens: output.usage.output_tokens });
       emit({ type: 'completed' });
     } catch (err) {
+      if (contextExceeded) throw new CliDiagnosticError('本轮 CLI 工具上下文超过上限。', 'context');
       if (err instanceof CliDiagnosticError) throw err;
       if (err instanceof Error && err.message === '进程运行超时') throw new CliDiagnosticError('CLI 执行超时。','transient');
       throw new CliDiagnosticError(controller.signal.aborted ? '执行已取消。' : 'CLI 执行未完成。');

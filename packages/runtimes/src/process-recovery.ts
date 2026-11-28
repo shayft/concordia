@@ -92,18 +92,26 @@ function gone(record: RecordData) {
 /** Call after taking the application's exclusive data-directory lock. A live
  * owner uses its own identity to do the signalling. A dead owner never
  * authorizes killing a numeric PID that may now belong to another process. */
-export async function recoverProcessGroups(path: string) {
+export async function startProcessRecovery(path: string) {
   const dir = directory(path);
-  const result: { recovered: string[]; unresolved: string[] } = { recovered: [], unresolved: [] };
-  await Promise.all(
+  // Capture the exact launches present while the app owns the startup lock.
+  // Later manual rechecks must never stop a healthy, newly launched task.
+  const pending = new Map(
     readdirSync(dir)
       .filter((name) => name.endsWith('.json'))
-      .map(async (name) => {
-        const id = name.slice(0, -5);
-        if (!uuid.test(id)) return;
+      .map((name) => name.slice(0, -5))
+      .filter((id) => uuid.test(id))
+      .map((id) => [id, id]),
+  );
+  const recovered: string[] = [];
+  const report = () => ({ recovered: [...recovered], unresolved: [...pending.values()] });
+  let checking: Promise<ReturnType<typeof report>> | undefined;
+  async function check() {
+    await Promise.all(
+      [...pending.keys()].map(async (id) => {
         let executionId = id;
         try {
-          const filename = join(dir, name);
+          const filename = join(dir, id + '.json');
           const stat = lstatSync(filename);
           if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4096) throw new Error();
           const record = JSON.parse(readFileSync(filename, 'utf8')) as RecordData;
@@ -127,7 +135,8 @@ export async function recoverProcessGroups(path: string) {
               // POSIX absence covers the entire group; Windows kernel releases the
               // kill-on-close job when the registered supervisor dies.
               forgetSupervisor(dir, id);
-              result.recovered.push(executionId);
+              pending.delete(id);
+              recovered.push(executionId);
               return;
             }
             await delay(75);
@@ -135,8 +144,21 @@ export async function recoverProcessGroups(path: string) {
         } catch {
           /* Preserve ambiguous records for manual handling. */
         }
-        result.unresolved.push(executionId);
+        pending.set(id, executionId);
       }),
-  );
-  return result;
+    );
+    return report();
+  }
+  function recheck() {
+    checking ??= check().finally(() => {
+      checking = undefined;
+    });
+    return checking;
+  }
+  await recheck();
+  return { report, recheck };
+}
+
+export async function recoverProcessGroups(path: string) {
+  return (await startProcessRecovery(path)).report();
 }

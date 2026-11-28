@@ -1,47 +1,20 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { browserSession } from './browser-session.ts';
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { State } from '@concordia/core/workflow';
-import { compileWindowsFixture } from '../../../packages/runtimes/test/fixtures/compile-windows.ts';
+import { installHoldingCodex, running } from './fixtures/holding-codex.ts';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const stop of cleanup.splice(0).reverse()) await stop();
 });
-
-async function fakeCli(dir: string) {
-  if (process.platform === 'win32') {
-    const exe = join(dir, 'codex.exe');
-    await compileWindowsFixture(new URL('./fixtures/crash-cli.cs', import.meta.url), exe);
-    return exe;
-  }
-  const exe = join(dir, 'codex.mjs');
-  const standard = new URL('../../../packages/runtimes/test/fixtures/agent-cli.mjs', import.meta.url).href;
-  const source = [
-    '#!' + (await realpath(process.execPath)),
-    "import {spawn} from 'node:child_process';",
-    "import {writeFileSync} from 'node:fs';",
-    "import {setTimeout as delay} from 'node:timers/promises';",
-    'const args=process.argv.slice(2);',
-    "const helper=args[0]==='--hold';",
-    "if(!helper){process.argv.splice(2,0,'codex');await import(" + JSON.stringify(standard) + ');}',
-    "if(helper || (args.includes('exec') && !args.includes('--help'))) {",
-    '  const level=helper ? Number(args[1]) : 0;',
-    "  process.on('SIGTERM',()=>{});",
-    "  writeFileSync(new URL('pid-'+level,import.meta.url),String(process.pid));",
-    "  if(level<2) spawn(process.execPath,[process.argv[1],'--hold',String(level+1)],{shell:false,stdio:'ignore'});",
-    '  await delay(120000);',
-    '}',
-  ].join('\n');
-  await writeFile(exe, source, { flag: 'wx', mode: 0o700 });
-  return exe;
-}
 
 async function isolatedServer(web: string, data: string) {
   const entry = new URL('../src/local-server.ts', import.meta.url).href;
@@ -74,26 +47,16 @@ async function isolatedServer(web: string, data: string) {
     once(child, 'message').then(([url]) => new URL(String(url))),
     died.then(() => Promise.reject(new Error('临时服务提前退出'))),
   ]);
-  const exchange = await fetch(link.origin + '/session', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: link.origin },
-    body: JSON.stringify({ token: link.hash.slice(1) }),
-  });
-  expect(exchange.status).toBe(204);
-  const headers = {
-    cookie: exchange.headers.get('set-cookie')!.split(';')[0],
-    origin: link.origin,
-    'content-type': 'application/json',
-  };
+  const client = await browserSession(link);
   return {
     kill,
     async post(path: string, body: unknown) {
-      const res = await fetch(link.origin + path, { method: 'POST', headers, body: JSON.stringify(body) });
+      const res = await client.post(path, body);
       expect(res.ok, path + ' HTTP ' + res.status).toBe(true);
       return res.json();
     },
     async get(path: string) {
-      const res = await fetch(link.origin + path, { headers });
+      const res = await client.get(path);
       expect(res.status).toBe(200);
       return res.json();
     },
@@ -102,21 +65,6 @@ async function isolatedServer(web: string, data: string) {
     },
   };
 }
-function running(pid: number) {
-  try {
-    process.kill(pid, 0);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-  if (process.platform === 'win32') return true;
-  // Some Linux containers retain dead children in PID 1's process table until shutdown.
-  const seen = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'stat='], { shell: false, encoding: 'utf8' });
-  if (seen.status === 1 && !seen.stdout.trim()) return false;
-  if (seen.status !== 0) throw new Error('无法确认测试进程状态');
-  return !seen.stdout.trim().startsWith('Z');
-}
-
 it('强杀混合团队的服务后，重新启动回收同一 CLI 执行的三代进程，两个中断任务均等待用户决定', async () => {
   const scratch = await mkdtemp(join(tmpdir(), 'concordia-real-crash-'));
   cleanup.push(() => rm(scratch, { recursive: true, force: true }));
@@ -124,7 +72,7 @@ it('强杀混合团队的服务后，重新启动回收同一 CLI 执行的三�
     data = join(scratch, 'data');
   await mkdir(join(web, 'assets'), { recursive: true });
   await writeFile(join(web, 'index.html'), '<title>Concordia</title>');
-  const executable = await fakeCli(scratch);
+  const executable = await installHoldingCodex(scratch, 'agent');
   let requests = 0;
   const gateway = createServer((_req, res) => {
     requests++;

@@ -45,3 +45,7 @@ node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '通�
 | Ubuntu 26.04.1 LTS | 真实 Linux 测试通过 | 202 通过，2 跳过 | [Ubuntu 作业](https://github.com/shayft/concordia/actions/runs/45998469973/job/140503749463) |
 | macOS 26.7.2 | 真实 macOS 测试通过 | 202 通过，2 跳过 | [macOS 作业](https://github.com/shayft/concordia/actions/runs/45998469973/job/140503749765) |
 | Windows Server 2025 | 真实 Windows 测试通过 | 198 通过，6 跳过 | [Windows 作业](https://github.com/shayft/concordia/actions/runs/45998469973/job/140503749580) |
+
+### 2026-11-28 配置审批与草稿复核
+
+**模拟测试通过。** 在 Linux 运行 `pnpm exec vitest run apps/server/test/approval-route.test.ts apps/server/test/plan-draft.test.ts apps/web/test/workspace-ui.test.tsx`，3 个文件、27 项通过。覆盖同一连接修改端点或模型后旧审批失效、两个人工操作窗口的工作区草稿修订冲突，以及前端显示实际 CLI 路径与工作目录。测试没有访问个人账号。

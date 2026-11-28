@@ -1,11 +1,15 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { forgetSupervisor } from './process-recovery.ts';
-export { recoverProcessGroups } from './process-recovery.ts';
+export { recoverProcessGroups, startProcessRecovery } from './process-recovery.ts';
 
 export interface ProcessOptions {
   cwd?: string;
   stdin?: string;
+  /** Called synchronously before the trusted supervisor may start the target. */
+  onDispatch?: () => void;
+  /** Only a positive pre-spawn failure from the supervisor reverses dispatch. */
+  onSpawnRejected?: () => void;
   observeStdout?: (chunk: Buffer) => void;
   recoveryDir?: string;
   executionId?: string;
@@ -121,6 +125,8 @@ export async function runProcess(
           }
           group = { pid: child.pid, startedAtMs: message.startedAtMs };
           groups.add(group);
+          try { options.onDispatch?.(); }
+          catch { stop('调用派发被拒绝'); return; }
           child.send(
             {
               type: 'start',
@@ -149,6 +155,11 @@ export async function runProcess(
           break;
         case 'retiring':
           retiring = true;
+          break;
+        case 'spawn-rejected':
+          try { options.onSpawnRejected?.(); }
+          catch { stop('无法登记启动失败'); return; }
+          stop('无法启动受控进程，请检查可执行文件及进程隔离支持');
           break;
         case 'failed':
           stop('无法启动受控进程，请检查可执行文件及进程隔离支持');

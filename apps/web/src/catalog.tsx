@@ -1,8 +1,10 @@
+import { ApprovalDetails, useApproval } from './approval.tsx';
 import { useRef, useEffect, useState, type FormEvent } from 'react';
 import type { Catalog, CatalogModel, Connection, Member, QuotaPool } from '@concordia/protocol/connections';
 import { modelPricingSchema } from '@concordia/protocol/pricing';
 import { MemberPermissions } from './member-permissions.tsx';
 import { api, useAction, useResource } from './api.ts';
+import { InspectionPanel, type Inspection } from './inspection.tsx';
 import { Empty, Field, Modal, Notice } from './ui.tsx';
 
 const protocols = {
@@ -44,9 +46,11 @@ type FormProps = {
   id?: string;
   onClose: () => void;
   refresh: () => Promise<void>;
+  fixedConnection?: string;
+  saved?: (id: string) => void;
 };
 
-function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
+function Editor({ tab, catalog, id, onClose, refresh, fixedConnection, saved }: FormProps) {
   const connection = catalog.connections.find((c) => c.id === id);
   const cliConnection = connection && !('baseUrl' in connection) ? connection : undefined;
   const apiConnection = connection && 'baseUrl' in connection ? connection : undefined;
@@ -56,7 +60,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
   const item = { connections: connection, models: model, members: member, pools: pool }[tab];
   const [kind, setKind] = useState<Connection['kind']>(connection?.kind ?? 'chat-completions');
   const [connectionId, setConnectionId] = useState(
-    (tab === 'members' ? member : model)?.connectionId ?? catalog.connections[0]?.id ?? '',
+    fixedConnection ?? (tab === 'members' ? member : model)?.connectionId ?? catalog.connections[0]?.id ?? '',
   );
   const feedback = useAction();
   const selectable = catalog.models.filter((m) => m.connectionId === connectionId);
@@ -100,6 +104,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                     params: json('params'),
                     timeoutMs: Number(text(fields, 'timeoutMs')) || undefined,
                     maxOutputTokens: Number(text(fields, 'maxOutputTokens')) || undefined,
+                    ...(kind === 'chat-completions' && {outputTokenField: text(fields, 'outputTokenField')}),
                   }),
             }
           : tab === 'models'
@@ -128,6 +133,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
               : { ...base, maxConcurrent: Number(text(fields, 'maxConcurrent')) };
       await api(tab + (id ? '/' + encodeURIComponent(id) : ''), id ? 'PUT' : 'POST', data);
       await refresh();
+      saved?.(recordId);
       onClose();
     });
   }
@@ -262,6 +268,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
               <Field name="connectionId" label="连接">
                 <select
                   id="connectionId"
+                  disabled={Boolean(fixedConnection)}
                   value={connectionId}
                   required
                   onChange={(e) => setConnectionId(e.target.value)}
@@ -384,6 +391,15 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                         defaultValue={apiConnection?.timeoutMs}
                       />
                     </Field>
+                    {kind === 'chat-completions' && (
+                      <Field name="outputTokenField" label="输出上限字段">
+                        <select id="outputTokenField" name="outputTokenField"
+                          defaultValue={apiConnection?.outputTokenField ?? 'max_completion_tokens'}>
+                          <option value="max_completion_tokens">max_completion_tokens</option>
+                          <option value="max_tokens">max_tokens</option>
+                        </select>
+                      </Field>
+                    )}
                     <Field name="maxOutputTokens" label="最大输出 tokens">
                       <input
                         id="maxOutputTokens"
@@ -437,14 +453,6 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
   );
 }
 
-interface Inspection {
-  inspectionId: string;
-  login?: string;
-  billing?: string;
-  version?: string;
-  billingEnvironment?: { name: string; source: string; passed?: boolean }[];
-  arguments?: string[];
-}
 interface TestResult {
   ok: boolean;
   text?: string;
@@ -457,16 +465,20 @@ function TestConnection({
   connection,
   models,
   member,
+  initialModelId,
+  addModel,
   close,
 }: {
   connection: Connection;
   models: CatalogModel[];
   member?: Member;
+  initialModelId?: string;
+  addModel: () => void;
   close: () => void;
 }) {
   const isCli = cli(connection.kind);
   const [modelId, setModel] = useState(
-    member ? (member.modelId ?? '') : isCli ? '' : (models[0]?.id ?? ''),
+    member ? (member.modelId ?? '') : isCli ? '' : (models.find((model) => model.id === initialModelId)?.id ?? models[0]?.id ?? ''),
   );
   const [unmanaged, setUnmanaged] = useState(false);
   const [inspection, setInspection] = useState<Inspection>();
@@ -475,13 +487,17 @@ function TestConnection({
   const path = member
     ? 'members/' + encodeURIComponent(member.id)
     : 'connections/' + encodeURIComponent(connection.id);
+  const approval = useApproval(isCli || modelId ? {
+    purpose: member ? 'member-test' : 'connection-test', id: member?.id ?? connection.id,
+    modelId: member ? undefined : modelId || undefined,
+  } : undefined);
   const controller = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => controller.current?.abort(), []);
   async function probe<T>(mode: 'inspect' | 'test', data: object) {
     const current = new AbortController();
     controller.current = current;
     try {
-      return await api<T>(path + '/' + mode, 'POST', data, current.signal);
+      return await api<T>(path + '/' + mode, 'POST', data, current.signal, mode === 'test' ? approval.preview?.stamp : undefined);
     } finally {
       controller.current = undefined;
     }
@@ -526,25 +542,7 @@ function TestConnection({
             >
               预检路径、版本和登录状态
             </button>
-            {inspection && (
-              <div className="surface compact">
-                <p>
-                  版本 {inspection.version ?? '未知'} · {inspection.login} · 计费来源{' '}
-                  {inspection.billing ?? '未知'}
-                </p>
-                <ul>
-                  {inspection.billingEnvironment?.map((e) => (
-                    <li key={e.name}>
-                      {e.name} · {e.source} · {e.passed ? '传入' : '忽略'}
-                    </li>
-                  ))}
-                </ul>
-                <details>
-                  <summary>查看实际权限参数</summary>
-                  <pre>{JSON.stringify(inspection.arguments, null, 2)}</pre>
-                </details>
-              </div>
-            )}
+            {inspection && <InspectionPanel result={inspection} />}
           </>
         ) : null}
         <Field name="testModel" label="测试模型">
@@ -566,6 +564,9 @@ function TestConnection({
             ))}
           </select>
         </Field>
+        {!isCli && !member && !models.length && (
+          <p>此连接还没有已启用的模型。 <button type="button" onClick={addModel}>为此连接添加模型</button></p>
+        )}
         <p className="help">此操作向所选连接发送一次只读请求，可能产生费用或消耗订阅额度。</p>
         <Notice error={feedback.error || result?.error} message={result?.ok ? result.text : undefined} />
         {result && (
@@ -584,11 +585,12 @@ function TestConnection({
             )}
           </div>
         )}
+        <ApprovalDetails approval={approval}/>
         <div className="modal-actions">
           <button onClick={close}>关闭</button>
           <button
             className="primary"
-            disabled={isCli ? !inspection || (connection.kind === 'claude' && !unmanaged) : !modelId}
+            disabled={!approval.preview || (isCli ? !inspection || (connection.kind === 'claude' && !unmanaged) : !modelId)}
             onClick={() =>
               void feedback.run(async () => {
                 setResult(undefined);
@@ -619,8 +621,8 @@ export function CatalogPage() {
   const resource = useResource<Catalog>('catalog');
   const feedback = useAction();
   const [tab, setTab] = useState<Tab>('connections');
-  const [editor, setEditor] = useState<{ id?: string }>();
-  const [test, setTest] = useState<{ connection: Connection; member?: Member }>();
+  const [editor, setEditor] = useState<{ id?: string; forConnection?: string }>();
+  const [test, setTest] = useState<{ connection: Connection; member?: Member; modelId?: string }>();
   const [remove, setRemove] = useState<{ id: string; name: string }>();
   const catalog = resource.data;
   const rows: Row[] = catalog?.[tab] ?? [];
@@ -747,23 +749,28 @@ export function CatalogPage() {
                     ? '使用同一订阅或网关账户的连接可以共享并发上限。'
                     : '先添加连接，再设置模型和负责该岗位的成员。'}
               </p>
+              {tab === 'connections' && <a href="#board">去任务板体验免费模拟</a>}
             </Empty>
           )}
         </section>
       )}
       {catalog && editor && (
         <Editor
-          tab={tab}
+          tab={editor.forConnection ? 'models' : tab}
+          fixedConnection={editor.forConnection}
+          saved={editor.forConnection ? (modelId) => setTest((current) => current && { ...current, modelId }) : undefined}
           catalog={catalog}
           id={editor.id}
           onClose={() => setEditor(undefined)}
           refresh={resource.reload}
         />
       )}
-      {catalog && test && (
+      {catalog && test && !editor && (
         <TestConnection
           connection={test.connection}
           member={test.member}
+          initialModelId={test.modelId}
+          addModel={() => setEditor({ forConnection: test.connection.id })}
           models={catalog.models.filter((m) => m.connectionId === test.connection.id && m.enabled)}
           close={() => setTest(undefined)}
         />

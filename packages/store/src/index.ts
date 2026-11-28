@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { safeDatabasePath } from './paths.ts';
+import { databaseVersion, verifyBeforeOpening } from './database-identity.ts';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 
 const migrations = [
   { version: 1, name: '001-bootstrap.sql' },
@@ -11,17 +13,28 @@ const migrations = [
   { version: 5, name: '005-code-bindings.sql' },
   { version: 6, name: '006-budget-ledger.sql' },
   { version: 7, name: '007-paused-pools.sql' },
+  { version: 8, name: '008-plan-draft.sql' },
+  { version: 9, name: '009-plan-requests.sql' },
+  { version: 10, name: '010-governance.sql' },
 ] as const;
 
+export function identifyStore(db: DatabaseSync): number {
+  const version = databaseVersion(db, migrations.length);
+  if (!version) return version;
+  if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='schema_migrations'").get())
+    throw new Error('已有数据库缺少 Concordia 迁移记录。');
+  const rows = db.prepare('SELECT version,name FROM schema_migrations ORDER BY version').all();
+  if (rows.length !== version || rows.some((row, i) =>
+    row.version !== migrations[i].version || row.name !== migrations[i].name))
+    throw new Error('已有数据库的 Concordia 迁移历史不匹配。');
+  return version;
+}
+
 /** 在写事务内再次读取版本，允许多个启动进程先后尝试迁移。 */
-function migrate(db: DatabaseSync): void {
+function migrate(db: DatabaseSync, identify: (connection: DatabaseSync) => number): void {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const row = db.prepare('PRAGMA user_version').get();
-    const current = Number(row?.user_version);
-    if (!Number.isInteger(current) || current < 0 || current > migrations.length) {
-      throw new Error('数据库版本不受支持，请使用与数据匹配的 Concordia 版本。');
-    }
+    const current = identify(db);
 
     for (const { version, name } of migrations) {
       if (version <= current) continue;
@@ -38,9 +51,18 @@ function migrate(db: DatabaseSync): void {
 }
 
 /** 调用方负责选择私有数据目录、创建父目录，以及使用完毕时关闭数据库。 */
-export function openStore(databasePath: string): DatabaseSync {
+export function openStore(databasePath: string, options: { mustExist?: boolean } = {}): DatabaseSync {
   const absolute = resolve(databasePath);
-  const db = new DatabaseSync(safeDatabasePath(dirname(absolute), basename(absolute)));
+  const file = safeDatabasePath(dirname(absolute), basename(absolute));
+  function identify(connection: DatabaseSync) {
+    const version = identifyStore(connection);
+    if (options.mustExist && version === 0) throw new Error('已有数据库缺少迁移历史。');
+    return version;
+  }
+  verifyBeforeOpening(file, identify);
+  const uri = pathToFileURL(file);
+  if (options.mustExist) uri.searchParams.set('mode', 'rw'); // SQLite must never recreate a registered board.
+  const db = new DatabaseSync(uri.href);
   try {
     db.exec('PRAGMA busy_timeout = 5000');
     const mode = db.prepare('PRAGMA journal_mode = WAL').get();
@@ -48,7 +70,7 @@ export function openStore(databasePath: string): DatabaseSync {
       throw new Error('此数据库无法启用 WAL，请选择本地磁盘上的普通文件。');
     }
     db.exec('PRAGMA foreign_keys = ON');
-    migrate(db);
+    migrate(db, identify);
     return db;
   } catch (error) {
     db.close();

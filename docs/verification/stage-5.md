@@ -50,3 +50,18 @@ pnpm serve
 2026-11-27，`821cf64`，模拟测试通过。在云端 Linux 执行 `pnpm exec vitest run apps/server/test/crash-recovery-mixed.test.ts`，1 项通过。测试在同一个正式服务实例中同时运行三代假 Codex 进程和回环 HTTP 请求，在两个任务执行中强制终止服务，再用同一数据目录重启。恢复后 CLI 三个进程均已退出，两个 execution 均为 `interrupted`，对应卡均为 `decision`，此前交付的版本仍可取用。HTTP 对端只收到原来的一次请求，等待用户决定重试。
 
 Windows Server 2025 补验了假 CLI 根进程早退。全量回归通过后连跑三次 `pnpm exec vitest run packages/runtimes/test/process.test.ts -t early`，每次选中的用例均通过。根进程保留退出码 23，后代收到 CTRL_BREAK，校验全部 PID 与管理器退出后才删除临时目录。上一次作业失败于删除测试程序时的短暂文件占用。[最终 Windows 作业](https://github.com/shayft/concordia/actions/runs/46000757825/job/140511488671)
+
+## 2026-11-28 普通项目的合并、撤权与恢复
+
+**模拟测试通过（云端 Linux）。** 在临时仓库和独立服务上运行下列命令，6 个文件共 40 项通过。模型连接由本机模拟服务和假 CLI 提供。
+
+```sh
+pnpm exec vitest run apps/server/test/worktrees.test.ts apps/server/test/worktree-revocation.test.ts apps/server/test/application-http.test.ts apps/server/test/delivery.test.ts apps/server/test/backup-service.test.ts packages/runtimes/test/process.test.ts
+```
+
+- 通过正式 API 生成项目提交、联调版本并运行已声明的命令。主卡未验收时申请合并返回 409。相同成员后来发布的另一 SHA 虽通过命令检查，申请合并仍返回 409；切换到其他工作区也不能消费原票据。计划修订后，即使重新验收同一 SHA，原票据也返回 409。新的合并票显示验收版本、来源树与命令记录，批准后目标分支指向该票据的提交。先申请的命令若最后执行失败，也会使已有成功记录失效。
+- 在两个项目中各启动一个可写的假 Codex。第一个项目的撤权请求完成时，原 PID 已退出，再无新的工作树写入。第二个项目的进程仍运行并能继续修改自己的测试文件。
+- 分别准备 Git 已更新、仍在原基线和由用户更新到第三个提交的中断审批记录。重新打开服务后，目标分支没有被改写，结果分别显示当前已在获批提交、仍在基线和需要人工核对。
+- 旧进程退出后重新核对，服务清除其遗留登记。并发复核得到相同的结果，复核期间新增的登记保持原状。成员差异检查可在项目只读状态读取暂存、未暂存和已发布的版本，完成后索引和 HEAD 保持原值。
+
+本组新增用例的托管 macOS、Windows 结果由该提交对应的作业登记。个人账号、真实模型和个人原生桌面仍需在目标机器验收。

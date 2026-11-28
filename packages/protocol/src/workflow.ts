@@ -32,6 +32,7 @@ const inputSchema = z
 export const taskSchema = z.strictObject({
   id,
   title,
+  description: z.string().trim().min(1).max(32_768).optional(),
   owner: id,
   produces: list(id).default([]),
   consumes: list(inputSchema).default([]),
@@ -125,6 +126,7 @@ export type TaskSpec = z.infer<typeof taskSchema>;
 export type Agent = z.infer<typeof agentSchema>;
 
 export interface PlanPreview {
+  baselineId: string | null;
   spec: WorkflowSpec;
   revision: number;
   added: string[];
@@ -137,3 +139,11 @@ export interface PlanPreview {
   }[];
   taskChanges: { id: string; before: TaskSpec; after: TaskSpec }[];
 }
+
+export const acceptanceSnapshotSchema = z.strictObject({
+  planId: id,
+  revision: z.number().int().min(0),
+  versions: z.record(id, id),
+  executions: z.record(id, id),
+});
+export type AcceptanceSnapshot = z.infer<typeof acceptanceSnapshotSchema>;

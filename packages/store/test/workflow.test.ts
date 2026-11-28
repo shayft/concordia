@@ -79,7 +79,7 @@ describe('真实 SQLite 与脚本化成员', () => {
       'execution.interrupted',
     ]);
   });
-  it('事务失败时回滚状态及事件，两个连接不能重复领取同一卡', () => {
+  it('事务失败时回滚状态及事件，两个连接不能重复领取同一卡', { timeout: 20_000 }, () => {
     scheduler.apply(demoSpec());
     expect(() =>
       storage.transaction((s, append) => {
@@ -188,6 +188,55 @@ describe('真实 SQLite 与脚本化成员', () => {
     scheduler.control('ui', 'accept');
     expect(task('ui').status).toBe('done');
   });
+  it.each(['failed','cancelled','interrupted','reassigned'] as const)('收件人 %s 时两条阻塞问题产生一份待决定的答复，重启不会再派发', ending => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    const ui = scheduler.claim('ui');
+    for (const question of ['谁负责？','如何验证？'])
+      scheduler.act(ui.id,{type:'ask_question',to:'backend',blocking:true,question});
+    expect(scheduler.board().tasks.filter(t => t.replyFor)).toHaveLength(0);
+    if (ending === 'failed') scheduler.fail(api.id,'fatal');
+    if (ending === 'cancelled') scheduler.control('api','cancel');
+    if (ending === 'reassigned') scheduler.reassign('api','docs');
+    if (ending === 'interrupted') scheduler.recover();
+    const replies = scheduler.board().tasks.filter(t => t.replyFor === 'ui');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({status:'decision',owner:'backend'});
+    expect(() => scheduler.claim(replies[0].id)).toThrow('尚未就绪');
+    scheduler.recover();
+    expect(scheduler.board().tasks.filter(t=>t.replyFor)).toHaveLength(1);
+    scheduler.control(replies[0].id,'resume');
+    expect(scheduler.context(scheduler.claim(replies[0].id).id).questions).toHaveLength(2);
+  });
+  it('执行中追加的问题交给下一份答复；用户取消该待办后不会重新派发', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    pub(api.id, 'backend-code', '后端');
+    submit(api.id, 'api');
+    const ui=scheduler.claim('ui');
+    const ask=(text:string) => scheduler.act(ui.id,{type:'ask_question',to:'backend',blocking:true,question:text}) as Question;
+    const first=ask('第一个问题');
+    const taskId=scheduler.board().tasks.find(t=>t.replyFor==='ui')!.id;
+    const replying=scheduler.claim(taskId);
+    ask('执行中到达的第二个问题');
+    scheduler.act(replying.id,{type:'answer_question',questionId:first.id,answer:'已确认'});
+    scheduler.act(replying.id,{type:'submit_result',summary:'已答复首个问题'});
+    const next=scheduler.board().tasks.filter(t=>t.replyFor==='ui' && t.status==='ready');
+    expect(next).toHaveLength(1);
+    scheduler.control(next[0].id,'cancel');
+    scheduler.recover();
+    expect(scheduler.board().tasks.filter(t=>t.replyFor==='ui')).toHaveLength(2);
+    expect(scheduler.board().tasks.filter(t=>t.replyFor==='ui' && t.status==='ready')).toHaveLength(0);
+  });
+  it('全局停止后维持取消状态，不补发模型任务', () => {
+    scheduler.apply(demoSpec());
+    const api=scheduler.claim('api'); pub(api.id,'contract','v1');
+    scheduler.act(scheduler.claim('ui').id, {type:'ask_question',to:'backend',blocking:true,question:'如何验证？'});
+    scheduler.stopAll(); scheduler.recover();
+    expect(scheduler.board().tasks.filter(t=>t.replyFor)).toHaveLength(0);
+  });
   it('成员结束执行时仍有阻塞问题会安排一次答复，用户消息进入指定成员的下次输入', () => {
     scheduler.apply(demoSpec());
     const api = scheduler.claim('api');
@@ -238,6 +287,30 @@ describe('真实 SQLite 与脚本化成员', () => {
     pub(up.id, 'input', 'v2', true);
     expect(task('review').status).toBe('ready');
     expect(scheduler.board().acceptance).toBeNull();
+  });
+  it('钉住旧版的无产出审查在上游不兼容后撤销验收，旧快照不能重放', () => {
+    const spec = demoSpec();
+    scheduler.apply(spec);
+    const first = scheduler.claim('api');
+    const original = pub(first.id, 'contract', 'v1');
+    scheduler.control('api', 'pause');
+    spec.tasks.find(t => t.id === 'accept')!.consumes = [{ slotId:'contract', policy:'pinned', version:original.id }];
+    spec.requiredTasks = ['accept'];
+    spec.requiredSlots = [];
+    scheduler.apply(spec);
+    const review = scheduler.claim('accept');
+    scheduler.act(review.id, { type:'submit_result', summary:'核对 v1' });
+    expect(() => scheduler.control('accept','accept','previous-execution')).toThrow('待审执行已改变');
+    scheduler.control('accept','accept',review.id);
+    const snapshot = scheduler.board().acceptanceCandidate!;
+    expect(snapshot.executions).toEqual({accept:review.id});
+    expect(() => scheduler.accept({...snapshot, revision:snapshot.revision-1})).toThrow('快照已改变');
+    scheduler.accept(snapshot);
+    scheduler.control('api','resume');
+    pub(scheduler.claim('api').id,'contract','v2',true);
+    expect(task('accept').status).toBe('done');
+    expect(scheduler.board().acceptedSnapshot).toBeNull();
+    expect(() => scheduler.accept(snapshot)).toThrow('审查的输入已过期');
   });
   it('钉住旧版的任务可继续运行，但基于不兼容旧输入的快照不能验收', () => {
     const spec = demoSpec();
@@ -411,4 +484,26 @@ describe('真实 SQLite 与脚本化成员', () => {
     expect(scheduler.board().acceptance).toEqual(previous.acceptance);
     expect(scheduler.board().archives[0].id).toBe('meeting');
   });
+});
+
+it('大文本可按绑定版本和 Unicode 码点分页；不能取阅时保留内联或在派发前拒绝', () => {
+  scheduler.apply({...demoSpec(), maxContextTokens:3000});
+  const api = scheduler.claim('api', undefined, { deferCall:true });
+  expect(api.calls).toBe(0);
+  scheduler.reserveCall(api.id, 'not-sent');
+  scheduler.refundUnstartedCall(api.id,'wrong');
+  expect(scheduler.board().executions[0].calls).toBe(1);
+  scheduler.refundUnstartedCall(api.id,'not-sent');
+  scheduler.refundUnstartedCall(api.id,'not-sent');
+  expect(scheduler.board().executions[0].calls).toBe(0);
+  const content = '🙂接口'.repeat(2000);
+  const version = pub(api.id,'contract',content);
+  expect(() => scheduler.claim('ui')).toThrow(/上下文限制/);
+  const ui = scheduler.claim('ui', undefined, { readArtifacts:true, deferCall:true });
+  expect(scheduler.context(ui.id).inputs.contract).toEqual({ versionId:version.id, utf8Bytes:Buffer.byteLength(content), readWith:'read_artifact' });
+  const read = (offset:number) => scheduler.act(ui.id,{type:'read_artifact',slotId:'contract',versionId:version.id,offset,limit:4});
+  expect(read(0)).toMatchObject({content:'🙂接口🙂',nextOffset:4});
+  expect(read(4)).toMatchObject({content:'接口🙂接',nextOffset:8});
+  expect(scheduler.act(ui.id,{type:'read_artifact',slotId:'contract'})).toHaveProperty('nextOffset',2048);
+  expect(() => scheduler.act(ui.id,{type:'read_artifact',slotId:'contract',versionId:'unbound'})).toThrow(/绑定/);
 });

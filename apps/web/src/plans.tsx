@@ -1,7 +1,11 @@
+import { ApprovalDetails, useApproval } from './approval.tsx';
+import { PlanningHistory } from './planning-history.tsx';
+import { usePlanDraft } from './plan-draft.ts';
 import { useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { PlanPreview, WorkflowSpec } from '@concordia/protocol/workflow';
 import { api, useAction, useResource } from './api.ts';
+import { InspectionPanel, type Inspection } from './inspection.tsx';
 import { Field, Notice } from './ui.tsx';
 
 const planLabels: Partial<Record<keyof WorkflowSpec, string>> = {
@@ -42,51 +46,59 @@ function ShowChange({ title, before, after }: { title: string; before: unknown; 
     </details>
   );
 }
-export function PlansPage({ openBoard }: { openBoard: () => void }) {
+export function PlansPage({ openBoard, workspace }: { openBoard: () => void; workspace?: string }) {
   const catalog = useResource<Catalog>('catalog');
   const [source, setSource] = useState('demo');
-  const [draft, setDraft] = useState('');
+  const plans = useResource<{id:string; title:string; active:boolean}[]>('plans');
+  const [revisionOf, setRevisionOf] = useState('');
+  const saved = usePlanDraft(workspace);
+  const draft = saved.view.text;
   const [goal, setGoal] = useState('');
   const [agent, setAgent] = useState('');
+  const [roster, setRoster] = useState<string[]>([]);
   const [members, setMembers] = useState<string[]>([]);
   const [unmanaged, setUnmanaged] = useState(false);
-  const [inspection, setInspection] = useState<{
-    inspectionId: string;
-    version: string;
-    billing: string;
-    login: string;
-  }>();
+  const [inspection, setInspection] = useState<Inspection>();
   const [preview, setPreview] = useState<PlanPreview>();
   const action = useAction();
   const draftRevision = useRef(0);
+  const [planningRefresh, setPlanningRefresh] = useState(0);
+  const submission = useRef<{ signature: string; key: string } | undefined>(undefined);
   function invalidatePreview() {
     draftRevision.current++;
     setPreview(undefined);
   }
   function edit(value: string) {
-    setDraft(value);
+    saved.edit(value);
     invalidatePreview();
   }
   const enabled = catalog.data?.members.filter((m) => m.enabled) ?? [];
   const member = enabled.find((m) => m.id === agent);
   const connection = catalog.data?.connections.find((c) => c.id === member?.connectionId);
   const cli = connection && !('baseUrl' in connection);
+  const approval = useApproval(source === 'lead' && member && roster.length ? { purpose: 'plan', id: member.id, roster: roster.join(',') } : undefined);
   const group = ['meeting', 'review', 'parallel'].includes(source);
   async function load() {
     const revision = draftRevision.current;
     if (source === 'lead') {
-      const result = await api<{ spec: WorkflowSpec; preview: PlanPreview }>('plans/generate', 'POST', {
-        goal,
-        agentId: agent,
-        approved: true,
+      const input = {
+        goal, agentId: agent, members: roster, approved: true, background: true,
         ...(cli && { inspectionId: inspection?.inspectionId, confirmUnmanaged: unmanaged }),
-      });
-      if (revision !== draftRevision.current) return;
-      edit(JSON.stringify(result.spec, null, 2));
-      setPreview(result.preview);
+      };
+      const signature = JSON.stringify([input, approval.preview?.stamp]);
+      if (submission.current?.signature !== signature)
+        submission.current = { signature, key: crypto.randomUUID() };
+      try {
+        await api('plans/generate', 'POST', { ...input, requestKey: submission.current.key }, undefined, approval.preview?.stamp);
+        submission.current = undefined;
+      } finally {
+        setPlanningRefresh((value) => value + 1);
+      }
     } else {
       const spec =
-        source === 'demo'
+        source === 'revise'
+          ? await api<WorkflowSpec>('plans/' + encodeURIComponent(revisionOf) + '/spec')
+          : source === 'demo'
           ? await api<WorkflowSpec>('templates/demo')
           : await api<WorkflowSpec>('templates/' + source, 'POST', { goal, members });
       if (revision !== draftRevision.current) return;
@@ -107,10 +119,11 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
         <div className="toolbar">
           <select
             aria-label="草案来源"
+            disabled={saved.view.status === 'loading'}
             value={source}
             onChange={(e) => {
               setSource(e.target.value);
-              edit('');
+              invalidatePreview();
             }}
           >
             <option value="demo">固定示范 · 按负责人筛选</option>
@@ -119,8 +132,17 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
             <option value="review">成员审查</option>
             <option value="lead">负责人生成计划</option>
             <option value="manual">手工编写</option>
+            <option value="revise">修订已有计划</option>
           </select>
         </div>
+        {source === 'revise' && <Field name="revisionPlan" label="要修订的计划">
+          <select id="revisionPlan" value={revisionOf} onChange={e => { setRevisionOf(e.target.value); edit(''); }}>
+            <option value="">选择当前或归档计划</option>
+            {Array.isArray(plans.data) && plans.data.map(plan => <option key={plan.id} value={plan.id}>
+              {plan.title} · {plan.id}{plan.active ? '（当前）' : ''}
+            </option>)}
+          </select>
+        </Field>}
         {(source === 'lead' || group) && (
           <Field name="goal" label="工作目标">
             <textarea
@@ -185,6 +207,15 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
             </p>
           </>
         )}
+        {source === 'lead' && <fieldset>
+          <legend>允许规划的岗位</legend>
+          <p className="help">所选岗位的标识、名称、职责和连接标识将随目标发送给负责人。最多可选择 30 项。</p>
+          {enabled.map((m) => <label key={m.id} className="check">
+            <input type="checkbox" checked={roster.includes(m.id)} disabled={!roster.includes(m.id) && roster.length >= 30}
+              onChange={(event) => { setRoster(event.target.checked ? [...roster, m.id].sort() : roster.filter((id) => id !== m.id)); invalidatePreview(); }}/>
+            {m.name}
+          </label>)}
+        </fieldset>}
         {source === 'lead' && cli && (
           <>
             <p className="help">
@@ -208,7 +239,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
               onClick={() =>
                 void action.run(async () => {
                   setInspection(
-                    await api('members/' + encodeURIComponent(agent) + '/inspect', 'POST', {
+                    await api('plans/inspect', 'POST', { agentId: agent,
                       confirmUnmanaged: unmanaged,
                     }),
                   );
@@ -217,38 +248,47 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
             >
               预检负责人 CLI
             </button>
-            {inspection && (
-              <p>
-                版本 {inspection.version} · {inspection.login} · 计费来源 {inspection.billing}
-              </p>
-            )}
+            {inspection && <InspectionPanel result={inspection} />}
           </>
         )}
+        {source === 'lead' && member && roster.length > 0 && <ApprovalDetails approval={approval}/>}
         {source !== 'manual' && (
           <div className="toolbar">
             <button
               disabled={
-                action.busy ||
+                action.busy || saved.view.status === 'loading' ||
                 (source === 'lead' &&
-                  (!agent ||
+                  (!agent || !roster.length || !approval.preview ||
                     !goal.trim() ||
                     (cli && !inspection) ||
                     (connection?.kind === 'claude' && !unmanaged))) ||
+                (source === 'revise' && !revisionOf) ||
                 (group && (members.length < (source === 'meeting' ? 1 : 2) || !goal.trim()))
               }
               onClick={() => void action.run(load)}
             >
-              {source === 'lead' ? '批准模型调用并生成草案' : '载入模板'}
+              {source === 'lead' ? '批准模型调用并生成草案' : source === 'revise' ? '载入修订版本' : '载入模板'}
             </button>
           </div>
         )}
       </section>
+      {workspace && <PlanningHistory workspace={workspace} refreshKey={planningRefresh} onLoad={({ spec, preview }) => {
+        setSource('manual');
+        edit(JSON.stringify(spec, null, 2));
+        setPreview(preview ?? undefined);
+      }}/>}
       <section className="panel">
         <h2>工作流 spec</h2>
+        {workspace && <div className="help" role="status">
+          {saved.view.status === 'loading' ? '正在读取工作区草稿' : saved.view.status === 'saving' ? '正在保存草稿' : saved.view.status === 'saved' ? '草稿已与当前工作区同步，批准前须预览。' : '草稿尚未保存。'}
+        </div>}
+        {saved.view.error && <div><Notice error={saved.view.error}/><button onClick={()=>void saved.retry()}>重试保存</button> <button onClick={()=>{invalidatePreview();void saved.restore();}}>舍弃本页草稿并载入服务端版本</button></div>}
         <label className="sr-only" htmlFor="draft">
           工作流 JSON 草案
         </label>
         <textarea
+          disabled={saved.view.status === 'loading'}
+          maxLength={120000}
           id="draft"
           className="code-input"
           rows={12}
@@ -269,7 +309,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
                 throw new Error('草案 JSON 语法有误。');
               }
               const revision = draftRevision.current;
-              const result = await api<PlanPreview>('spec/preview', 'POST', { spec });
+              const result = await api<PlanPreview>('spec/preview', 'POST', { spec, ...(source === 'revise' && { revisionOf }) });
               if (revision === draftRevision.current) setPreview(result);
             })
           }
@@ -284,6 +324,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
             <span>基于修订 {preview.revision}</span>
           </div>
           <p>{preview.spec.goal}</p>
+          <p>{preview.baselineId ? '修订计划 ' + preview.baselineId : '新计划 ' + preview.spec.id}</p>
           <p className="muted">
             调用上限 {preview.spec.maxCalls} · {preview.spec.tasks.length} 项任务 ·{' '}
             {preview.spec.agents.length} 位成员
@@ -330,11 +371,12 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
           ))}
           <button
             className="primary"
-            disabled={action.busy}
+            disabled={action.busy || saved.view.status !== 'saved'}
             onClick={() =>
               void action.run(async () => {
                 await api('spec/apply', 'POST', {
                   spec: preview.spec,
+                  ...(source === 'revise' && { revisionOf }),
                   expectedRevision: preview.revision,
                   approved: true,
                 });

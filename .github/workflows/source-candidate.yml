@@ -1,0 +1,170 @@
+name: Source release candidate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*-rc.*']
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+  PREVIOUS_COMMIT: c110272343b78987a61f66980ed4e1a2e04b24b3
+
+jobs:
+  package:
+    name: Package one immutable source candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      manifest_sha: ${{ steps.identity.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.CANDIDATE_COMMIT }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.19.0'
+          package-manager-cache: false
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/release/candidate.mjs build "$CANDIDATE_COMMIT" bundle
+      - name: Pin the manifest for all installation jobs
+        id: identity
+        run: |
+          manifest=$(sha256sum bundle/SHA256SUMS | cut -d ' ' -f 1)
+          printf 'manifest=%s\n' "$manifest" >> "$GITHUB_OUTPUT"
+          printf 'Commit `%s` · SHA256SUMS `%s`\n' "$CANDIDATE_COMMIT" "$manifest" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        id: upload
+        with:
+          name: concordia-source-${{ env.CANDIDATE_COMMIT }}
+          path: bundle/
+          retention-days: 30
+          if-no-files-found: error
+      - name: Record download and transport digest
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          TRANSPORT_HASH: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          printf '[Download candidate](%s) · Actions ZIP SHA-256 `%s`\n' "$ARTIFACT_URL" "$TRANSPORT_HASH" >> "$GITHUB_STEP_SUMMARY"
+
+  install:
+    name: Install candidate and rehearse rollback on ${{ matrix.os }}
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.CANDIDATE_COMMIT }}
+          path: verifier
+          sparse-checkout: |
+            scripts/release
+            packages/store/src
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: bundle
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.19.0'
+          package-manager-cache: false
+      - name: Verify the same producer digest and unpack the source
+        shell: bash
+        env:
+          MANIFEST_SHA: ${{ needs.package.outputs.manifest_sha }}
+        run: node verifier/scripts/release/unpack.mjs "$CANDIDATE_COMMIT" bundle "$MANIFEST_SHA" installed
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.PREVIOUS_COMMIT }}
+          path: previous
+          persist-credentials: false
+      - run: npm install --global pnpm@11.25.0
+      - name: Install and build the pinned earlier application
+        working-directory: previous
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+        shell: bash
+      - name: Install and build exclusively from the candidate archive
+        working-directory: installed/concordia
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+        shell: bash
+      - name: Serve, simulate, upgrade, back up, recover, and roll back
+        run: node installed/concordia/scripts/release/lifecycle.mjs previous installed/concordia
+
+  provenance:
+    name: Attest verified candidate
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
+    needs: [package, install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: bundle
+      - uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
+        with:
+          subject-path: |
+            bundle/concordia-source.tar
+            bundle/sbom.cdx.json
+            bundle/source.json
+            bundle/SHA256SUMS
+          create-storage-record: false
+
+  publish:
+    name: Publish verified prerelease
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [package, install, provenance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: bundle
+      - name: Verify eligibility and attach the tested files to the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_SHA: ${{ needs.package.outputs.manifest_sha }}
+        shell: bash
+        run: |
+          git merge-base --is-ancestor "$CANDIDATE_COMMIT" HEAD
+          test "$GITHUB_REF_NAME" = "v$(jq -r .version bundle/source.json)"
+          test "$CANDIDATE_COMMIT" = "$(jq -r .commit bundle/source.json)"
+          cd bundle
+          printf '%s  SHA256SUMS\n' "$MANIFEST_SHA" | sha256sum --check --status
+          sha256sum --check SHA256SUMS
+          git show "$CANDIDATE_COMMIT:CHANGELOG.md" > "$RUNNER_TEMP/concordia-release-notes.md"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title "Concordia $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/concordia-release-notes.md" \
+            SHA256SUMS source.json sbom.cdx.json concordia-source.tar

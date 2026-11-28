@@ -1,8 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-let activeWorkspace: string | undefined;
-export function setActiveWorkspace(id: string | undefined) {
-  activeWorkspace = id;
+export function browserFetch(path: string, options: RequestInit = {}) {
+  if (!path.startsWith('/api/')) throw new Error('无效的本地 API 路径。');
+  const headers = new Headers(options.headers);
+  let proof: string | null;
+  try { proof = window.localStorage.getItem('concordia.session'); }
+  catch { throw new Error('浏览器阻止了本机站点读取存储。请允许本站使用 Cookie 和本地存储后重新打开。'); }
+  if (proof) headers.set('x-concordia-session', proof);
+  return fetch(path, { ...options, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
+}
+
+let activeWorkspace: { id: string; generation: string } | undefined;
+export function setActiveWorkspace(id: string | undefined, generation?: string) {
+  activeWorkspace = id && generation ? { id, generation } : undefined;
 }
 
 export async function api<T>(
@@ -10,15 +20,17 @@ export async function api<T>(
   method = 'GET',
   body?: unknown,
   signal?: AbortSignal,
+  approval?: string,
 ): Promise<T> {
-  const response = await fetch('/api/' + path, {
+  const response = await browserFetch('/api/' + path, {
     method,
     signal,
     credentials: 'same-origin',
     cache: 'no-store',
     headers: {
       ...(body !== undefined && { 'Content-Type': 'application/json' }),
-      ...(method !== 'GET' && activeWorkspace && { 'x-concordia-workspace': activeWorkspace }),
+      ...(approval && { 'x-concordia-approval': approval }),
+      ...(method !== 'GET' && activeWorkspace && { 'x-concordia-workspace': activeWorkspace.id, 'x-concordia-generation': activeWorkspace.generation }),
     },
     ...(body !== undefined && { body: JSON.stringify(body) }),
   });
@@ -28,7 +40,7 @@ export async function api<T>(
       result && typeof result === 'object' && 'error' in result && typeof result.error === 'string'
         ? result.error
         : response.status === 401
-          ? '请使用终端本次启动时的链接重新打开。'
+          ? '此浏览器的本机会话已失效。请返回已登录的窗口，或在结束任务后重启服务，使用新的一次性链接。'
           : '请求失败，请检查本地服务。';
     throw new Error(message + '（HTTP ' + response.status + '）');
   }

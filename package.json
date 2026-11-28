@@ -1,18 +1,22 @@
 {
   "name": "concordia",
   "private": true,
-  "version": "0.1.0",
+  "license": "MIT",
+  "version": "0.1.0-rc.1",
   "type": "module",
   "packageManager": "pnpm@11.25.0",
   "engines": {
     "node": ">=24.16.0 <25"
   },
   "scripts": {
+    "release:candidate": "node scripts/release/candidate.mjs build",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:browser": "tsx apps/server/smoke/browser.ts",
     "build": "pnpm typecheck && pnpm --filter @concordia/web build",
+    "benchmark:load": "tsx apps/server/bench/workflow-load.ts",
+    "benchmark:delivery": "tsx apps/server/bench/delivery.ts",
     "verify": "tsx apps/server/src/verify.ts",
     "serve": "tsx apps/server/src/main.ts",
     "credential:set": "tsx packages/providers/src/credentials-set.ts",
@@ -26,7 +30,8 @@
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.74.0",
+    "vite": "8.4.0",
     "vitest": "5.1.2",
-    "vite": "8.4.0"
+    "yaml": "2.9.1"
   }
 }

@@ -1,3 +1,5 @@
+import type { ChatOutputField } from '@concordia/protocol/chat-output';
+
 export type Protocol = 'chat-completions' | 'responses' | 'gemini' | 'anthropic';
 export interface ProviderConfig {
   protocol: Protocol;
@@ -8,6 +10,7 @@ export interface ProviderConfig {
   stream?: boolean;
   timeoutMs?: number;
   maxOutputTokens?: number;
+  outputTokenField?: ChatOutputField;
   headers?: Record<string, string>;
   headerRefs?: Record<string, string>;
   params?: Record<string, unknown>;
@@ -54,6 +57,11 @@ export type ModelEvent =
   | { type: 'completed' }
   | ModelFailure;
 export interface StreamOptions {
+  /** Identity used to retain native continuation data in this provider and this conversation only. */
+  assistantReply?: ModelMessage;
+  /** Called after local validation and credential lookup, immediately before network dispatch. */
+  onDispatch?: (reservationId?: string) => void;
+  maxContextBytes?: number;
   stream?: boolean;
   signal?: AbortSignal;
 }
@@ -61,7 +69,8 @@ export interface ModelProvider {
   stream(messages: ModelMessage[], tools?: ModelTool[], options?: StreamOptions): AsyncIterable<ModelEvent>;
   validateConnection(
     signal?: AbortSignal,
+    onDispatch?: () => void,
   ): Promise<({ ok: true; text: string } | { ok: false; error: ModelFailure }) & { httpStatus?: number; usage?: ModelUsage }>;
-  getCapabilities(): { nativeTools: boolean; streaming: boolean };
+  getCapabilities(): { nativeTools: boolean; streaming: boolean; dispatchSignal?: true };
 }
 export type CredentialReader = (ref: string, signal?: AbortSignal) => Promise<string>;

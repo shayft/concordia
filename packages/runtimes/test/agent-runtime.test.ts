@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
@@ -45,6 +45,9 @@ for (const family of ['claude','codex'] as const) {
         expect(events.map(e => e.type)).toEqual(['action','text_delta','usage','completed']);
         return text!.text;
       };
+      const onDispatch = vi.fn();
+      await expect(runtime.run({...input, maxContextBytes:40, onDispatch}, () => {})).rejects.toThrow(/上下文限制/);
+      expect(onDispatch).not.toHaveBeenCalled();
       const first = await collect({});
       const again = await collect({executionId:'two'});
       const interrupted = runtime.run({...input,taskId:'interrupted',executionId:'interrupted',prompt:'interrupt'},()=>{});
@@ -80,3 +83,52 @@ for (const family of ['claude','codex'] as const) {
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory,{force:true, recursive:true}); }
   }, 120_000);
 }
+
+it('codex 停用本机配置的 MCP 服务器，只保留本次执行的动作通道', async () => {
+  kind = 'codex';
+  const directory = await mkdtemp(join(tmpdir(), 'concordia-cli-mcp-'));
+  const home = await mkdtemp(join(tmpdir(), 'concordia-cli-home-'));
+  await writeFile(join(home, '.codex-fake-mcp.json'), JSON.stringify(['computer-use', 'node_repl']));
+  const calls: PlatformAction[] = [];
+  const mcp = new ExecutionMcpServer(async (_id, action) => { calls.push(action); return { accepted:true }; });
+  const server = createServer(async (req, res) => {
+    const result = await mcp.handle({ executionId:req.url!.split('/').at(-1)!,
+      authorization:req.headers.authorization, body:JSON.parse(await text(req)) });
+    res.writeHead(result.status,{'content-type':'application/json'}).end(JSON.stringify(result.body));
+  }).listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try {
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('没有本机端口');
+    const env = { ...process.env, HOME: home };
+    const input = { memberId:'member', taskId:'task', executionId:'mcp', prompt:'本机 MCP', cwd:directory,
+      permission:'read-only' as const, mcpOrigin:'http://127.0.0.1:' + addr.port };
+    const runtime = new CliAgentRuntime({ kind, executable:process.execPath, connectionId:'mcp', confirmUnmanaged:true, env }, mcp, new Map());
+    await runtime.run(input, () => {});
+    expect(calls[0]).toEqual({ type:'publish_artifact', slotId:'contract', content:'本机 MCP' });
+    const json = new CliAgentRuntime({ kind, executable:process.execPath, connectionId:'json', actionChannel:'json', confirmUnmanaged:true, env }, mcp, new Map());
+    await json.run({ ...input, executionId:'json', prompt:'JSON 最终动作' }, () => {});
+    expect(calls.at(-1)).toEqual({ type:'submit_result', summary:'JSON 最终动作' });
+    const selected = await json.validate();
+    await writeFile(join(directory, 'fixture-project-servers.json'), JSON.stringify(['project_only']));
+    await expect(json.run({ ...input, executionId:'old-dir', approvedInspectionId:selected.inspectionId }, () => {})).rejects.toThrow(/重新预检/);
+    const inTree = await new CliAgentRuntime({ kind, executable:process.execPath, cwd:directory,
+      connectionId:'json', actionChannel:'json', confirmUnmanaged:true, env }, mcp, new Map()).validate();
+    expect(inTree.disabledMcpServers).toContain('project_only');
+    await json.run({ ...input, executionId:'selected-tree', approvedInspectionId:inTree.inspectionId }, () => {});
+    await writeFile(join(directory, 'fixture-project-servers.json'), JSON.stringify(['fixture_ignores_disable']));
+    const count = calls.length;
+    await expect(json.run({ ...input, executionId:'ignored' }, () => {})).rejects.toThrow(/全部停用/);
+    expect(calls).toHaveLength(count);
+    await rm(join(directory, 'fixture-project-servers.json'));
+    await writeFile(join(home, '.codex-fake-mcp.json'), JSON.stringify(['concordia']));
+    await json.run({ ...input, executionId:'json-same-name', prompt:'仍可提交' }, () => {});
+    expect(calls.at(-1)).toEqual({type:'submit_result', summary:'仍可提交'});
+    await runtime.run({ ...input, outputOnly:true, executionId:'text-same-name', prompt:'生成计划' }, () => {});
+    await expect(runtime.run({ ...input, executionId:'clash' }, () => {})).rejects.toThrow(/重名/);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(directory,{ force:true, recursive:true });
+    await rm(home,{ force:true, recursive:true });
+  }
+}, 60_000);

@@ -1,18 +1,22 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, lstat, mkdir, readdir, readlink, rename, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import { assertSingleFile, existingDataDirectory, safeDatabasePath } from '@concordia/store/paths';
+import { assertSingleFile, existingDataDirectory, privateTemporaryDirectory, safeDatabasePath } from '@concordia/store/paths';
 import { acquireDataDirectory } from './data-directory.ts';
+import { catalogRecovery, LedgerRecoveryError, rehearsalRecovery, worktreeRecovery } from './ledger-presence.ts';
+import { verifyBackupReferences } from './backup-integrity.ts';
+import { BackupManifestError, readBackupManifest, verifyBackupManifest, writeBackupManifest } from './backup-manifest.ts';
 
-const manifest = 'concordia-backup-v1.sha256';
 const applicationRoots = new Set(['catalog.sqlite', 'worktrees.sqlite', 'objects', 'boards', 'worktrees', 'assignee-delivery']);
 const dbFile = /^(?:catalog\.sqlite|worktrees\.sqlite|boards\/[^/]+\/workspace\.sqlite|assignee-delivery\/(?:delivery|worktrees)\.sqlite)$/u;
 const sidecar = /-(?:shm|wal|journal)$/u;
 const privatePath = /(?:^|[\\/])\.(?:claude|codex)(?:[\\/]|$)/iu;
 const isManagedSidecar = (path: string) => sidecar.test(path) && dbFile.test(path.replace(sidecar, ''));
+
+class PendingProcessRecovery extends Error {}
 
 function checkLocation(path: string): void {
   if (!isAbsolute(path) || privatePath.test(path)) throw new Error('请指定独立、绝对的 Concordia 路径。');
@@ -37,8 +41,21 @@ function checkDatabase(file: string) {
   }
 }
 
-async function copyState(source: string, target: string, snapshot: boolean) {
+async function copyState(source: string, target: string, snapshot: boolean, preserveExecutable: boolean) {
   const digest = createHash('sha256');
+  const executableFiles: string[] | null = process.platform === 'win32' ? null : [];
+  async function skipSidecar(path: string) {
+    if (!isManagedSidecar(path)) return false;
+    const main = path.replace(sidecar, '');
+    if (main.endsWith('worktrees.sqlite') || main.endsWith('/delivery.sqlite')) {
+      const file = await lstat(join(source, main)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (!file) throw new LedgerRecoveryError(main.endsWith('/delivery.sqlite') ? rehearsalRecovery : worktreeRecovery);
+    }
+    return true;
+  }
   async function visit(path: string): Promise<void> {
     const from = join(source, path), to = join(target, path);
     const stat = await lstat(from);
@@ -52,7 +69,7 @@ async function copyState(source: string, target: string, snapshot: boolean) {
       digest.update(JSON.stringify([path, 'directory']) + '\n');
       for (const name of (await readdir(from)).sort()) {
         const child = path + '/' + name;
-        if (!isManagedSidecar(child)) await visit(child);
+        if (!(await skipSidecar(child))) await visit(child);
       }
     } else if (stat.isFile()) {
       if (dbFile.test(path) && snapshot) {
@@ -63,8 +80,11 @@ async function copyState(source: string, target: string, snapshot: boolean) {
         assertSingleFile(from);
         await copyFile(from, to);
       }
-      // Preserve executable bits for a restored project command while keeping backups private.
-      if (process.platform !== 'win32') await chmod(to, 0o600 | (stat.mode & 0o100));
+      if (executableFiles) {
+        const execute = preserveExecutable ? stat.mode & 0o100 : 0;
+        if (execute) executableFiles.push(path);
+        await chmod(to, 0o600 | execute);
+      }
       const hash = await digestFile(to);
       if (/^(?:boards\/[^/]+\/|assignee-delivery\/)?objects\/[a-f0-9]{64}$/u.test(path) && hash !== basename(path)) {
         throw new Error('交付物内容与 SHA-256 名称不匹配。');
@@ -74,11 +94,15 @@ async function copyState(source: string, target: string, snapshot: boolean) {
       throw new Error('数据目录中有无法备份的特殊文件。');
     }
   }
-  if (!(await lstat(join(source, 'catalog.sqlite'))).isFile()) throw new Error('缺少 Concordia 目录库。');
+  const catalog = await lstat(join(source, 'catalog.sqlite')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (!catalog?.isFile()) throw new LedgerRecoveryError(catalogRecovery);
   for (const name of (await readdir(source)).sort()) {
-    if (applicationRoots.has(name)) await visit(name);
+    if (!(await skipSidecar(name)) && applicationRoots.has(name)) await visit(name);
   }
-  return digest.digest('hex');
+  return { contentHash: digest.digest('hex'), executableFiles: executableFiles?.sort() ?? null };
 }
 
 /** An offline, local snapshot. A destination must be new, even after a failed attempt. */
@@ -100,22 +124,27 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
   let lease: ReturnType<typeof acquireDataDirectory> | undefined;
   let staging: string | undefined;
   try {
-    let expected: string | undefined;
-    if (mode === 'restore') {
-      const file = join(from, manifest);
-      assertSingleFile(file);
-      expected = (await readFile(file, 'utf8')).trim();
-      if (!/^[a-f0-9]{64}$/u.test(expected)) throw new Error('备份摘要无效。');
-    } else {
-      if (!(await lstat(join(from, 'catalog.sqlite'))).isFile()) throw new Error('缺少目录库。');
+    const expected = mode === 'restore' ? await readBackupManifest(from) : undefined;
+    if (mode === 'create') {
       const lockPath = join(from, 'server-lock.sqlite');
       if (!(await lstat(lockPath)).isFile()) throw new Error('请选择应用已使用的数据目录。');
       lease = acquireDataDirectory(from);
+      const records = join(from, 'processes');
+      if (await lstat(records).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return undefined;
+      })) {
+        const names = await readdir(existingDataDirectory(records));
+        if (names.some(name => name.endsWith('.json')))
+          throw new PendingProcessRecovery('应用仍有待核对的进程登记。请先在原数据目录启动、完成核对并正常停服。');
+      }
     }
-    staging = await mkdtemp(join(dirname(to), '.concordia-copy-'));
-    const digest = await copyState(from, staging, mode === 'create');
-    if (mode === 'create') await writeFile(join(staging, manifest), digest + '\n', { mode: 0o600, flag: 'wx' });
-    else if (digest !== expected) throw new Error('备份摘要不匹配。');
+    staging = privateTemporaryDirectory(dirname(to), '.concordia-copy-');
+    const preserveExecutable = expected?.version !== 2 || expected.executableFiles !== null;
+    const contents = await copyState(from, staging, mode === 'create', preserveExecutable);
+    if (expected) verifyBackupManifest(expected, contents);
+    else await writeBackupManifest(staging, contents);
+    verifyBackupReferences(staging);
     // Publish only a complete, verified directory on the same volume.
     await rename(staging, to);
     staging = undefined;
@@ -132,8 +161,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.exitCode = 2;
   } else {
     try { await copyApplicationState(mode, source, destination); process.stdout.write('数据复制和校验已完成。\n'); }
-    catch {
-      process.stderr.write('操作未完成。请检查服务是否已停止、路径及权限、数据库和内容完整性；保留原目录，勿启用不完整的目标。\n');
+    catch (error) {
+      const diagnostic = error instanceof PendingProcessRecovery || error instanceof LedgerRecoveryError || error instanceof BackupManifestError ? error.message
+        : '请检查服务是否已停止、路径及权限、数据库和内容完整性；保留原目录，勿启用不完整的目标。';
+      process.stderr.write('操作未完成。' + diagnostic + '\n');
       process.exitCode = 1;
     }
   }

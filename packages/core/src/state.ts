@@ -1,7 +1,8 @@
+import type { Proposal, LegacyProposal } from './proposals.ts';
 import type { WaitHistory } from './timing.ts';
 import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import type { CallMeter } from './budget.ts';
-import type { TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
+import type { AcceptanceSnapshot, TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
 
 export type TaskStatus =
   | 'waiting'
@@ -29,6 +30,7 @@ export interface Task extends TaskSpec {
   replyFor?: string;
 }
 export interface Execution {
+  approvalId?: string;
   modelSnapshot?: ModelSnapshot;
   id: string;
   taskId: string;
@@ -68,6 +70,7 @@ export interface Question {
   blocking: boolean;
   hops: number;
   replyTo?: string;
+  replyTaskId?: string;
   status: 'open' | 'answered';
   answer?: string;
 }
@@ -98,9 +101,10 @@ export interface State {
   stoppedPools: string[];
   wakeups: string[];
   acceptance: Record<string, string> | null;
+  acceptedSnapshot?: AcceptanceSnapshot;
   receipts: Record<string, { fingerprint: string; result?: unknown; resultRef?: string }>;
   conflicts?: Record<string, string>;
-  proposals: { executionId: string; action: unknown }[];
+  proposals: (Proposal | LegacyProposal)[];
 }
 export const emptyState = (): State => ({
   archives: [],
@@ -177,7 +181,7 @@ export function makeTask(spec: TaskSpec): Task {
     previous: 'waiting',
     rework: 0,
     retries: 0,
-    waitHistory: { complete: true, intervals: [] },
+    waitHistory: { complete: true, approvalTracked: true, intervals: [] },
   };
 }
 export function activePlan(state: State): WorkflowSpec {

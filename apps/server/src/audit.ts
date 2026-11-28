@@ -16,6 +16,7 @@ const events = new Set([
   'plan.accepted',
   'plan.applied',
   'plan.proposed',
+  'plan.proposal_decided',
   'plan.switched',
   'pool.resumed',
   'question.answered',
@@ -62,7 +63,8 @@ export function auditEvent(event: WorkflowEvent) {
   if (typeof event.data.status === 'string')
     data.status = known(event.data.status, [...taskStatuses, ...runStatuses]);
   if (typeof event.data.operation === 'string') data.operation = known(event.data.operation, controls);
-  if (typeof event.data.kind === 'string') data.kind = known(event.data.kind, failures);
+  if (typeof event.data.kind === 'string') data.kind = known(event.data.kind, event.type === 'plan.proposed' ? ['create_task','assign_task'] : failures);
+  if (event.type === 'plan.proposal_decided') data.decision = known(event.data.decision, ['approved','rejected']);
   return { seq: count(event.seq) ?? 0, type: events.has(event.type) ? event.type : 'event.other', data };
 }
 

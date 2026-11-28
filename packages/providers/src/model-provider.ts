@@ -1,3 +1,5 @@
+import { modelEndpoint } from './model-endpoint.ts';
+import { StreamFailure } from './upstream-error.ts';
 import { readCredential, isCredentialReference } from './credentials.ts';
 import { readUntilStopped } from './gateway.ts';
 import { responsesBody, responsesEvents } from './responses.ts';
@@ -48,33 +50,6 @@ const owned = new Set([
   'web_search_options',
   'mcp_servers',
 ]);
-function requestUrl(config: ProviderConfig, path: string) {
-  const root = new URL(config.baseUrl);
-  if (
-    root.username ||
-    root.password ||
-    root.hash ||
-    root.search ||
-    !(
-      root.protocol === 'https:' ||
-      (root.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(root.hostname))
-    )
-  ) {
-    throw new Error('invalid base url');
-  }
-  const endpoint = config.endpoint ?? path;
-  // Treat an endpoint as a path only. Never move credentials to a new authority.
-  if (
-    !endpoint ||
-    /[\\?#]/.test(endpoint) ||
-    endpoint.startsWith('//') ||
-    /^\w+:/.test(endpoint) ||
-    endpoint.split('/').some((p) => ['.', '..'].includes(decodeURIComponent(p)))
-  )
-    throw new Error('invalid endpoint');
-  root.pathname = root.pathname.replace(/\/+$/, '') + '/' + endpoint.replace(/^\/+/, '');
-  return root;
-}
 function failure(kind: ErrorKind, message: string, httpStatus?: number): ModelFailure {
   return { type: 'error', kind, message, ...(httpStatus === undefined ? {} : { httpStatus }) };
 }
@@ -135,6 +110,9 @@ export function createModelProvider(
   config: ProviderConfig,
   read: CredentialReader = readCredential,
 ): ModelProvider {
+  // Fix the approved endpoint and its output-limit dialect for this conversation.
+  config = { ...config, params: { ...config.params }, headers: { ...config.headers }, headerRefs: { ...config.headerRefs } };
+  const chatContinuations = new WeakMap<ModelMessage, string>();
   async function* stream(
     messages: ModelMessage[],
     tools: ModelTool[] = [],
@@ -143,6 +121,7 @@ export function createModelProvider(
   ): AsyncGenerator<ModelEvent> {
     let problem = failure('invalid', '连接参数、消息、工具或上下文大小无效。');
     let timeout: AbortSignal | undefined;
+    let dispatchDenied = false;
     const cleanup = new AbortController();
     try {
       const timeoutMs = config.timeoutMs ?? 60_000;
@@ -155,31 +134,27 @@ export function createModelProvider(
         outputTokens < 1 ||
         outputTokens > 65_536 ||
         !config.model.trim() ||
+        (config.outputTokenField !== undefined && config.protocol !== 'chat-completions') ||
         !messages.length ||
         Object.keys(config.params ?? {}).some((k) => owned.has(k))
       )
         throw new Error('config');
       const useStream = options.stream ?? config.stream ?? true;
       const adapters = {
-        'chat-completions': { path: 'chat/completions', body: chatBody, events: chatEvents },
-        responses: { path: 'responses', body: responsesBody, events: responsesEvents },
-        gemini: {
-          path:
-            'models/' +
-            encodeURIComponent(config.model.replace(/^models\//, '')) +
-            ':' +
-            (useStream ? 'streamGenerateContent' : 'generateContent'),
-          body: geminiBody,
-          events: geminiEvents,
-        },
-        anthropic: { path: 'messages', body: anthropicBody, events: anthropicEvents },
+        'chat-completions': { body: chatBody, events: chatEvents },
+        responses: { body: responsesBody, events: responsesEvents },
+        gemini: { body: geminiBody, events: geminiEvents },
+        anthropic: { body: anthropicBody, events: anthropicEvents },
       };
       const adapter = adapters[config.protocol];
       if (!adapter) throw new Error('protocol');
-      const url = requestUrl(config, adapter.path);
-      if (config.protocol === 'gemini' && useStream) url.searchParams.set('alt', 'sse');
-      const body = JSON.stringify(adapter.body(config, messages, tools, useStream));
-      if (Buffer.byteLength(body) > 128 * 1024) throw new Error('input size');
+      const url = modelEndpoint(config, useStream);
+      const body = JSON.stringify(adapter.body(config, messages, tools, useStream, chatContinuations));
+      const byteLimit = Math.min(options.maxContextBytes ?? 128 * 1024, 128 * 1024);
+      if (!Number.isSafeInteger(byteLimit) || byteLimit < 1 || Buffer.byteLength(body) > byteLimit) {
+        yield failure('budget', '本轮请求含工具、历史及协议字段，超过配置的上下文限制。');
+        return;
+      }
       const headers = headersFor(config);
       timeout = AbortSignal.timeout(timeoutMs);
       const signal = AbortSignal.any(
@@ -216,6 +191,8 @@ export function createModelProvider(
       }
       signal.throwIfAborted();
       problem = failure('transport', '网关网络请求失败。');
+      try { options.onDispatch?.(); }
+      catch (error) { dispatchDenied = true; throw error; }
       const response = await fetch(url, { method: 'POST', headers, body, redirect: 'manual', signal });
       reportStatus?.(response.status);
       if (!response.ok) {
@@ -227,7 +204,10 @@ export function createModelProvider(
       const pending: ModelEvent[] = [];
       const seen = new Set<string>();
       let hasOutput = false;
-      for await (const event of adapter.events(response, useStream)) {
+      const rememberReasoning = (content: string) => {
+        if (tools.length && options.assistantReply) chatContinuations.set(options.assistantReply, content);
+      };
+      for await (const event of adapter.events(response, useStream, rememberReasoning)) {
         if (event.type === 'text_delta') {
           hasOutput ||= event.text.length > 0;
           const text = filter.text(event.text);
@@ -251,9 +231,11 @@ export function createModelProvider(
       if (tail) yield { type: 'text_delta', text: tail };
       yield* pending;
       yield { type: 'completed' };
-    } catch {
+    } catch (error) {
+      if (dispatchDenied) throw error;
       if (options.signal?.aborted) yield failure('cancelled', '请求已取消。');
       else if (timeout?.aborted) yield failure('timeout', '请求已超时。');
+      else if (error instanceof StreamFailure) yield failure(error.kind, error.message, problem.httpStatus);
       else yield problem;
     } finally {
       cleanup.abort();
@@ -261,15 +243,15 @@ export function createModelProvider(
   }
   return {
     stream,
-    getCapabilities: () => ({ nativeTools: true, streaming: true }),
-    async validateConnection(signal) {
+    getCapabilities: () => ({ nativeTools: true, streaming: true, dispatchSignal: true }),
+    async validateConnection(signal, onDispatch) {
       let reply = '';
       let httpStatus: number | undefined;
       let usage: ModelUsage | undefined;
       for await (const event of stream(
         [{ role: 'user', content: 'Reply with exactly CONCORDIA_OK.' }],
         [],
-        { stream: false, signal },
+        { stream: false, signal, onDispatch },
         status => { httpStatus = status; },
       )) {
         if (event.type === 'text_delta') reply += event.text;
