@@ -14,6 +14,7 @@ const migrations = [
   { version: 6, name: '006-budget-ledger.sql' },
   { version: 7, name: '007-paused-pools.sql' },
   { version: 8, name: '008-plan-draft.sql' },
+  { version: 9, name: '009-plan-requests.sql' },
 ] as const;
 
 function identifyStore(db: DatabaseSync): number {
