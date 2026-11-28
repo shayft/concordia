@@ -3,6 +3,8 @@ import { DisabledMcpServers } from './ui.tsx';
 export interface Inspection {
   inspectionId: string;
   executable?: string;
+  executionAccess?: string;
+  selectedChannel?: string;
   cwd?: string;
   login?: string;
   billing?: string;
@@ -24,6 +26,8 @@ export function InspectionPanel({ result }: { result: Inspection }) {
         <dd>
           <code>{result.cwd ?? '未知'}</code>
         </dd>
+        {result.executionAccess && <><dt>批准后的任务权限</dt><dd>{result.executionAccess}</dd></>}
+        {result.selectedChannel && <><dt>动作通道</dt><dd>{result.selectedChannel}</dd></>}
         <dt>版本</dt>
         <dd>{result.version ?? '未知'}</dd>
         <dt>登录状态</dt>
@@ -42,7 +46,7 @@ export function InspectionPanel({ result }: { result: Inspection }) {
       )}
       <DisabledMcpServers names={result.disabledMcpServers} />
       <details>
-        <summary>查看实际权限参数</summary>
+        <summary>查看只读连接探针的参数</summary>
         <pre>{result.arguments ? JSON.stringify(result.arguments, null, 2) : '未知'}</pre>
       </details>
     </div>

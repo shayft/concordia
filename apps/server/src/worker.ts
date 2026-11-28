@@ -373,7 +373,14 @@ export class Worker {
       confirmUnmanaged, actionChannel: c.actionChannel, signal: job.controller.signal,
       requiresPlatformMcp: !planning && c.actionChannel !== 'json' });
     job.finished = pending.then(() => {}, () => {});
-    try { return await pending; } finally { this.jobs.delete(id); }
+    try {
+      const result = await pending;
+      const writable = 'treeId' in target && !!target.treeId &&
+        (!binding.member.allowedActions || binding.member.allowedActions.includes('write_file'));
+      return { ...result, executionAccess: planning ? '只读，生成计划文本' :
+        writable ? '可在所选成员工作树写入' : '只读任务',
+        selectedChannel: planning ? 'text' : c.actionChannel ?? (c.kind === 'codex' ? 'mcp' : 'auto') };
+    } finally { this.jobs.delete(id); }
   }
 
   private async cli(

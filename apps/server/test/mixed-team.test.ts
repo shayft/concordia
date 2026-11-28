@@ -160,7 +160,7 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
     await writeFile(join(tree.path, 'fixture-project-servers.json'), JSON.stringify(['tree_only']));
     const target = { projectId:'project', treeId:tree.id };
     const inspection = await post('/api/tasks/write/inspect', target);
-    expect(inspection.cwd).toBe(tree.path);
+    expect(inspection).toMatchObject({ cwd:tree.path, executionAccess:'只读任务', selectedChannel:'mcp' });
     expect(inspection.disabledMcpServers).toEqual(['tree_only']);
     const launched = await post('/api/tasks/write/run', {
       mode: 'live',

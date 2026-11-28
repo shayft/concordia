@@ -1,6 +1,7 @@
 import { servePlanDraft } from './plan-draft.ts';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { CliDiagnosticError } from '@concordia/runtimes';
 import { z } from 'zod';
 import { demoSpec, meetingSpec, parallelSpec, reviewSpec, Scheduler } from '@concordia/core/workflow';
 import { runDemo } from '@concordia/core/demo';
@@ -31,6 +32,7 @@ const taskControl = z.discriminatedUnion('action', [
 ]);
 const empty = z.strictObject({});
 function rejected(reply: FastifyReply, error: unknown) {
+  if (error instanceof CliDiagnosticError) return reply.code(409).send({ error: error.message });
   if (error instanceof z.ZodError)
     return reply.code(400).send({
       error: '参数、动作或工作流格式无效',
