@@ -40,3 +40,18 @@ node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '阶�
 | 新建会议、并行比较和审查；修订旧计划 | 模拟测试通过 | `pnpm exec vitest run apps/server/test/application-http.test.ts apps/web/test/workspace-ui.test.tsx` 检查相同目标两次创建得到不同实例，旧会议的预算从自身归档读取；错误实例无法批准，正确修订可以应用。 |
 | 绑定成员审查、执行编号与主卡版本 | 模拟测试通过 | `pnpm exec vitest run packages/store/test/workflow.test.ts apps/server/test/application-http.test.ts` 检查过期执行和不匹配快照均被拒绝；不兼容上游使基于钉住旧版的必需审查失去验收资格。另以 `pnpm exec vitest run apps/web/test/workspace-ui.test.tsx -t 主卡验收弹窗` 验证打开弹窗后看板刷新仍提交原快照。 |
 | 阻塞答复的异常和重启恢复 | 模拟测试通过 | `pnpm exec vitest run packages/store/test/workflow.test.ts` 在收件人失败、取消、被改派、重启中断后分别验证两条同卡问题只有一个待决定答复任务；取消后的待办或全局停止不会重新派发。 |
+
+### 2026-11-28 负责人规划的发送范围、进度与取消
+
+| 验收项 | 状态 | 观察结果 |
+| --- | --- | --- |
+| 核对岗位后才允许向负责人发送 | 模拟测试通过 | 界面默认未选任何岗位。修改已选岗位职责后，旧批准被拒，网关接到零次请求。重新批准后，回环网关收到的岗位等于页面预览。响应擅自使用未选岗位时，工作区没有生成或应用草案。 |
+| 从空工作区查看生成进度、取消单项和重开草案 | 模拟测试通过 | 同时发起两项规划，取消后只有选中的请求结束。另一个窗口可读取进度，普通任务继续交付。服务重启后可载入已生成草案，中断请求保留状态。重复请求没有新调用。写入终态失败时保留现场，恢复可写后切换工作区再返回仍可看到中断记录。 |
+| 取消假 CLI 规划时等到进程树退出 | 模拟测试通过 | 在 Linux 启动假 Codex 及两代后代。取消返回后按三个 PID 分别核对，均已停止；该用例没有向模型发出请求。 |
+| 真实模型响应及三平台原生 CLI 的取消 | 尚未验证 | 本轮只运行 Linux 回环网关和假 CLI。 |
+
+在仓库根目录执行以下命令，8 个文件中 73 项通过，1 个 Windows 专用备份用例在 Linux 跳过。另执行 `pnpm lint`、`pnpm typecheck`，均通过。
+
+```sh
+pnpm exec vitest run apps/server/test/planning-requests.test.ts apps/server/test/crash-recovery-mixed.test.ts apps/server/test/application-http.test.ts apps/server/test/approval-route.test.ts apps/server/test/backup.test.ts apps/web/test/workspace-ui.test.tsx packages/store/test/store.test.ts packages/store/test/database-identity.test.ts
+```
