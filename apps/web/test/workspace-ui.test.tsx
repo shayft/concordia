@@ -815,3 +815,74 @@ it('合并确认前能核对已验收修订、来源 SHA 和通过的项目命�
     expect(dialog.textContent).toContain(value);
   expect(requests.some((r) => r.path.endsWith('approve-merge'))).toBe(false);
 });
+
+it('任务与负责人在各自预检入口显示实际目录和权限，核对时不发模型请求', async () => {
+  const { BoardPage } = await import('../src/board.tsx');
+  const agent = { id: 'dev', name: '开发', connection: 'code', role: 'lead' };
+  const catalog = {
+    connections: [{ id: 'code', enabled: true, name: '本机 Codex', kind: 'codex' }],
+    models: [],
+    pools: [],
+    members: [{ id: 'dev', name: '开发', enabled: true, role: 'lead', connectionId: 'code' }],
+  };
+  const task = {
+    id: 'task',
+    title: '查询示例',
+    owner: 'dev',
+    status: 'ready',
+    column: 'waiting',
+    missing: [],
+    consumes: [],
+    produces: [],
+    maxCalls: 2,
+  };
+  const board = {
+    tasks: [task],
+    agents: [agent],
+    slots: [],
+    messages: [],
+    questions: [],
+    versions: [],
+    executions: [],
+    stoppedPools: [],
+    revision: 1,
+    spec: { id: 'plan', title: '示例', goal: '验证预检', maxCalls: 2, acceptance: [] },
+  };
+  serve = (path) => {
+    if (path === '/api/catalog') return catalog;
+    if (path === '/api/board') return board;
+    if (path === '/api/worktrees/state') return { activeScope: 'workspace', trees: [] };
+    if (path.endsWith('/inspect'))
+      return {
+        inspectionId: 'inspect',
+        cwd: path.includes('/tasks/') ? 'C:\\项目\\工作树' : '临时的空目录',
+        executable: 'C:\\工具\\codex.exe',
+        executionAccess: '只读任务',
+        selectedChannel: 'json',
+      };
+    return {};
+  };
+  await render(<BoardPage openPlans={() => {}} events={0} />);
+  await click(container.querySelector<HTMLButtonElement>('.card')!);
+  await click(button('预检所选 CLI'));
+  expect(container.textContent).toContain('C:\\项目\\工作树');
+  expect(container.textContent).toContain('C:\\工具\\codex.exe');
+  expect(container.textContent).toContain('只读任务');
+  await render(<PlansPage openBoard={() => {}} />);
+  async function choose(selector: string, value: string) {
+    const select = container.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => {
+      select.value = value;
+      select.dispatchEvent(new window.Event('change', { bubbles: true }));
+    });
+  }
+  await choose('select[aria-label="草案来源"]', 'lead');
+  await choose('#lead', 'dev');
+  await click(button('预检负责人 CLI'));
+  expect(container.textContent).toContain('临时的空目录');
+  expect(container.textContent).toContain('C:\\工具\\codex.exe');
+  expect(requests.filter((r) => r.method === 'POST').map((r) => r.path)).toEqual([
+    '/api/tasks/task/inspect',
+    '/api/plans/inspect',
+  ]);
+});
