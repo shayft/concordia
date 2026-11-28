@@ -61,12 +61,20 @@ it('CLI 连接先预检，再按批准请求调用一次，切换模型后清空
     path === '/api/catalog'
       ? catalog
       : path.endsWith('inspect')
-        ? { inspectionId: 'inspection-1', login: '已登录', billing: '未知', version: '1.0' }
+        ? {
+            inspectionId: 'inspection-1',
+            login: '已登录',
+            billing: '未知',
+            version: '1.0',
+            disabledMcpServers: ['computer-use', 'node_repl'],
+          }
         : { ok: true, text: 'CONCORDIA_OK' };
   await render(<CatalogPage />);
   await click(button('验证'));
   expect(button('批准一次真实调用').disabled).toBe(true);
+  expect(container.textContent).not.toContain('停用本机 Codex 配置的 MCP 服务器');
   await click(button('预检路径、版本和登录状态'));
+  expect(container.textContent).toContain('本次调用停用本机 Codex 配置的 MCP 服务器：computer-use、node_repl');
   expect(requests.some((r) => r.path.endsWith('/test'))).toBe(false);
   await click(button('批准一次真实调用'));
   expect(requests.filter((r) => r.path.endsWith('/test'))).toEqual([

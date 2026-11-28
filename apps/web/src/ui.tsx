@@ -14,6 +14,12 @@ export function Notice({ error, message }: { error?: string; message?: string })
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
 }
+/** Codex precheck: the user's own MCP servers that this call disables by name. */
+export function DisabledMcpServers({ names }: { names?: readonly string[] }) {
+  return names?.length ? (
+    <p className="help">本次调用停用本机 Codex 配置的 MCP 服务器：{names.join('、')}。原生配置文件不会被修改。</p>
+  ) : null;
+}
 export function Modal({
   title,
   children,

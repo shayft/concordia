@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { PlanPreview, WorkflowSpec } from '@concordia/protocol/workflow';
 import { api, useAction, useResource } from './api.ts';
-import { Field, Notice } from './ui.tsx';
+import { DisabledMcpServers, Field, Notice } from './ui.tsx';
 
 const planLabels: Partial<Record<keyof WorkflowSpec, string>> = {
   id: '工作流标识',
@@ -55,6 +55,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
     version: string;
     billing: string;
     login: string;
+    disabledMcpServers?: string[];
   }>();
   const [preview, setPreview] = useState<PlanPreview>();
   const action = useAction();
@@ -218,9 +219,12 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
               预检负责人 CLI
             </button>
             {inspection && (
-              <p>
-                版本 {inspection.version} · {inspection.login} · 计费来源 {inspection.billing}
-              </p>
+              <>
+                <p>
+                  版本 {inspection.version} · {inspection.login} · 计费来源 {inspection.billing}
+                </p>
+                <DisabledMcpServers names={inspection.disabledMcpServers} />
+              </>
             )}
           </>
         )}

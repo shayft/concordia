@@ -3,7 +3,7 @@ import type { Catalog, CatalogModel, Connection, Member, QuotaPool } from '@conc
 import { modelPricingSchema } from '@concordia/protocol/pricing';
 import { MemberPermissions } from './member-permissions.tsx';
 import { api, useAction, useResource } from './api.ts';
-import { Empty, Field, Modal, Notice } from './ui.tsx';
+import { DisabledMcpServers, Empty, Field, Modal, Notice } from './ui.tsx';
 
 const protocols = {
   claude: 'Claude Code',
@@ -443,6 +443,7 @@ interface Inspection {
   billing?: string;
   version?: string;
   billingEnvironment?: { name: string; source: string; passed?: boolean }[];
+  disabledMcpServers?: string[];
   arguments?: string[];
 }
 interface TestResult {
@@ -539,6 +540,7 @@ function TestConnection({
                     </li>
                   ))}
                 </ul>
+                <DisabledMcpServers names={inspection.disabledMcpServers} />
                 <details>
                   <summary>查看实际权限参数</summary>
                   <pre>{JSON.stringify(inspection.arguments, null, 2)}</pre>

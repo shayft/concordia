@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { Scheduler } from '../../../packages/core/src/workflow.ts';
 import { api, useAction, useResource } from './api.ts';
-import { Empty, Field, Modal, Notice } from './ui.tsx';
+import { DisabledMcpServers, Empty, Field, Modal, Notice } from './ui.tsx';
 import type { Worktrees } from './worktrees.tsx';
 
 export type Board = ReturnType<Scheduler['board']>;
@@ -91,6 +91,7 @@ function TaskDetails({
     version: string;
     login: string;
     billing: string;
+    disabledMcpServers?: string[];
     arguments: string[];
   }>();
   const [message, setMessage] = useState('');
@@ -245,6 +246,7 @@ function TaskDetails({
                   <p className="help">
                     {inspection.version} · {inspection.login} · 计费来源 {inspection.billing}
                   </p>
+                  <DisabledMcpServers names={inspection.disabledMcpServers} />
                   <details>
                     <summary>预检参数</summary>
                     <pre>{JSON.stringify(inspection.arguments, null, 2)}</pre>
