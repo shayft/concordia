@@ -79,7 +79,7 @@ describe('真实 SQLite 与脚本化成员', () => {
       'execution.interrupted',
     ]);
   });
-  it('事务失败时回滚状态及事件，两个连接不能重复领取同一卡', () => {
+  it('事务失败时回滚状态及事件，两个连接不能重复领取同一卡', { timeout: 20_000 }, () => {
     scheduler.apply(demoSpec());
     expect(() =>
       storage.transaction((s, append) => {

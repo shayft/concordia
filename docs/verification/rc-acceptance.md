@@ -23,3 +23,5 @@
 同一提交的三个原生凭据库作业和三项未登录 CLI 预检通过。CLI 为 Claude Code 2.1.332 和 Codex CLI 0.172.0。此记录涵盖锁定版本的发现、版本、已安装能力和离线认证状态。[原生凭据库](https://github.com/shayft/concordia/actions/runs/46149038831) · [未登录 CLI](https://github.com/shayft/concordia/actions/runs/46149038771)
 
 Windows 托管回归曾在目录库丢失用例用时 5.27 秒时触发 Vitest 的 5 秒默认时限。该用例实际运行三次服务启动、六卡模拟、一次拒绝备份及恢复后的 HTTP 核对。该项单独使用 30 秒时限，仍须同时满足禁止新建替代库、未发布备份、原预算与验收均保留的断言。[该轮 Windows 记录](https://github.com/shayft/concordia/actions/runs/46149038785/job/140991322989)
+
+另一轮 Windows 在真实磁盘 SQLite 的“双连接回滚并禁止重复领取”用时 6.18 秒时触发同一默认时限。该项使用两个启用 WAL 的数据库连接，单独设 20 秒测试限时，原有回滚、事件与重复领取断言均保留。[此前的 Windows 作业](https://github.com/shayft/concordia/actions/runs/46149246940/job/140991967704)
