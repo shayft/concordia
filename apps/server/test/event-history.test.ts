@@ -24,12 +24,21 @@ it('100 张卡和一万条事件按游标有界读取，慢订阅从排空后第
       for (let i = 0; i < 10_000; i++) append('task.progress', {taskId:'t' + i % 100});
     });
     const writeMs = performance.now() - beforeWrite;
-    const beforeRead = performance.now();
+    const job = board.claim('t0');
+    function measure(run: (index: number) => void) {
+      const samples = Array.from({ length: 40 }, (_, i) => {
+        const start = performance.now();
+        run(i);
+        return performance.now() - start;
+      }).sort((a, b) => a - b);
+      return { p50Ms: samples[19], p95Ms: samples[37] };
+    }
+    const progress = measure(i => { board.act(job.id, { type:'progress', message:'进度 ' + i }); });
+    const boardRead = measure(() => { board.board(); });
+    const query = historyQuery.parse({});
+    const pageRead = measure(() => { eventPage(db, query); });
+    const latest = eventPage(db, query);
     expect(board.board().tasks).toHaveLength(100);
-    const boardMs = performance.now() - beforeRead;
-    const start = performance.now();
-    const latest = eventPage(db, historyQuery.parse({}));
-    const readMs = performance.now() - start;
     const last = latest.events.at(-1)!.seq;
     expect(latest.hasMore).toBe(true);
     expect(latest.events.map(e => e.seq)).toEqual(Array.from({length:100}, (_, i) => last - 99 + i));
@@ -55,7 +64,7 @@ it('100 张卡和一万条事件按游标有界读取，慢订阅从排空后第
     expect(seq).toEqual(Array.from({length:105}, (_, i) => last - 104 + i));
     stop(); stop();
     expect(closed).toHaveBeenCalledTimes(1);
-    console.info('100 cards, 10000 seeded events: ' + JSON.stringify({writeMs, boardMs, latestPageMs:readMs}));
+    console.info('100 cards, 10000 seeded events: ' + JSON.stringify({seedMs:writeMs, progress, boardRead, pageRead}));
   } finally {
     stop?.(); db.close(); rmSync(dir, {recursive:true,force:true});
   }
