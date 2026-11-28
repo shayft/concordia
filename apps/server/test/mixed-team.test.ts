@@ -162,10 +162,23 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
     const inspection = await post('/api/tasks/write/inspect', target);
     expect(inspection).toMatchObject({ cwd:tree.path, executionAccess:'只读任务', selectedChannel:'mcp' });
     expect(inspection.disabledMcpServers).toEqual(['tree_only']);
+    // A changed worktree setting invalidates the inspection. Neither SQLite
+    // ledger may count the rejected invocation against the subsequent approval.
+    await writeFile(join(tree.path, 'fixture-project-servers.json'), JSON.stringify(['new_tree_setting']));
+    const blocked = await post('/api/tasks/write/run', {mode:'live',approved:true,inspectionId:inspection.inspectionId,...target});
+    await vi.waitFor(async () => {
+      const snapshot = await board();
+      expect(snapshot.executions.find(e => e.id === blocked.executionId)).toMatchObject({status:'failed',calls:0,meters:[]});
+    }, {timeout:30_000});
+    expect((await (await client.get('/api/budgets')).json()).usage).toContainEqual({
+      scope:'global',id:'all',calls:0,tokens:0,active:0,
+    });
+    await post('/api/tasks/write/control', {action:'retry'});
+    const refreshed = await post('/api/tasks/write/inspect',target);
     const launched = await post('/api/tasks/write/run', {
       mode: 'live',
       approved: true,
-      inspectionId: inspection.inspectionId, ...target,
+      inspectionId: refreshed.inspectionId, ...target,
     });
     await post('/api/dispatch', { maxCalls: 1, approved: true });
     await vi.waitFor(
