@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from './api.ts';
 import { Notice } from './ui.tsx';
 
-type Route = { connection: string; protocol: string; member?: string; destination: string; model: string; credentials: string[]; permissions: string; pool: string; individual?: boolean };
+type Route = { connection: string; protocol: string; member?: string; destination: string; model: string; credentials: string[]; permissions: string; pool: string; individual?: boolean; outputLimit?: {field: string; tokens: number} };
 interface Preview { stamp: string; routes: Route[]; simulated?: string[]; revision: number }
 interface Selection { purpose: 'task' | 'dispatch' | 'plan' | 'connection-test' | 'member-test'; id?: string; modelId?: string; projectId?: string; treeId?: string }
 
@@ -30,6 +30,7 @@ export function ApprovalDetails({ approval }: { approval: ReturnType<typeof useA
     {approval.preview?.routes.map((route, i) => <p key={i}>
       {route.member && route.member + ' · '}{route.connection} · {route.protocol} · {route.model}<br/>
       {route.individual && 'CLI 须逐卡批准 · '}{route.destination} · {route.permissions} · 额度池 {route.pool}
+      {route.outputLimit && <><br/>输出上限 {route.outputLimit.field} = {route.outputLimit.tokens}</>}
       {route.credentials.length > 0 && <><br/>凭据引用 {route.credentials.join('、')}</>}
     </p>)}
     {!!approval.preview?.simulated?.length && <p>模拟成员 {approval.preview.simulated.join('、')}</p>}

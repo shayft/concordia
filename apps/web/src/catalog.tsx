@@ -102,6 +102,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                     params: json('params'),
                     timeoutMs: Number(text(fields, 'timeoutMs')) || undefined,
                     maxOutputTokens: Number(text(fields, 'maxOutputTokens')) || undefined,
+                    ...(kind === 'chat-completions' && {outputTokenField: text(fields, 'outputTokenField')}),
                   }),
             }
           : tab === 'models'
@@ -386,6 +387,15 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
                         defaultValue={apiConnection?.timeoutMs}
                       />
                     </Field>
+                    {kind === 'chat-completions' && (
+                      <Field name="outputTokenField" label="输出上限字段">
+                        <select id="outputTokenField" name="outputTokenField"
+                          defaultValue={apiConnection?.outputTokenField ?? 'max_completion_tokens'}>
+                          <option value="max_completion_tokens">max_completion_tokens</option>
+                          <option value="max_tokens">max_tokens</option>
+                        </select>
+                      </Field>
+                    )}
                     <Field name="maxOutputTokens" label="最大输出 tokens">
                       <input
                         id="maxOutputTokens"

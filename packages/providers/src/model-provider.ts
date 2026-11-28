@@ -110,6 +110,8 @@ export function createModelProvider(
   config: ProviderConfig,
   read: CredentialReader = readCredential,
 ): ModelProvider {
+  // Fix the approved endpoint and its output-limit dialect for this conversation.
+  config = { ...config, params: { ...config.params }, headers: { ...config.headers }, headerRefs: { ...config.headerRefs } };
   const chatContinuations = new WeakMap<ModelMessage, string>();
   async function* stream(
     messages: ModelMessage[],
@@ -132,6 +134,7 @@ export function createModelProvider(
         outputTokens < 1 ||
         outputTokens > 65_536 ||
         !config.model.trim() ||
+        (config.outputTokenField !== undefined && config.protocol !== 'chat-completions') ||
         !messages.length ||
         Object.keys(config.params ?? {}).some((k) => owned.has(k))
       )

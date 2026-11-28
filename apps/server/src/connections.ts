@@ -91,6 +91,7 @@ export function providerConfig(connection: Connection, model: CatalogModel | nul
     protocol: connection.kind, baseUrl: connection.baseUrl, model: model.modelId,
     credentialRef: connection.credentialRef, headerRefs: connection.headerRefs, endpoint: connection.endpoint,
     timeoutMs: connection.timeoutMs, maxOutputTokens: connection.maxOutputTokens, stream: connection.stream,
+    outputTokenField: connection.outputTokenField,
     params: { ...connection.params, ...model.params },
   };
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { chatOutputField, maxOutputTokens } from './chat-output.ts';
 import { modelPricingSchema } from './pricing.ts';
 import { actionTools } from './actions.ts';
 
@@ -50,9 +51,11 @@ export const connectionSchema = z.union([
     endpoint: z.string().max(2048).refine(isEndpointPath).optional(),
     timeoutMs: z.number().int().min(1).max(2147483647).optional(),
     stream: z.boolean().optional(),
-    maxOutputTokens: z.number().int().positive().max(65536).optional(),
+    maxOutputTokens: maxOutputTokens.optional(),
+    outputTokenField: chatOutputField.optional(),
     params: params.optional(),
-  }),
+  }).refine(c => c.kind === 'chat-completions' || c.outputTokenField === undefined,
+    '此字段仅适用于 Chat Completions'),
   z.strictObject({
     ...base, kind: z.enum(cliKinds), actionChannel: z.enum(['mcp', 'json']).optional(),
     executable: z.string().min(1).max(4096).optional(),

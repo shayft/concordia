@@ -1,3 +1,4 @@
+import { chatOutputLimit } from '@concordia/protocol/chat-output';
 import { throwUpstreamError } from './upstream-error.ts';
 import type { ModelEvent, ModelMessage, ModelTool, ProviderConfig } from './model-types.ts';
 import { action, list, obj, readJson, sse, string, usage } from './wire.ts';
@@ -13,7 +14,7 @@ export function chatBody(
     ...config.params,
     model: config.model,
     stream,
-    max_completion_tokens: config.maxOutputTokens ?? 1024,
+    ...chatOutputLimit(config.outputTokenField, config.maxOutputTokens),
     ...(stream && { stream_options: { include_usage: true } }),
     messages: messages.map((m) => ({
       role: m.role,

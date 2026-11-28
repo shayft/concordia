@@ -70,6 +70,7 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
       credentials: 'baseUrl' in c ? [c.credentialRef, ...Object.values(c.headerRefs ?? {})].filter(Boolean) : [],
       permissions: ['connection-test', 'member-test', 'plan'].includes(selection.purpose) ? '仅生成文本'
         : member?.allowedActions === undefined ? '岗位默认动作' : member.allowedActions.join('、') || '无平台动作',
+      ...(c.kind === 'chat-completions' && { outputLimit: { field: c.outputTokenField ?? 'max_completion_tokens', tokens: c.maxOutputTokens ?? 1024 } }),
       pool: poolId,
     }));
     // Zod normalises key order for the GET snapshot and its matching POST selection.

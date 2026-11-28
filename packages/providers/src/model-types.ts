@@ -1,3 +1,5 @@
+import type { ChatOutputField } from '@concordia/protocol/chat-output';
+
 export type Protocol = 'chat-completions' | 'responses' | 'gemini' | 'anthropic';
 export interface ProviderConfig {
   protocol: Protocol;
@@ -8,6 +10,7 @@ export interface ProviderConfig {
   stream?: boolean;
   timeoutMs?: number;
   maxOutputTokens?: number;
+  outputTokenField?: ChatOutputField;
   headers?: Record<string, string>;
   headerRefs?: Record<string, string>;
   params?: Record<string, unknown>;

@@ -35,3 +35,15 @@ it.each(['claude', 'codex'] as const)('%s 的绝对路径通过独立验证命�
   const ran = await verify(['run', kind, '--approve-call', '--inspection', report.inspectionId, ...flags]);
   expect(JSON.parse(ran.stdout)).toMatchObject({ kind, executable: executable(kind), text: 'CONCORDIA_OK' });
 }, 90_000);
+
+it('网关验证命令在读取系统凭据前拒绝非法字段或上限，并能识别两种公开字段', async () => {
+  const args = ['run','gateway','--approve-call','--base-url','invalid','--credential','keychain:unused','--model','custom'];
+  // This invalid URL fails locally, before any credential access or network request.
+  for (const field of ['max_completion_tokens','max_tokens']) {
+    await expect(verify([...args,'--output-token-field',field,'--max-output-tokens','64']))
+      .rejects.toMatchObject({code:1, stdout:expect.stringContaining('Base URL')});
+  }
+  for (const flags of [['--output-token-field','tools'],['--max-output-tokens','-1'],['--max-output-tokens','65537']]) {
+    await expect(verify([...args,...flags])).rejects.toMatchObject({code:1,stderr:expect.stringMatching(/输出字段|无法识别参数/)});
+  }
+});
