@@ -115,7 +115,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
             value={source}
             onChange={(e) => {
               setSource(e.target.value);
-              edit('');
+              invalidatePreview();
             }}
           >
             <option value="demo">固定示范 · 按负责人筛选</option>
@@ -349,7 +349,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
           ))}
           <button
             className="primary"
-            disabled={action.busy}
+            disabled={action.busy || saved.view.status !== 'saved'}
             onClick={() =>
               void action.run(async () => {
                 await api('spec/apply', 'POST', {
