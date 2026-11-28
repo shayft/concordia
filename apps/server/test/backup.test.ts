@@ -105,3 +105,44 @@ it.skipIf(process.platform === 'win32')('备份只保留 worktree 链接本身�
   await symlink(join(root,'missing'), boardObjects);
   await expect(copyApplicationState('create', source, join(root,'unsafe'))).rejects.toThrow('外部文件');
 });
+
+it('源目录缺少已登记的工作区时拒绝发布', async () => {
+  const catalog = openStore(join(source, 'catalog.sqlite'));
+  catalog.exec("INSERT INTO workspaces VALUES ('missing','旧工作区',0)");
+  catalog.close();
+  await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('已登记的工作区');
+  await expect(access(snapshot)).rejects.toThrow();
+});
+
+it('检查活动状态、历史事件及已归档计划内部的正文引用', async () => {
+  const { emptyState } = await import('@concordia/core/state');
+  const dir = join(source, 'boards/demo');
+  const db = openStore(join(dir, 'workspace.sqlite'));
+  const missing = createHash('sha256').update('尚不存在的正文').digest('hex');
+  const archive = JSON.stringify({ ...emptyState(), plans: [missing] });
+  const ref = createHash('sha256').update(archive).digest('hex');
+  try {
+    await writeFile(join(dir, 'objects', ref), archive);
+    const save = db.prepare('INSERT OR REPLACE INTO workflow_state VALUES(1,?)');
+    save.run(JSON.stringify({ ...emptyState(), archives: [{ id: 'previous', title: '已归档', ref }] }));
+    await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+    save.run(JSON.stringify({ ...emptyState(), tasks: [{ progressRef: missing }] }));
+    await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+    save.run(JSON.stringify(emptyState()));
+    await rm(join(dir, 'objects', hash));
+    await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+    await expect(access(snapshot)).rejects.toThrow();
+  } finally { db.close(); }
+});
+
+it('崩溃遗留登记阻止备份，原机核对并清除后允许备份', async () => {
+  const dir = join(source, 'processes');
+  await mkdir(dir);
+  const record = join(dir, '35c03b8a-e901-4505-8704-88ca79947ae5.json');
+  await writeFile(record, '{}');
+  await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('待核对');
+  expect(await readFile(record, 'utf8')).toBe('{}');
+  await expect(access(snapshot)).rejects.toThrow();
+  await rm(record);
+  await copyApplicationState('create', source, snapshot);
+});

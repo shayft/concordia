@@ -6,6 +6,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { assertSingleFile, existingDataDirectory, safeDatabasePath } from '@concordia/store/paths';
 import { acquireDataDirectory } from './data-directory.ts';
+import { verifyBackupReferences } from './backup-integrity.ts';
 
 const manifest = 'concordia-backup-v1.sha256';
 const applicationRoots = new Set(['catalog.sqlite', 'worktrees.sqlite', 'objects', 'boards', 'worktrees', 'assignee-delivery']);
@@ -111,11 +112,21 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
       const lockPath = join(from, 'server-lock.sqlite');
       if (!(await lstat(lockPath)).isFile()) throw new Error('请选择应用已使用的数据目录。');
       lease = acquireDataDirectory(from);
+      const records = join(from, 'processes');
+      if (await lstat(records).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return undefined;
+      })) {
+        const names = await readdir(existingDataDirectory(records));
+        if (names.some(name => name.endsWith('.json')))
+          throw new Error('应用仍有待核对的进程登记。请先在原数据目录启动、完成核对并正常停服。');
+      }
     }
     staging = await mkdtemp(join(dirname(to), '.concordia-copy-'));
     const digest = await copyState(from, staging, mode === 'create');
     if (mode === 'create') await writeFile(join(staging, manifest), digest + '\n', { mode: 0o600, flag: 'wx' });
     else if (digest !== expected) throw new Error('备份摘要不匹配。');
+    verifyBackupReferences(staging);
     // Publish only a complete, verified directory on the same volume.
     await rename(staging, to);
     staging = undefined;
