@@ -2,15 +2,15 @@ import { inputsFor, type State, type Task } from './state.ts';
 
 type Blocker = { slotId: string; owner: string | null };
 export type WaitInterval = {
-  kind: 'waiting' | 'ready';
+  kind: 'waiting' | 'ready' | 'review';
   start: number | null;
   end: number | null;
   blockedBy: Blocker[];
 };
-export type WaitHistory = { complete: boolean; intervals: WaitInterval[] };
+export type WaitHistory = { complete: boolean; approvalTracked?: boolean; intervals: WaitInterval[] };
 
 function currentInterval(task: Task, state: State, start: number | null): WaitInterval | undefined {
-  if (task.status === 'ready') return { kind: 'ready', start, end: null, blockedBy: [] };
+  if (task.status === 'ready' || task.status === 'review') return { kind: task.status, start, end: null, blockedBy: [] };
   if (task.status !== 'waiting') return;
   const inputs = inputsFor(task, state);
   const blockedBy = task.consumes
@@ -57,12 +57,14 @@ export function recordWaits(state: State, now: number) {
 export function waitTime(task: Task, state: State, now: number) {
   const history = task.waitHistory ?? legacyHistory(task, state);
   let dependencyMs = 0,
-    queueMs = 0;
+    queueMs = 0,
+    approvalMs = 0;
   for (const interval of history.intervals) {
     if (interval.start === null) continue;
     const duration = Math.max(0, (interval.end ?? now) - interval.start);
     if (interval.kind === 'waiting') dependencyMs += duration;
-    else queueMs += duration;
+    else if (interval.kind === 'ready') queueMs += duration;
+    else approvalMs += duration;
   }
-  return { ...history, dependencyMs, queueMs, observedAt: now };
+  return { ...history, dependencyMs, queueMs, approvalMs, observedAt: now };
 }

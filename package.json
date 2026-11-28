@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:browser": "tsx apps/server/smoke/browser.ts",
     "build": "pnpm typecheck && pnpm --filter @concordia/web build",
+    "benchmark:delivery": "tsx apps/server/bench/delivery.ts",
     "verify": "tsx apps/server/src/verify.ts",
     "serve": "tsx apps/server/src/main.ts",
     "credential:set": "tsx packages/providers/src/credentials-set.ts",

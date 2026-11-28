@@ -37,7 +37,8 @@ function waitSummary(task: Task) {
   const wait = task.waitTime;
   if (!wait || (!wait.complete && !wait.dependencyMs && !wait.queueMs)) return '等待耗时未知';
   return '等待依赖 ' + waitDuration(wait.dependencyMs, wait.complete) +
-    ' · 就绪排队 ' + waitDuration(wait.queueMs, wait.complete);
+    ' · 就绪排队 ' + waitDuration(wait.queueMs, wait.complete) +
+    ' · 等待验收 ' + waitDuration(wait.approvalMs ?? 0, !!wait.approvalTracked);
 }
 
 function TaskProgress({ taskId }: { taskId: string }) {
@@ -144,7 +145,7 @@ function TaskDetails({
           <ul>
             {task.waitTime.intervals.map((period, index) => (
               <li key={index}>
-                {period.kind === 'waiting' ? '等待依赖' : '就绪排队'} ·{' '}
+                {{ waiting:'等待依赖', ready:'就绪排队', review:'等待验收' }[period.kind]} ·{' '}
                 {period.start === null ? '开始时间未知' : new Date(period.start).toLocaleString()}
                 {period.end === null
                   ? '，截至 ' + new Date(task.waitTime.observedAt).toLocaleString() + ' 仍在等待'

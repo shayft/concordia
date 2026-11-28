@@ -179,7 +179,7 @@ export function makeTask(spec: TaskSpec): Task {
     previous: 'waiting',
     rework: 0,
     retries: 0,
-    waitHistory: { complete: true, intervals: [] },
+    waitHistory: { complete: true, approvalTracked: true, intervals: [] },
   };
 }
 export function activePlan(state: State): WorkflowSpec {
