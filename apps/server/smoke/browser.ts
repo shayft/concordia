@@ -78,14 +78,33 @@ async function smoke() {
     await page.getByRole('button', { name: '载入模板', exact: true }).click();
     await page.getByRole('button', { name: '校验并预览差异', exact: true }).click();
     await page.getByText('新增 6', { exact: true }).waitFor();
+    phase = '跨页面与刷新恢复草稿，重新预览才可批准';
+    const originalDraft = await page.getByLabel('工作流 JSON 草案').inputValue();
+    assert.ok(originalDraft.length > 0);
+    await page.getByText('草稿已与当前工作区同步，批准前须预览。', { exact: true }).waitFor();
+    await page.getByRole('link', { name: '连接与成员', exact: true }).click();
+    await page.getByRole('link', { name: '计划与审批', exact: true }).click();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.getByText('草稿已与当前工作区同步，批准前须预览。', { exact: true }).waitFor();
+    assert.equal(await page.getByLabel('工作流 JSON 草案').inputValue(), originalDraft);
+    assert.equal(await page.getByRole('button', { name: '批准并应用此版本' }).count(), 0);
+    await page.getByRole('button', { name: '校验并预览差异', exact: true }).click();
     phase = '批准计划并查看六张任务卡';
     await page.getByRole('button', { name: '批准并应用此版本', exact: true }).click();
     await page.getByRole('heading', { name: '协作任务板', exact: true }).waitFor();
     await page.locator('.card').nth(5).waitFor();
     assert.equal(await page.locator('.card').count(), 6);
     phase = '通过独立确认框运行固定模拟';
-    await page.getByRole('button', { name: '运行固定模拟', exact: true }).click();
-    await page.getByRole('dialog').getByRole('button', { name: '运行模拟', exact: true }).click();
+    const launcher = page.getByRole('button', { name: '运行固定模拟', exact: true });
+    const confirmation = page.getByRole('dialog', { name: '运行固定模拟', exact: true });
+    await launcher.click();
+    await confirmation.waitFor();
+    await page.keyboard.press('Escape');
+    await confirmation.waitFor({ state: 'hidden' });
+    assert.ok(await launcher.evaluate((el) => el === document.activeElement));
+    assert.ok(!mutations.includes('/api/demo/run'));
+    await launcher.press('Enter');
+    await confirmation.getByRole('button', { name: '运行模拟', exact: true }).click();
     await page.locator('.lane.done .card').nth(4).waitFor();
     phase = '核对五张已交付任务卡与主卡的验收版本';
     const versions = page
@@ -111,7 +130,13 @@ async function smoke() {
     assert.equal(scriptErrors, 0);
     assert.equal(consoleErrors, 0);
     assert.equal(httpFailures, 0);
-    assert.deepEqual(mutations, ['/session', '/api/spec/preview', '/api/spec/apply', '/api/demo/run']);
+    assert.deepEqual(mutations, [
+      '/session',
+      '/api/spec/preview',
+      '/api/spec/preview',
+      '/api/spec/apply',
+      '/api/demo/run',
+    ]);
   } finally {
     try {
       await context?.close();

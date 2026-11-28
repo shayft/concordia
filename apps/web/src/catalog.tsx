@@ -3,7 +3,8 @@ import type { Catalog, CatalogModel, Connection, Member, QuotaPool } from '@conc
 import { modelPricingSchema } from '@concordia/protocol/pricing';
 import { MemberPermissions } from './member-permissions.tsx';
 import { api, useAction, useResource } from './api.ts';
-import { DisabledMcpServers, Empty, Field, Modal, Notice } from './ui.tsx';
+import { InspectionPanel, type Inspection } from './inspection.tsx';
+import { Empty, Field, Modal, Notice } from './ui.tsx';
 
 const protocols = {
   claude: 'Claude Code',
@@ -437,15 +438,6 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
   );
 }
 
-interface Inspection {
-  inspectionId: string;
-  login?: string;
-  billing?: string;
-  version?: string;
-  billingEnvironment?: { name: string; source: string; passed?: boolean }[];
-  disabledMcpServers?: string[];
-  arguments?: string[];
-}
 interface TestResult {
   ok: boolean;
   text?: string;
@@ -527,26 +519,7 @@ function TestConnection({
             >
               预检路径、版本和登录状态
             </button>
-            {inspection && (
-              <div className="surface compact">
-                <p>
-                  版本 {inspection.version ?? '未知'} · {inspection.login} · 计费来源{' '}
-                  {inspection.billing ?? '未知'}
-                </p>
-                <ul>
-                  {inspection.billingEnvironment?.map((e) => (
-                    <li key={e.name}>
-                      {e.name} · {e.source} · {e.passed ? '传入' : '忽略'}
-                    </li>
-                  ))}
-                </ul>
-                <DisabledMcpServers names={inspection.disabledMcpServers} />
-                <details>
-                  <summary>查看实际权限参数</summary>
-                  <pre>{JSON.stringify(inspection.arguments, null, 2)}</pre>
-                </details>
-              </div>
-            )}
+            {inspection && <InspectionPanel result={inspection} />}
           </>
         ) : null}
         <Field name="testModel" label="测试模型">

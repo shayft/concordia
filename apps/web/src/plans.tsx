@@ -1,8 +1,10 @@
+import { usePlanDraft } from './plan-draft.ts';
 import { useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { PlanPreview, WorkflowSpec } from '@concordia/protocol/workflow';
 import { api, useAction, useResource } from './api.ts';
-import { DisabledMcpServers, Field, Notice } from './ui.tsx';
+import { InspectionPanel, type Inspection } from './inspection.tsx';
+import { Field, Notice } from './ui.tsx';
 
 const planLabels: Partial<Record<keyof WorkflowSpec, string>> = {
   id: '工作流标识',
@@ -42,21 +44,16 @@ function ShowChange({ title, before, after }: { title: string; before: unknown; 
     </details>
   );
 }
-export function PlansPage({ openBoard }: { openBoard: () => void }) {
+export function PlansPage({ openBoard, workspace }: { openBoard: () => void; workspace?: string }) {
   const catalog = useResource<Catalog>('catalog');
   const [source, setSource] = useState('demo');
-  const [draft, setDraft] = useState('');
+  const saved = usePlanDraft(workspace);
+  const draft = saved.view.text;
   const [goal, setGoal] = useState('');
   const [agent, setAgent] = useState('');
   const [members, setMembers] = useState<string[]>([]);
   const [unmanaged, setUnmanaged] = useState(false);
-  const [inspection, setInspection] = useState<{
-    inspectionId: string;
-    version: string;
-    billing: string;
-    login: string;
-    disabledMcpServers?: string[];
-  }>();
+  const [inspection, setInspection] = useState<Inspection>();
   const [preview, setPreview] = useState<PlanPreview>();
   const action = useAction();
   const draftRevision = useRef(0);
@@ -65,7 +62,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
     setPreview(undefined);
   }
   function edit(value: string) {
-    setDraft(value);
+    saved.edit(value);
     invalidatePreview();
   }
   const enabled = catalog.data?.members.filter((m) => m.enabled) ?? [];
@@ -108,6 +105,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
         <div className="toolbar">
           <select
             aria-label="草案来源"
+            disabled={saved.view.status === 'loading'}
             value={source}
             onChange={(e) => {
               setSource(e.target.value);
@@ -218,21 +216,14 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
             >
               预检负责人 CLI
             </button>
-            {inspection && (
-              <>
-                <p>
-                  版本 {inspection.version} · {inspection.login} · 计费来源 {inspection.billing}
-                </p>
-                <DisabledMcpServers names={inspection.disabledMcpServers} />
-              </>
-            )}
+            {inspection && <InspectionPanel result={inspection} />}
           </>
         )}
         {source !== 'manual' && (
           <div className="toolbar">
             <button
               disabled={
-                action.busy ||
+                action.busy || saved.view.status === 'loading' ||
                 (source === 'lead' &&
                   (!agent ||
                     !goal.trim() ||
@@ -249,10 +240,16 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
       </section>
       <section className="panel">
         <h2>工作流 spec</h2>
+        {workspace && <div className="help" role="status">
+          {saved.view.status === 'loading' ? '正在读取工作区草稿' : saved.view.status === 'saving' ? '正在保存草稿' : saved.view.status === 'saved' ? '草稿已与当前工作区同步，批准前须预览。' : '草稿尚未保存。'}
+        </div>}
+        {saved.view.error && <div><Notice error={saved.view.error}/><button onClick={()=>void saved.retry()}>重试保存</button> <button onClick={()=>{invalidatePreview();void saved.restore();}}>舍弃本页草稿并载入服务端版本</button></div>}
         <label className="sr-only" htmlFor="draft">
           工作流 JSON 草案
         </label>
         <textarea
+          disabled={saved.view.status === 'loading'}
+          maxLength={120000}
           id="draft"
           className="code-input"
           rows={12}

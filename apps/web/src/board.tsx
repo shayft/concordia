@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { Scheduler } from '../../../packages/core/src/workflow.ts';
 import { api, browserFetch, useAction, useResource } from './api.ts';
-import { DisabledMcpServers, Empty, Field, Modal, Notice } from './ui.tsx';
+import { InspectionPanel, type Inspection } from './inspection.tsx';
+import { Empty, Field, Modal, Notice } from './ui.tsx';
 import type { Worktrees } from './worktrees.tsx';
 
 export type Board = ReturnType<Scheduler['board']>;
@@ -87,14 +88,7 @@ function TaskDetails({
   const [treeId, setTree] = useState('');
   const [maxCalls, setMax] = useState(1);
   const [unmanaged, setUnmanaged] = useState(false);
-  const [inspection, setInspection] = useState<{
-    inspectionId: string;
-    version: string;
-    login: string;
-    billing: string;
-    disabledMcpServers?: string[];
-    arguments: string[];
-  }>();
+  const [inspection, setInspection] = useState<Inspection>();
   const [message, setMessage] = useState('');
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [askCancel, setAskCancel] = useState(false);
@@ -247,18 +241,7 @@ function TaskDetails({
                   预检所选 CLI
                 </button>
               </div>
-              {inspection && (
-                <>
-                  <p className="help">
-                    {inspection.version} · {inspection.login} · 计费来源 {inspection.billing}
-                  </p>
-                  <DisabledMcpServers names={inspection.disabledMcpServers} />
-                  <details>
-                    <summary>预检参数</summary>
-                    <pre>{JSON.stringify(inspection.arguments, null, 2)}</pre>
-                  </details>
-                </>
-              )}
+              {inspection && <InspectionPanel result={inspection} />}
             </>
           )}
           <div className="toolbar">
