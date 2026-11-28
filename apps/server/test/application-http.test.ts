@@ -121,7 +121,7 @@ it('README 无账号示例从手工预览到主卡验收均可在空连接目录
   expect((await ui.post('/api/accept', {expected: {...expected, versions: {}}})).status).toBe(409);
   expect(await (await ui.post('/api/accept', { expected: (await board(ui)).acceptanceCandidate })).json()).toEqual({ snapshot: { 'title-card': version.id } });
   expect(api.seen).toHaveLength(0);
-});
+}, 30_000); // Includes cold OS permission checks, service startup and a complete browser session.
 
 it('同一模板两次新建使用独立实例；从归档修订时显示该计划自己的预算差异', async () => {
   app = await startLocalServer(web, data);
