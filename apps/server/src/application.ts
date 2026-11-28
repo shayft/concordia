@@ -13,7 +13,8 @@ import type { WorktreeIssue } from './worktrees/service.ts';
 import { openWorktrees, serveWorktrees } from './worktrees.ts';
 import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
-import { auditEvent, serveAuditExport } from './audit.ts';
+import { serveAuditExport } from './audit.ts';
+import { eventPage, historyQuery, streamHistory } from './event-history.ts';
 import { serveExecutionCosts } from './execution-cost.ts';
 import { protectWorkspaceWrites } from './workspace-scope.ts';
 import { serveDelivery } from './delivery.ts';
@@ -208,17 +209,21 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       return rejected(reply, e);
     }
   });
+  app.get('/api/history/page', async (req, reply) => {
+    try {
+      return eventPage(current.boardDb, historyQuery.parse(req.query));
+    } catch (error) { return rejected(reply, error); }
+  });
   app.get('/api/history', async (req, reply) => {
     try {
-      return current.scheduler
-        .events(z.object({ after: z.coerce.number().int().min(0).default(0) }).parse(req.query).after)
-        .map(auditEvent);
-    } catch (e) {
-      return rejected(reply, e);
-    }
+      const { after, limit } = historyQuery.parse(req.query);
+      const page = eventPage(current.boardDb, { after: after ?? 0, limit });
+      if (page.hasMore) reply.header('link', '</api/history?after=' + page.events.at(-1)!.seq + '>; rel="next"');
+      return page.events;
+    } catch (error) { return rejected(reply, error); }
   });
   app.get('/api/events', async (req, reply) => {
-    let sequence = Number(req.headers['last-event-id'] ?? 0);
+    const sequence = Number(req.headers['last-event-id'] ?? 0);
     if (!Number.isSafeInteger(sequence) || sequence < 0) return reply.code(400).send();
     reply.hijack();
     const output = reply.raw;
@@ -228,28 +233,8 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       'X-Content-Type-Options': 'nosniff',
     });
     output.write(': connected\n\n');
-    const send = () => {
-      if (output.destroyed || output.writableEnded) return stop();
-      try {
-        for (const event of current.scheduler.events(sequence)) {
-          if (output.writableLength > 262144) return stop();
-          output.write('id: ' + event.seq + '\ndata: ' + JSON.stringify(auditEvent(event)) + '\n\n');
-          sequence = event.seq;
-        }
-      } catch {
-        stop();
-      }
-    };
-    const timer = setInterval(send, 250);
-    timer.unref();
-    function stop() {
-      clearInterval(timer);
-      feeds.delete(stop);
-      output.end();
-    }
+    const stop = streamHistory(output, current.boardDb, sequence, () => feeds.delete(stop));
     feeds.add(stop);
-    output.once('close', stop);
-    send();
   });
   function post<T extends z.ZodType>(
     url: string,
