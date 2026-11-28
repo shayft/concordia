@@ -109,6 +109,16 @@ it.skipIf(process.platform === 'win32')('备份只保留 worktree 链接本身�
   await expect(copyApplicationState('create', source, join(root,'unsafe'))).rejects.toThrow('外部文件');
 });
 
+it('规划结果缺少工作区正文时拒绝发布备份', async () => {
+  const catalog = openStore(join(source, 'catalog.sqlite'));
+  const ref = createHash('sha256').update('尚未备份的规划草案').digest('hex');
+  try {
+    catalog.prepare("INSERT INTO plan_requests(id,workspace,member,connection,started,status,result_ref) VALUES('request','demo','planner','office',1,'proposed',?)").run(ref);
+  } finally { catalog.close(); }
+  await expect(copyApplicationState('create', source, snapshot)).rejects.toThrow('内容对象');
+  await expect(access(snapshot)).rejects.toThrow();
+});
+
 it('源目录缺少已登记的工作区时拒绝发布', async () => {
   const catalog = openStore(join(source, 'catalog.sqlite'));
   catalog.exec("INSERT INTO workspaces VALUES ('missing','旧工作区',0)");

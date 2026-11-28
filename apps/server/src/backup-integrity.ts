@@ -24,16 +24,22 @@ function table(db: DatabaseSync, name: string) {
   return !!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(name);
 }
 
+function requireObject(objects: string, ref: string) {
+  if (typeof ref !== 'string' || !/^[0-9a-f]{64}$/u.test(ref)) throw new Error('内容引用无效。');
+  const path = join(objects, ref);
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile())
+    throw new Error('备份缺少已登记的内容对象。');
+  return path;
+}
+
 function verifyWorkflow(directory: string, db: DatabaseSync) {
   if (Number(db.prepare('PRAGMA user_version').get()?.user_version) < 3) return;
   const objects = join(directory, 'objects');
   const checked = new Set<string>();
   const archives = new Set<string>();
   function object(ref: string) {
-    if (typeof ref !== 'string' || !/^[0-9a-f]{64}$/u.test(ref)) throw new Error('内容引用无效。');
     if (!checked.has(ref)) {
-      if (!lstatSync(join(objects, ref), { throwIfNoEntry: false })?.isFile())
-        throw new Error('备份缺少已登记的内容对象。');
+      requireObject(objects, ref);
       checked.add(ref);
     }
     return join(objects, ref);
@@ -90,6 +96,12 @@ export function verifyBackupReferences(root: string) {
     if (version >= 4) {
       for (const row of db.prepare('SELECT id FROM workspaces').iterate()) {
         if (!available.has(String(row.id))) throw new Error('备份缺少已登记的工作区。');
+      }
+    }
+    if (version >= 9) {
+      for (const row of db.prepare('SELECT workspace, result_ref FROM plan_requests WHERE result_ref IS NOT NULL').iterate()) {
+        if (!available.has(String(row.workspace))) throw new Error('规划草案缺少所属工作区。');
+        requireObject(join(boards, String(row.workspace), 'objects'), String(row.result_ref));
       }
     }
     verifyWorktreeLedger(root, db);
