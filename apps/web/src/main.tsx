@@ -92,11 +92,12 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
             }}
           />
         ) : page === 'plans' ? (
-          <PlansPage
+          data ? <PlansPage
+            workspace={data.active}
             openBoard={() => {
               location.hash = 'board';
             }}
-          />
+          /> : <p role="status">正在打开工作区…</p>
         ) : page === 'worktrees' ? (
           <WorktreesPage />
         ) : page === 'budgets' ? (
@@ -108,7 +109,7 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
     </div>
   );
 }
-type WorkspaceList = { active: string; workspaces: { id: string; name: string }[] };
+type WorkspaceList = { active: string; generation: string; workspaces: { id: string; name: string }[] };
 function WorkspaceMenu({ data, refresh }: { data?: WorkspaceList; refresh: () => Promise<void> }) {
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
@@ -184,9 +185,9 @@ function WorkspaceMenu({ data, refresh }: { data?: WorkspaceList; refresh: () =>
 function App() {
   const { data, reload } = useResource<WorkspaceList>('workspaces');
   useEffect(() => {
-    setActiveWorkspace(data?.active);
-  }, [data?.active]);
-  return <Workspace key={data?.active ?? 'loading'} data={data} refresh={reload} />;
+    setActiveWorkspace(data?.active, data?.generation);
+  }, [data?.active, data?.generation]);
+  return <Workspace key={data?.generation ?? 'loading'} data={data} refresh={reload} />;
 }
 const root = document.getElementById('root');
 if (root) createRoot(root).render(<App />);

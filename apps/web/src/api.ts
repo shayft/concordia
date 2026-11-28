@@ -8,9 +8,9 @@ export function browserFetch(path: string, options: RequestInit = {}) {
   return fetch(path, { ...options, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
 }
 
-let activeWorkspace: string | undefined;
-export function setActiveWorkspace(id: string | undefined) {
-  activeWorkspace = id;
+let activeWorkspace: { id: string; generation: string } | undefined;
+export function setActiveWorkspace(id: string | undefined, generation?: string) {
+  activeWorkspace = id && generation ? { id, generation } : undefined;
 }
 
 export async function api<T>(
@@ -26,7 +26,7 @@ export async function api<T>(
     cache: 'no-store',
     headers: {
       ...(body !== undefined && { 'Content-Type': 'application/json' }),
-      ...(method !== 'GET' && activeWorkspace && { 'x-concordia-workspace': activeWorkspace }),
+      ...(method !== 'GET' && activeWorkspace && { 'x-concordia-workspace': activeWorkspace.id, 'x-concordia-generation': activeWorkspace.generation }),
     },
     ...(body !== undefined && { body: JSON.stringify(body) }),
   });

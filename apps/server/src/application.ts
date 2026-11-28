@@ -15,6 +15,7 @@ import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
 import { auditEvent, serveAuditExport } from './audit.ts';
 import { serveExecutionCosts } from './execution-cost.ts';
+import { protectWorkspaceWrites } from './workspace-scope.ts';
 import { serveDelivery } from './delivery.ts';
 
 const text = z.string().trim().min(1).max(8000);
@@ -130,11 +131,8 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     current.scheduler.reportConflict({ ...issue, paths });
   }
   for (const issue of trees.issues()) syncConflict(issue);
-  app.addHook('onRequest', async (req, reply) => {
-    const scope = req.headers['x-concordia-workspace'];
-    if (scope !== undefined && scope !== current.id && req.method !== 'GET')
-      return reply.code(409).send({ error: '活动工作区已变更，请刷新页面' });
-  });
+  let browserWorkspace = { active: current.id, generation: randomUUID() };
+  protectWorkspaceWrites(app, () => browserWorkspace);
   registerConnectionRoutes(app, db, {
     isRunning: (f) => current.worker.editingBlocked(f),
     runningCount: (f) => current.worker.count(f),
@@ -166,6 +164,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     closeFeeds();
     current.close();
     current = next;
+    browserWorkspace = { active: id, generation: randomUUID() };
     for (const issue of trees.issues()) syncConflict(issue);
   }
   function checkedSpec(raw: unknown) {
@@ -188,7 +187,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     void __;
     return { ...board, stoppedPools: [...new Set([...board.stoppedPools, ...pausedPools(db)])] };
   });
-  app.get('/api/workspaces', async () => ({ active: current.id, workspaces: workspaces() }));
+  app.get('/api/workspaces', async () => ({ ...browserWorkspace, workspaces: workspaces() }));
   app.get('/api/recovery', async () => recovery.report());
   app.post('/api/recovery/recheck', async (req, reply) => {
     if (!empty.safeParse(req.body).success) return reply.code(400).send();
