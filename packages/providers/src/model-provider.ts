@@ -135,6 +135,7 @@ export function createModelProvider(
   config: ProviderConfig,
   read: CredentialReader = readCredential,
 ): ModelProvider {
+  const chatContinuations = new WeakMap<ModelMessage, string>();
   async function* stream(
     messages: ModelMessage[],
     tools: ModelTool[] = [],
@@ -178,7 +179,7 @@ export function createModelProvider(
       if (!adapter) throw new Error('protocol');
       const url = requestUrl(config, adapter.path);
       if (config.protocol === 'gemini' && useStream) url.searchParams.set('alt', 'sse');
-      const body = JSON.stringify(adapter.body(config, messages, tools, useStream));
+      const body = JSON.stringify(adapter.body(config, messages, tools, useStream, chatContinuations));
       if (Buffer.byteLength(body) > 128 * 1024) throw new Error('input size');
       const headers = headersFor(config);
       timeout = AbortSignal.timeout(timeoutMs);
@@ -227,7 +228,10 @@ export function createModelProvider(
       const pending: ModelEvent[] = [];
       const seen = new Set<string>();
       let hasOutput = false;
-      for await (const event of adapter.events(response, useStream)) {
+      const rememberReasoning = (content: string) => {
+        if (tools.length && options.assistantReply) chatContinuations.set(options.assistantReply, content);
+      };
+      for await (const event of adapter.events(response, useStream, rememberReasoning)) {
         if (event.type === 'text_delta') {
           hasOutput ||= event.text.length > 0;
           const text = filter.text(event.text);

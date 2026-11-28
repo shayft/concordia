@@ -6,6 +6,7 @@ export function chatBody(
   messages: ModelMessage[],
   tools: ModelTool[],
   stream: boolean,
+  continuations: WeakMap<ModelMessage, string>,
 ) {
   return {
     ...config.params,
@@ -16,6 +17,7 @@ export function chatBody(
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,
+      ...(tools.length && m.role === 'assistant' && continuations.has(m) && {reasoning_content: continuations.get(m)}),
       ...(m.role === 'tool' && { tool_call_id: m.toolCallId }),
       ...(m.toolCalls?.length && {
         tool_calls: m.toolCalls.map((t) => ({
@@ -36,7 +38,7 @@ export function chatBody(
 function finish(reason: unknown) {
   if (reason !== 'stop' && reason !== 'tool_calls') throw new Error('incomplete');
 }
-export async function* chatEvents(response: Response, stream: boolean): AsyncGenerator<ModelEvent> {
+export async function* chatEvents(response: Response, stream: boolean, rememberReasoning: (content: string) => void): AsyncGenerator<ModelEvent> {
   const meter = (v: unknown) => {
     if (!v) return [];
     const u = obj(v);
@@ -53,14 +55,17 @@ export async function* chatEvents(response: Response, stream: boolean): AsyncGen
       const fn = obj(tool.function);
       yield { type: 'action', ...action(tool.id, fn.name, fn.arguments) };
     }
+    if (typeof m.reasoning_content === 'string') rememberReasoning(m.reasoning_content);
     yield* meter(body.usage);
     return;
   }
   const calls = new Map<number, { id: string; name: string; args: string }>();
   let finished = false;
+  let reasoning: string | undefined;
   for await (const data of sse(response)) {
     if (data === '[DONE]') {
       if (!finished) throw new Error('missing finish');
+      if (reasoning !== undefined) rememberReasoning(reasoning);
       for (const { id, name, args } of calls.values()) yield { type: 'action', ...action(id, name, args) };
       return;
     }
@@ -70,6 +75,7 @@ export async function* chatEvents(response: Response, stream: boolean): AsyncGen
       const choice = obj(item);
       if (finished || (choice.index ?? 0) !== 0) throw new Error('unexpected choice');
       const delta = obj(choice.delta);
+      if (typeof delta.reasoning_content === 'string') reasoning = (reasoning ?? '') + delta.reasoning_content;
       if (delta.content) yield { type: 'text_delta', text: string(delta.content) };
       for (const part of list(delta.tool_calls ?? [])) {
         const fragment = obj(part);

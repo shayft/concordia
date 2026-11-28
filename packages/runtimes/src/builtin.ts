@@ -56,14 +56,14 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
     options.signal.throwIfAborted();
     options.beforeCall(round);
     const calls: ModelAction[] = [];
-    let content = '';
+    const reply: ModelMessage = { role: 'assistant', content: '' };
     let completed = false;
     const meter: { inputTokens?: number; outputTokens?: number } = {};
     // Streams can report cumulative or partial counters repeatedly. Settle this
     // call once, including when it ends in an upstream error or is cancelled.
     try {
       for await (const event of options.provider.stream(messages, options.mode === 'native' ? tools : [], {
-        signal: options.signal,
+        signal: options.signal, assistantReply: reply,
       })) {
         if (event.type === 'usage') {
           if (event.inputTokens !== undefined) meter.inputTokens = event.inputTokens;
@@ -72,10 +72,10 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
         options.signal.throwIfAborted();
         if (event.type === 'error') throw new ModelCallError(event.kind, event.message, event.httpStatus);
         if (completed) throw new ModelCallError('invalid', '结束事件后收到多余响应');
-        if (event.type === 'text_delta') content += event.text;
+        if (event.type === 'text_delta') reply.content += event.text;
         if (event.type === 'action') calls.push(event);
         if (event.type === 'completed') completed = true;
-        if (content.length > 65536 || calls.length > 32)
+        if (reply.content.length > 65536 || calls.length > 32)
           throw new ModelCallError('budget', '本轮输出超过上限');
       }
     } finally {
@@ -83,12 +83,13 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
     }
     options.signal.throwIfAborted();
     if (!completed) throw new ModelCallError('transport', '响应提前结束');
-    messages.push({ role: 'assistant', content, ...(calls.length ? { toolCalls: calls } : {}) });
+    if (calls.length) reply.toolCalls = calls;
+    messages.push(reply);
     let actions: PlatformAction[];
     try {
       const raw = calls.length
         ? calls.map(({ name, arguments: args }) => ({ ...args, type: name }))
-        : decodeActions(content);
+        : decodeActions(reply.content);
       if (!raw.length || raw.length > 32) throw new Error();
       actions = raw.map((item) => platformActionSchema.parse(item));
       if (

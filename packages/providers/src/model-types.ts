@@ -54,6 +54,8 @@ export type ModelEvent =
   | { type: 'completed' }
   | ModelFailure;
 export interface StreamOptions {
+  /** Identity used to retain native continuation data in this provider and this conversation only. */
+  assistantReply?: ModelMessage;
   stream?: boolean;
   signal?: AbortSignal;
 }
