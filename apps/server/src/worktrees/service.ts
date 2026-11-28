@@ -2,8 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { LedgerRecoveryError, worktreeRecovery, worktreeLedgerExpected } from '../ledger-presence.ts';
 import { DatabaseSync } from 'node:sqlite';
-import { databaseVersion, verifyBeforeOpening } from '@concordia/store/database-identity';
+import { identifyWorktreeDatabase } from './database.ts';
+import { verifyBeforeOpening } from '@concordia/store/database-identity';
 import { z } from 'zod';
 import { existingDataDirectory, safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 import { runProcess } from '@concordia/runtimes/process';
@@ -67,20 +70,6 @@ function target(project: Project) {
   return 'refs/heads/' + project.targetBranch;
 }
 
-function identifyWorktreeDatabase(db: DatabaseSync) {
-  const version = databaseVersion(db, 4);
-  if (!version) return version;
-  const tables = ['projects', 'trees', 'publications', 'approvals'];
-  if (version >= 2) tables.push('conflict_issues');
-  const present = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name));
-  if (tables.some(name => !present.has(name)) ||
-      (version >= 3 && !db.prepare("SELECT 1 FROM pragma_table_info('trees') WHERE name='scope'").get()))
-    throw new Error('已有数据库未包含匹配的 Concordia 工作树表。');
-  if (version >= 4 && db.prepare("SELECT COUNT(*) AS count FROM pragma_table_info('approvals') WHERE name IN ('acceptance','run_order')").get()?.count !== 2)
-    throw new Error('工作树数据库缺少审批证据字段。');
-  return version;
-}
-
 export class WorktreeService {
   private db: DatabaseSync;
   private directory: string;
@@ -95,14 +84,28 @@ export class WorktreeService {
     onConflict?: (issue: WorktreeIssue) => void,
     recoveryDir = join(dataDirectory, 'processes'),
     checkAcceptance?: CheckAcceptance,
+    required = worktreeLedgerExpected(dataDirectory),
   ) {
     this.checkAcceptance = checkAcceptance;
     this.recoveryDir = recoveryDir;
     this.onConflict = onConflict;
-    this.directory = safeDataDirectory(dataDirectory, 'worktrees');
     const file = safeDatabasePath(dataDirectory, 'worktrees.sqlite');
-    verifyBeforeOpening(file, identifyWorktreeDatabase);
-    this.db = new DatabaseSync(file);
+    if (required && !lstatSync(file, { throwIfNoEntry: false })) throw new LedgerRecoveryError(worktreeRecovery);
+    this.directory = safeDataDirectory(dataDirectory, 'worktrees');
+    const uri = pathToFileURL(file);
+    if (required) uri.searchParams.set('mode', 'rw');
+    function identify(db: DatabaseSync) {
+      const version = identifyWorktreeDatabase(db);
+      if (!version && required) throw new LedgerRecoveryError(worktreeRecovery);
+      return version;
+    }
+    try {
+      verifyBeforeOpening(file, identify);
+      this.db = new DatabaseSync(uri.href);
+    } catch (cause) {
+      if (required) throw new LedgerRecoveryError(worktreeRecovery, { cause });
+      throw cause;
+    }
     this.db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
     if (this.db.prepare('PRAGMA journal_mode=WAL').get()?.journal_mode !== 'wal') {
       this.db.close();
@@ -110,7 +113,7 @@ export class WorktreeService {
     }
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      const version = identifyWorktreeDatabase(this.db);
+      const version = identify(this.db);
       const scripts = ['001-worktrees.sql','002-conflict-issues.sql','003-task-scope.sql','004-merge-acceptance.sql'];
       for (let i = version; i < scripts.length; i++) {
         this.db.exec(readFileSync(new URL(scripts[i], import.meta.url), 'utf8'));
@@ -760,4 +763,5 @@ export const openWorktrees = (
   onConflict?: (issue: WorktreeIssue) => void,
   recoveryDir?: string,
   checkAcceptance?: CheckAcceptance,
-) => new WorktreeService(dataDirectory, onConflict, recoveryDir, checkAcceptance);
+  expected?: boolean,
+) => new WorktreeService(dataDirectory, onConflict, recoveryDir, checkAcceptance, expected);

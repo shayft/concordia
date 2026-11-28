@@ -9,6 +9,7 @@ import { safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 import { WorkflowStore } from '@concordia/store/workflow';
 import { git } from './worktrees/git.ts';
 import { WorktreeService } from './worktrees/service.ts';
+import { preflightWorktreeLedger, worktreeLedgerExpected } from './ledger-presence.ts';
 import { exampleFiles } from './delivery-example.ts';
 
 type Phase =
@@ -43,14 +44,17 @@ const start = z.strictObject({ approved: z.literal(true), retryOf: z.uuid().opti
 export function serveDelivery(app: FastifyInstance, dataDirectory: string, assertCanExecute?: () => void) {
   const directory = safeDataDirectory(dataDirectory, 'assignee-delivery');
   safeDataDirectory(directory, 'objects');
-  const db = openStore(safeDatabasePath(directory, 'delivery.sqlite'));
+  const file = safeDatabasePath(directory, 'delivery.sqlite');
+  preflightWorktreeLedger(directory, file);
+  const db = openStore(file);
+  app.addHook('onClose', async () => db.close());
   db.exec(readFileSync(new URL('./delivery.sql', import.meta.url), 'utf8'));
   const scheduler = new Scheduler({
     now: Date.now,
     nextId: randomUUID,
     storage: new WorkflowStore(db, directory),
   });
-  const worktrees = new WorktreeService(directory, undefined, join(dataDirectory, 'processes'));
+  const worktrees = new WorktreeService(directory, undefined, join(dataDirectory, 'processes'), undefined, worktreeLedgerExpected(directory, db));
   let activeRequest: Promise<void> | undefined;
   let closing = false;
   function allowed() {
@@ -72,7 +76,6 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string, asser
   });
   app.addHook('onClose', async () => {
     await worktrees.close();
-    db.close();
   });
 
   function current(): Run | undefined {

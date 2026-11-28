@@ -1,7 +1,10 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
+import { identifyStore } from '@concordia/store';
+import { catalogRecovery, LedgerRecoveryError, worktreeLedgerExpected, worktreeRecovery } from './ledger-presence.ts';
+import { identifyWorktreeDatabase } from './worktrees/database.ts';
 import type { State } from '@concordia/core/state';
 
 // The staging copy contains self-contained SQLite backup files, with no pending WAL.
@@ -64,17 +67,32 @@ function verifyWorkflow(directory: string, db: DatabaseSync) {
   }
 }
 
+function verifyWorktreeLedger(root: string, owner?: DatabaseSync) {
+  const file = join(root, 'worktrees.sqlite');
+  const expected = worktreeLedgerExpected(root, owner);
+  if (!lstatSync(file, { throwIfNoEntry: false })) {
+    if (expected) throw new LedgerRecoveryError(worktreeRecovery);
+    return;
+  }
+  inspect(file, db => {
+    if (!identifyWorktreeDatabase(db) && expected) throw new LedgerRecoveryError(worktreeRecovery);
+  });
+}
+
 export function verifyBackupReferences(root: string) {
   const boards = join(root, 'boards');
   const available = new Set(lstatSync(boards, { throwIfNoEntry: false })
     ? readdirSync(boards, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name)
     : []);
   inspect(join(root, 'catalog.sqlite'), db => {
-    if (Number(db.prepare('PRAGMA user_version').get()?.user_version) >= 4) {
+    const version = identifyStore(db);
+    if (!version) throw new LedgerRecoveryError(catalogRecovery);
+    if (version >= 4) {
       for (const row of db.prepare('SELECT id FROM workspaces').iterate()) {
         if (!available.has(String(row.id))) throw new Error('备份缺少已登记的工作区。');
       }
     }
+    verifyWorktreeLedger(root, db);
     verifyWorkflow(root, db);
   });
   for (const id of available) {
@@ -83,9 +101,14 @@ export function verifyBackupReferences(root: string) {
     if (!lstatSync(file, { throwIfNoEntry: false })?.isFile()) throw new Error('备份缺少工作区数据库。');
     inspect(file, db => verifyWorkflow(dir, db));
   }
-  for (const file of [join(root, 'worktrees.sqlite'), join(root, 'assignee-delivery', 'delivery.sqlite'),
-    join(root, 'assignee-delivery', 'worktrees.sqlite')]) {
-    if (lstatSync(file, { throwIfNoEntry: false }))
-      inspect(file, db => { if (table(db, 'workflow_state')) verifyWorkflow(dirname(file), db); });
+  const rehearsal = join(root, 'assignee-delivery');
+  if (lstatSync(rehearsal, { throwIfNoEntry: false })) {
+    const file = join(rehearsal, 'delivery.sqlite');
+    if (lstatSync(file, { throwIfNoEntry: false })) {
+      inspect(file, db => {
+        verifyWorktreeLedger(rehearsal, db);
+        if (table(db, 'workflow_state')) verifyWorkflow(rehearsal, db);
+      });
+    } else verifyWorktreeLedger(rehearsal);
   }
 }

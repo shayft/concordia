@@ -1,4 +1,5 @@
 import { PrivateDirectoryError } from '@concordia/store/private-directory';
+import { LedgerRecoveryError } from './ledger-presence.ts';
 import { WorkspaceRecoveryError } from './workspace-storage.ts';
 import { defaultDataDirectory } from './data-directory.ts';
 import { startLocalServer } from './local-server.ts';
@@ -14,7 +15,7 @@ if (!process.stdout.isTTY) {
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
   } catch (error) {
-    const diagnostic = error instanceof WorkspaceRecoveryError || error instanceof PrivateDirectoryError
+    const diagnostic = error instanceof WorkspaceRecoveryError || error instanceof LedgerRecoveryError || error instanceof PrivateDirectoryError
       ? error.message : '请检查构建产物、数据目录是否可写且未被占用，以及回环地址监听权限。';
     process.stderr.write('本地服务未启动。' + diagnostic + '\n');
     process.exitCode = 1;

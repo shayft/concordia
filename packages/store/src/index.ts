@@ -17,7 +17,7 @@ const migrations = [
   { version: 9, name: '009-plan-requests.sql' },
 ] as const;
 
-function identifyStore(db: DatabaseSync): number {
+export function identifyStore(db: DatabaseSync): number {
   const version = databaseVersion(db, migrations.length);
   if (!version) return version;
   if (!db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='schema_migrations'").get())

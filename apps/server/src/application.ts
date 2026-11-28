@@ -6,11 +6,11 @@ import { z } from 'zod';
 import { demoSpec, meetingSpec, parallelSpec, reviewSpec, Scheduler } from '@concordia/core/workflow';
 import { runDemo } from '@concordia/core/demo';
 import { acceptanceSnapshotSchema, workflowSpecSchema } from '@concordia/protocol/workflow';
-import { openStore } from '@concordia/store';
+import { openCatalog, worktreeLedgerExpected } from './ledger-presence.ts';
 import { initialWorkspace, openWorkspaceStore } from './workspace-storage.ts';
 import { WorkflowStore } from '@concordia/store/workflow';
 import { startProcessRecovery } from '@concordia/runtimes/process';
-import { acquireDataDirectory, safeDatabasePath, safeDataDirectory } from './data-directory.ts';
+import { acquireDataDirectory, safeDataDirectory } from './data-directory.ts';
 import { getCatalog, registerConnectionRoutes, resolveMember, cancelCatalogProbes } from './connections.ts';
 import type { WorktreeIssue } from './worktrees/service.ts';
 import { openWorktrees, serveWorktrees } from './worktrees.ts';
@@ -51,17 +51,17 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   const lease = acquireDataDirectory(path),
     directory = lease.directory;
   app.addHook('onClose', async () => lease.release());
+  const db = openCatalog(directory);
+  app.addHook('onClose', async () => db.close());
   const recovery = await startProcessRecovery(safeDataDirectory(directory, 'processes'));
   const assertRecovered = () => {
     if (recovery.report().unresolved.length) throw new Error('上次执行的进程尚待人工核对');
   };
-  const db = openStore(safeDatabasePath(directory, 'catalog.sqlite'));
-  app.addHook('onClose', async () => db.close());
   db.prepare("UPDATE plan_requests SET status='interrupted',finished=? WHERE status='running'").run(
     Date.now(),
   );
   const trees = openWorktrees(directory, syncConflict, undefined, (scope, project, inputs) =>
-    acceptedCommits(current.scheduler, db, current.id, scope, project, inputs));
+    acceptedCommits(current.scheduler, db, current.id, scope, project, inputs), worktreeLedgerExpected(directory, db));
   app.addHook('onClose', async () => trees.close());
   const workspaces = () =>
     db.prepare('SELECT id,name FROM workspaces ORDER BY rowid').all() as { id: string; name: string }[];

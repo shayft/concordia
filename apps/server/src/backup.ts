@@ -6,6 +6,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { assertSingleFile, existingDataDirectory, privateTemporaryDirectory, safeDatabasePath } from '@concordia/store/paths';
 import { acquireDataDirectory } from './data-directory.ts';
+import { catalogRecovery, LedgerRecoveryError, worktreeRecovery } from './ledger-presence.ts';
 import { verifyBackupReferences } from './backup-integrity.ts';
 
 const manifest = 'concordia-backup-v1.sha256';
@@ -42,6 +43,18 @@ function checkDatabase(file: string) {
 
 async function copyState(source: string, target: string, snapshot: boolean) {
   const digest = createHash('sha256');
+  async function skipSidecar(path: string) {
+    if (!isManagedSidecar(path)) return false;
+    const main = path.replace(sidecar, '');
+    if (main.endsWith('worktrees.sqlite')) {
+      const file = await lstat(join(source, main)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (!file) throw new LedgerRecoveryError(worktreeRecovery);
+    }
+    return true;
+  }
   async function visit(path: string): Promise<void> {
     const from = join(source, path), to = join(target, path);
     const stat = await lstat(from);
@@ -55,7 +68,7 @@ async function copyState(source: string, target: string, snapshot: boolean) {
       digest.update(JSON.stringify([path, 'directory']) + '\n');
       for (const name of (await readdir(from)).sort()) {
         const child = path + '/' + name;
-        if (!isManagedSidecar(child)) await visit(child);
+        if (!(await skipSidecar(child))) await visit(child);
       }
     } else if (stat.isFile()) {
       if (dbFile.test(path) && snapshot) {
@@ -77,9 +90,13 @@ async function copyState(source: string, target: string, snapshot: boolean) {
       throw new Error('数据目录中有无法备份的特殊文件。');
     }
   }
-  if (!(await lstat(join(source, 'catalog.sqlite'))).isFile()) throw new Error('缺少 Concordia 目录库。');
+  const catalog = await lstat(join(source, 'catalog.sqlite')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+    return null;
+  });
+  if (!catalog?.isFile()) throw new LedgerRecoveryError(catalogRecovery);
   for (const name of (await readdir(source)).sort()) {
-    if (applicationRoots.has(name)) await visit(name);
+    if (!(await skipSidecar(name)) && applicationRoots.has(name)) await visit(name);
   }
   return digest.digest('hex');
 }
@@ -110,7 +127,6 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
       expected = (await readFile(file, 'utf8')).trim();
       if (!/^[a-f0-9]{64}$/u.test(expected)) throw new Error('备份摘要无效。');
     } else {
-      if (!(await lstat(join(from, 'catalog.sqlite'))).isFile()) throw new Error('缺少目录库。');
       const lockPath = join(from, 'server-lock.sqlite');
       if (!(await lstat(lockPath)).isFile()) throw new Error('请选择应用已使用的数据目录。');
       lease = acquireDataDirectory(from);
@@ -146,7 +162,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   } else {
     try { await copyApplicationState(mode, source, destination); process.stdout.write('数据复制和校验已完成。\n'); }
     catch (error) {
-      const diagnostic = error instanceof PendingProcessRecovery ? error.message
+      const diagnostic = error instanceof PendingProcessRecovery || error instanceof LedgerRecoveryError ? error.message
         : '请检查服务是否已停止、路径及权限、数据库和内容完整性；保留原目录，勿启用不完整的目标。';
       process.stderr.write('操作未完成。' + diagnostic + '\n');
       process.exitCode = 1;

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { openStore } from '@concordia/store';
+import { openWorktrees } from '../src/worktrees/service.ts';
 import { copyApplicationState } from '../src/backup.ts';
 import { acquireDataDirectory } from '../src/data-directory.ts';
 
@@ -30,6 +31,8 @@ beforeEach(async () => {
     workflow.prepare('INSERT INTO workflow_events(type,data) VALUES (?,?)').run('version.published', JSON.stringify({ contentRef: hash }));
     workflow.close();
     await writeFile(join(board, 'objects', hash), contents);
+    // A real initialized project layout has a worktree ledger alongside its checkouts.
+    await openWorktrees(source).close();
     await mkdir(join(source, 'worktrees', 'task'), { recursive: true });
     await writeFile(join(source, 'worktrees', 'task', 'project.txt'), '用户尚未提交的代码');
   } finally { lock.release(); }
