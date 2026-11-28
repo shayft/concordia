@@ -154,7 +154,16 @@ export function applyAction(
       const id = bound;
       const v = id ? entity(s.versions, id) : undefined;
       if (!v || v.slotId !== action.slotId) throw new Error('版本不存在');
-      return { ...v, content: deps.storage.getContent(v.contentRef) };
+      const content = deps.storage.getContent(v.contentRef);
+      if (v.kind === 'git_commit') {
+        if (action.offset !== undefined || action.limit !== undefined) throw new Error('文本分页仅适用于文本版本');
+        return { ...v, content };
+      }
+      const points = Array.from(content);
+      const offset = action.offset ?? 0;
+      if (offset > points.length) throw new Error('读取位置超出版本长度');
+      const end = Math.min(points.length, offset + (action.limit ?? 2048));
+      return { ...v, content: points.slice(offset, end).join(''), ...(end < points.length && { nextOffset: end }) };
     }
     case 'ask_question': {
       if (action.to !== 'user') entity(plan.agents, action.to);

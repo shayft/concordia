@@ -267,7 +267,7 @@ export class Scheduler {
       goal: string;
       acceptance: string[];
       task: string;
-      inputs: Record<string, string>;
+      inputs: Record<string, string | { versionId: string; utf8Bytes: number; readWith: 'read_artifact' }>;
       questions: State['questions'];
       messages: State['messages'];
     };
@@ -291,7 +291,7 @@ export class Scheduler {
           (!filter.poolId || e.pool === filter.poolId),
       );
   }
-  claim(taskId: string, model?: ModelSnapshot, options: { deferCall?: boolean } = {}): Execution {
+  claim(taskId: string, model?: ModelSnapshot, options: { deferCall?: boolean; readArtifacts?: boolean } = {}): Execution {
     const result = this.write((s, log) => {
       const task = entity(s.tasks, taskId),
         plan = activePlan(s),
@@ -321,10 +321,15 @@ export class Scheduler {
         acceptance: plan.acceptance,
         task: task.title,
         inputs: Object.fromEntries(
-          Object.entries(inputs).map(([slot, ver]) => [
-            slot,
-            this.deps.storage.getContent(entity(s.versions, ver).contentRef),
-          ]),
+          Object.entries(inputs).map(([slot, ver]) => {
+            const version = entity(s.versions, ver);
+            const content = this.deps.storage.getContent(version.contentRef);
+            const utf8Bytes = new TextEncoder().encode(content).byteLength;
+            const inlineLimit = Math.min(4096, Math.floor((plan.maxContextTokens ?? 128_000) / 8));
+            return [slot, options.readArtifacts && version.kind === 'text' && utf8Bytes > inlineLimit
+              ? { versionId: ver, utf8Bytes, readWith: 'read_artifact' }
+              : content];
+          }),
         ),
         questions: s.questions.filter(
           (q) => q.to === agent.id && q.status === 'open' && (!task.replyFor || q.taskId === task.replyFor),

@@ -485,3 +485,25 @@ describe('真实 SQLite 与脚本化成员', () => {
     expect(scheduler.board().archives[0].id).toBe('meeting');
   });
 });
+
+it('大文本可按绑定版本和 Unicode 码点分页；不能取阅时保留内联或在派发前拒绝', () => {
+  scheduler.apply({...demoSpec(), maxContextTokens:3000});
+  const api = scheduler.claim('api', undefined, { deferCall:true });
+  expect(api.calls).toBe(0);
+  scheduler.reserveCall(api.id, 'not-sent');
+  scheduler.refundUnstartedCall(api.id,'wrong');
+  expect(scheduler.board().executions[0].calls).toBe(1);
+  scheduler.refundUnstartedCall(api.id,'not-sent');
+  scheduler.refundUnstartedCall(api.id,'not-sent');
+  expect(scheduler.board().executions[0].calls).toBe(0);
+  const content = '🙂接口'.repeat(2000);
+  const version = pub(api.id,'contract',content);
+  expect(() => scheduler.claim('ui')).toThrow(/上下文限制/);
+  const ui = scheduler.claim('ui', undefined, { readArtifacts:true, deferCall:true });
+  expect(scheduler.context(ui.id).inputs.contract).toEqual({ versionId:version.id, utf8Bytes:Buffer.byteLength(content), readWith:'read_artifact' });
+  const read = (offset:number) => scheduler.act(ui.id,{type:'read_artifact',slotId:'contract',versionId:version.id,offset,limit:4});
+  expect(read(0)).toMatchObject({content:'🙂接口🙂',nextOffset:4});
+  expect(read(4)).toMatchObject({content:'接口🙂接',nextOffset:8});
+  expect(scheduler.act(ui.id,{type:'read_artifact',slotId:'contract'})).toHaveProperty('nextOffset',2048);
+  expect(() => scheduler.act(ui.id,{type:'read_artifact',slotId:'contract',versionId:'unbound'})).toThrow(/绑定/);
+});

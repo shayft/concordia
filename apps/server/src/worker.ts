@@ -232,7 +232,17 @@ export class Worker {
     if (options.treeId)
       this.trees.executionTree(options.projectId!, taskId, options.treeId, this.treeScope());
     if (shared && shared.remaining < 1) throw new Error('本批调用用尽');
-    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined, { deferCall: !!binding });
+    const canRead = binding && (!binding.member.allowedActions || binding.member.allowedActions.includes('read_artifact'));
+    // API tools (including JSON actions) need one more approved request to use a read result.
+    // Final-output-only CLI actions have no return path to the model.
+    const canReceive = binding && ('baseUrl' in binding.connection
+      ? options.maxCalls > 1 && (task.maxCallsPerExecution ?? 2) > 1
+        && task.maxCalls - board.executions.filter(e => e.taskId === task.id).reduce((n, e) => n + e.calls, 0) > 1
+        && (board.spec?.maxCalls ?? 0) - board.executions.reduce((n, e) => n + e.calls, 0) > 1
+      : binding.connection.actionChannel === 'mcp' || (binding.connection.kind === 'codex' && binding.connection.actionChannel !== 'json'));
+    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined, {
+      deferCall: !!binding, readArtifacts: !!canRead && !!canReceive,
+    });
     if (shared) shared.remaining--;
     const job: LiveJob = {
       controller: new AbortController(),
