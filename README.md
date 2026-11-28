@@ -133,3 +133,9 @@ pnpm exec tsx apps/server/src/backup.ts restore "/absolute/backups/concordia-01"
 卸载前先审查未提交的工作，再通过 **代码与联调** 逐一清理平台创建的工作树，确认需要保留的分支，停止服务。核对路径后可移除 Concordia 的应用副本和专用数据目录。网关凭据按服务名 `Concordia` 在系统凭据界面逐项处理。保留原始项目及原生 CLI 的配置和认证。[完整卸载流程](docs/operations.md)
 
 [项目方案](Multi_Agent_Platform_Proposal.md) · [开发计划](DEVELOPMENT_PLAN.md) · [工程决策](docs/decisions.md)
+
+## 发布、许可与反馈
+
+源码按 MIT 许可发布，允许商用、修改和再分发，分发时须保留版权与许可声明。候选包提供提交标识、依赖锁、SHA-256 和 CycloneDX 依赖清单；三系统从同一份归档安装并演练回退。[MIT 许可](LICENSE) · [下载与核验源码候选](docs/release-artifacts.md)
+
+在 **活动记录** 可以检查模型调用批准、历史预算和对应的执行。个人账户的计费、企业受管设备策略和真实三成员交付各自有验收入口。[私有审计记录](docs/governance.md) · [个人设备验收](docs/verification/README.md) · [报告问题与安全联系方式](SECURITY.md)
