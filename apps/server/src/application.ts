@@ -1,3 +1,5 @@
+import { PlanningRequests } from './planning-requests.ts';
+import { planningRosterSchema } from '@concordia/protocol/planning';
 import { servePlanDraft } from './plan-draft.ts';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
@@ -17,6 +19,7 @@ import { openWorktrees, serveWorktrees } from './worktrees.ts';
 import { acceptedCommits } from './worktrees/acceptance.ts';
 import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
+import { registerGovernance } from './governance.ts';
 import { serveAuditExport } from './audit.ts';
 import { eventPage, historyQuery, streamHistory } from './event-history.ts';
 import { serveExecutionCosts } from './execution-cost.ts';
@@ -57,7 +60,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   const assertRecovered = () => {
     if (recovery.report().unresolved.length) throw new Error('上次执行的进程尚待人工核对');
   };
-  db.prepare("UPDATE plan_requests SET status='interrupted',finished=? WHERE status='running'").run(
+  db.prepare("UPDATE plan_requests SET status='interrupted',phase='finished',finished=? WHERE status='running'").run(
     Date.now(),
   );
   const trees = openWorktrees(directory, syncConflict, undefined, (scope, project, inputs) =>
@@ -73,7 +76,8 @@ export async function registerApplication(app: FastifyInstance, path: string) {
         now: Date.now,
         nextId: randomUUID,
       });
-      const worker = new Worker(scheduler, db, trees, directory, id, () => {
+      const requests = new PlanningRequests(db, id, dir);
+      const worker = new Worker(scheduler, db, trees, directory, id, requests, () => {
         const address = app.server.address();
         if (!address || typeof address === 'string') throw new Error('本地服务未监听');
         return 'http://127.0.0.1:' + address.port;
@@ -149,6 +153,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     current.scheduler.board().spec ? current.worker.treeScope() : undefined,
     (id) => current.worker.revokeProjectWrites(id),
   );
+  registerGovernance(app, db, () => current.id);
   serveAuditExport(app, () => current.scheduler.board());
   serveExecutionCosts(app, () => current.scheduler.board().executions);
   const delivery = serveDelivery(app, directory, assertRecovered);
@@ -384,17 +389,41 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     current.scheduler.sendAsUser(p.id, message);
     return { ok: true };
   });
+  const planningPath = '/api/workspaces/:workspace/plan-requests';
+  function planningWorker(workspace: string) {
+    if (workspace !== current.id) throw new Error('请选择所属工作区');
+    return current.worker;
+  }
+  app.get<{ Params: { workspace: string } }>(planningPath, async (req, reply) => {
+    try { return planningWorker(req.params.workspace).requests.list(); }
+    catch (error) { return rejected(reply, error); }
+  });
+  app.get<{ Params: { workspace: string; id: string } }>(planningPath + '/:id/result', async (req, reply) => {
+    try {
+      const worker = planningWorker(req.params.workspace);
+      const spec = worker.requests.result(req.params.id);
+      // Old approved roster entries may since have been disabled. The original draft
+      // remains readable; applying it still requires validation against today's catalog.
+      try { return { spec, preview: worker.scheduler.preview(checkedSpec(spec)) }; }
+      catch { return { spec, preview: null }; }
+    } catch (error) { return rejected(reply, error); }
+  });
+  post(planningPath + '/:id/cancel', empty, (_, p) => planningWorker(p.workspace).cancelPlanning(p.id));
   post(
     '/api/plans/generate',
     z.strictObject({
       goal: text,
       agentId: identifier,
+      members: planningRosterSchema,
+      requestKey: z.uuid().optional(),
+      background: z.boolean().optional(),
       approved: approval,
       confirmUnmanaged: z.boolean().optional(),
       inspectionId: z.string().max(128).optional(),
     }),
     async (input) => {
       assertRecovered();
+      if (input.background && !input.requestKey) throw new Error('后台规划需要请求标识');
       return current.worker.generate(input.goal, input.agentId, input, raw => ({
         ...checkedSpec(raw), id: 'plan-' + randomUUID(),
       }));

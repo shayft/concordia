@@ -4,13 +4,15 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Scheduler } from '@concordia/core/workflow';
 import type { Connection, CatalogModel, Member } from '@concordia/protocol/connections';
+import { configSnapshot, fingerprint, recordDecision, withApproval } from './governance.ts';
+import { planningRoster } from './planning-roster.ts';
 import { modelEndpoint } from '@concordia/providers/model-endpoint';
 import { getCatalog, resolveMember, providerConfig } from './connections.ts';
 
 const id = z.string().min(1).max(180);
 const querySchema = z.strictObject({
   purpose: z.enum(['task', 'dispatch', 'plan', 'connection-test', 'member-test']),
-  id: id.optional(), modelId: id.optional(), projectId: id.optional(), treeId: id.optional(),
+  id: id.optional(), roster: z.string().max(3900).optional(), modelId: id.optional(), projectId: id.optional(), treeId: id.optional(),
 });
 type Selection = z.infer<typeof querySchema>;
 type Binding = { connection: Connection; model?: CatalogModel | null; member?: Member; poolId: string; poolLimit: number };
@@ -26,7 +28,8 @@ function selectionFor(request: FastifyRequest): Selection | undefined {
       if (body.mode !== 'live') return;
       return { purpose: 'task', id, projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         treeId: typeof body.treeId === 'string' ? body.treeId : undefined };
-    case '/api/plans/generate': return { purpose: 'plan', id: String(body.agentId) };
+    case '/api/plans/generate': return { purpose: 'plan', id: String(body.agentId),
+      roster: Array.isArray(body.members) ? body.members.join(',') : undefined };
     case '/api/dispatch': return { purpose: 'dispatch' };
     case '/api/connections/:id/test': return { purpose: 'connection-test', id, modelId };
     case '/api/members/:id/test': return { purpose: 'member-test', id, modelId };
@@ -62,6 +65,7 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
       if (selection.modelId && selection.modelId !== binding.model?.id) throw new Error();
       bindings.push(binding);
     }
+    const roster = selection.purpose === 'plan' ? planningRoster(db, selection.roster?.split(',')) : undefined;
     const route = bindings.map(({ connection: c, model, member, poolId }) => ({
       connection: c.name + ' (' + c.id + ')', protocol: c.kind, member: member?.name,
       individual: selection.purpose === 'dispatch' && !('baseUrl' in c),
@@ -73,12 +77,28 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
       ...(c.kind === 'chat-completions' && { outputLimit: { field: c.outputTokenField ?? 'max_completion_tokens', tokens: c.maxOutputTokens ?? 1024 } }),
       pool: poolId,
     }));
+    const accounts = new Map<string, Set<string>>([
+      ['global', new Set(['all'])], ['workspace', new Set([current.id])],
+      ['connection', new Set(bindings.map(b => b.connection.id))], ['pool', new Set(bindings.map(b => b.poolId))],
+      ['member', new Set(bindings.flatMap(b => b.member ? [b.member.id] : []))],
+    ]);
+    const limits = db.prepare('SELECT * FROM budget_limits ORDER BY scope,id').all()
+      .filter(l => accounts.get(String(l.scope))?.has(String(l.id)));
+    const policy = {
+      revision: board.revision, limits,
+      routes: bindings.map((b,i) => ({
+        connection: configSnapshot(b.connection), member: b.member && configSnapshot(b.member),
+        model: b.model && configSnapshot(b.model), pool: b.poolId, poolLimit: b.poolLimit,
+        destinationDigest: fingerprint(route[i].destination),
+      })),
+      selectedMembers: roster?.map(m => m.id),
+    };
     // Zod normalises key order for the GET snapshot and its matching POST selection.
     const stamp = createHash('sha256').update(JSON.stringify({
       workspace: current.id, generation: current.generation, plan: board.spec?.id, revision: board.revision,
-      selection, bindings, agents: board.agents.map((a) => [a.id, a.role]),
+      selection, bindings, roster, limits, agents: board.agents.map((a) => [a.id, a.role]),
     })).digest('hex');
-    return { stamp, routes: route, revision: board.revision,
+    return { stamp, routes: route, roster, policy, revision: board.revision,
       simulated: selection.purpose === 'dispatch' ? board.agents.filter((a) => a.connection.startsWith('mock-')).map((a) => a.name) : [],
     };
   }
@@ -92,12 +112,21 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
     route.handler = function (req, reply) {
       const selection = selectionFor(req);
       if (selection) {
+        let checked;
         try {
+          checked = preview(selection);
           const expected = req.headers['x-concordia-approval'];
-          if (typeof expected !== 'string' || expected !== preview(selection).stamp) throw new Error();
+          if (typeof expected !== 'string' || expected !== checked.stamp) throw new Error();
         } catch {
+          recordDecision(db, 'approval.rejected', workspace().id, { purpose: selection.purpose });
           return reply.code(409).send({ error: '调用配置或计划已改变，请重新查看调用信息后批准。' });
         }
+        const maxCalls = (req.body as { maxCalls?: unknown }).maxCalls;
+        const id = recordDecision(db, 'approval.granted', workspace().id, {
+          purpose: selection.purpose, stamp: checked.stamp, policy: checked.policy,
+          maxCalls: typeof maxCalls === 'number' && Number.isSafeInteger(maxCalls) ? maxCalls : 1,
+        });
+        return withApproval(id, () => handler.call(this, req, reply));
       }
       return handler.call(this, req, reply);
     };

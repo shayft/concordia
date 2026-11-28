@@ -1,3 +1,4 @@
+import { currentApprovalId, withApproval } from './governance.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Scheduler, Execution, Failure } from '@concordia/core/workflow';
@@ -25,6 +26,8 @@ import {
   settleBudget,
   suspendPool,
 } from './budget-ledger.ts';
+import type { PlanningRequests } from './planning-requests.ts';
+import { planningRoster } from './planning-roster.ts';
 import { safeDataDirectory } from './data-directory.ts';
 import type { WorktreeService } from './worktrees/service.ts';
 
@@ -50,6 +53,7 @@ type LiveJob = {
   project?: string;
   tree?: string;
   firstDispatched?: boolean;
+  planning?: boolean;
   allowed?: ReadonlySet<PlatformAction['type']>;
   finished?: Promise<void>;
 };
@@ -58,7 +62,7 @@ const fileActions = new Set(['read_file', 'write_file', 'commit_artifact', 'run_
 export class Worker {
   readonly mcp = new ExecutionMcpServer((id, action) => this.dispatch(id, action));
   private jobs = new Map<string, LiveJob>();
-  private batch?: { remaining: number; routes: Map<string, string> };
+  private batch?: { remaining: number; routes: Map<string, string>; approvalId?: string };
   private scheduling = false;
   private stopping = false;
 
@@ -68,6 +72,7 @@ export class Worker {
     private trees: WorktreeService,
     private directory: string,
     private workspace: string,
+    readonly requests: PlanningRequests,
     private origin: () => string,
   ) {
     // Board and catalog have separate SQLite files. A crash between the two
@@ -243,6 +248,9 @@ export class Worker {
     const exec = this.scheduler.claim(taskId, binding?.model ?? undefined, {
       deferCall: !!binding, readArtifacts: !!canRead && !!canReceive,
     });
+    const approvalId = currentApprovalId();
+    if (approvalId) this.db.prepare("INSERT INTO approved_executions(execution,approval_id,status) VALUES(?,?,'running')")
+      .run(exec.id, approvalId);
     if (shared) shared.remaining--;
     const job: LiveJob = {
       controller: new AbortController(),
@@ -305,6 +313,10 @@ export class Worker {
       .finally(() => {
         this.mcp.close(exec.id);
         if (shared && binding && !job.firstDispatched) shared.remaining++;
+        if (approvalId) {
+          const outcome = this.scheduler.board().executions.find(e => e.id === exec.id)?.status ?? 'unknown';
+          this.db.prepare('UPDATE approved_executions SET status=? WHERE execution=?').run(outcome,exec.id);
+        }
         this.jobs.delete(exec.id);
         this.wake();
       });
@@ -446,6 +458,7 @@ export class Worker {
       },
     });
     const reservation = reserveBudget(this.db, this.budgetScope(job), 'preparing');
+    let success = false;
     let dispatchFailure: {error: unknown} | undefined;
     let usage: { inputTokens?: number; outputTokens?: number } | undefined;
     try {
@@ -483,13 +496,14 @@ export class Worker {
           emit(event);
         },
       );
+      success = true;
     } catch (error) {
       if (dispatchFailure) throw dispatchFailure.error;
       if (error instanceof CliDiagnosticError && ['rate_limit', 'budget'].includes(error.kind))
         suspendPool(this.db, job.pool);
       throw error;
     } finally {
-      settleBudget(this.db, reservation, usage);
+      settleBudget(this.db, reservation, usage, job.controller.signal.aborted ? 'cancelled' : success ? 'success' : 'error');
     }
   }
 
@@ -502,7 +516,7 @@ export class Worker {
       if (selected.connection.id !== agent.connection) throw new Error('计划与成员路由不符');
       routes.set(agent.id, JSON.stringify(selected));
     }
-    this.batch = { remaining: maxCalls, routes };
+    this.batch = { remaining: maxCalls, routes, approvalId: currentApprovalId() };
     this.wake();
     return { approvedCalls: maxCalls };
   }
@@ -528,11 +542,11 @@ export class Worker {
             }
             if (!('baseUrl' in route.connection)) continue;
           }
-          this.start(
+          withApproval(batch.approvalId, () => this.start(
             task.id,
             { mode: fake ? 'simulation' : 'live', approved: true, maxCalls: batch.remaining },
             batch,
-          );
+          ));
         } catch {
           /* A disabled, saturated or waiting connection does not block other members. */
         }
@@ -559,7 +573,7 @@ export class Worker {
 
   cancelTask(id: string) {
     for (const [execution, job] of this.jobs)
-      if (job.task === id) {
+      if (!job.planning && job.task === id) {
         this.mcp.close(execution);
         job.controller.abort();
       }
@@ -586,82 +600,104 @@ export class Worker {
     this.scheduler.recover();
   }
 
+  async cancelPlanning(id: string) {
+    const request = this.requests.get(id);
+    if (request.status !== 'running') return request;
+    const job = this.jobs.get(id);
+    if (!job || !job.planning) throw new Error('规划执行需要重新核对');
+    this.mcp.close(id);
+    job.controller.abort();
+    await job.finished;
+    return this.requests.get(id);
+  }
+
   async generate(
     goal: string,
     agentId: string,
-    options: Pick<Options, 'inspectionId' | 'confirmUnmanaged'>,
+    options: Pick<Options, 'inspectionId' | 'confirmUnmanaged'> & { members: string[]; requestKey?: string; background?: boolean },
     validate: (raw: unknown) => WorkflowSpec,
   ) {
-    const binding = resolveMember(this.db, agentId);
-    this.checkConnection(binding);
-    const id = randomUUID(),
-      job: LiveJob = {
-        controller: new AbortController(),
-        task: 'plan-' + id,
-        member: agentId,
-        connection: binding.connection.id,
-        pool: binding.poolId,
-      };
     if (this.stopping) throw new Error('服务正在关闭');
-    const catalog = getCatalog(this.db);
-    const prompt = JSON.stringify({
-      goal,
-      members: catalog.members
-        .filter((m) => m.enabled)
-        .map((m) => ({ id: m.id, name: m.name, connection: m.connectionId, role: m.role })),
-      schema: z.toJSONSchema(workflowSpecSchema, { io: 'input', unrepresentable: 'any' }),
-      instruction: '根据用户目标生成一份符合 schema 的工作流，只返回单个 JSON 对象。不要执行任务。',
-    });
-    this.db
-      .prepare('INSERT INTO plan_requests(id,workspace,member,connection,started,status) VALUES(?,?,?,?,?,?)')
-      .run(id, this.workspace, agentId, binding.connection.id, Date.now(), 'running');
-    this.jobs.set(id, job);
-    let status = 'failed';
-    const pending = (async () => {
-      let text = '';
-      if ('baseUrl' in binding.connection) {
-        const provider = this.provider(binding, job);
-        let done = false;
-        for await (const event of provider.stream([{ role: 'user', content: prompt }], [], {
-          signal: job.controller.signal,
-        })) {
-          if (event.type === 'text_delta') text += event.text;
-          if (event.type === 'completed') done = true;
-          if (event.type === 'error') throw new ModelCallError(event.kind, event.message);
-          if (text.length > 131072) throw new Error('计划过大');
-        }
-        if (!done) throw new Error('计划响应未完成');
-      } else
-        await this.cli(
-          binding,
-          job,
-          id,
-          prompt,
-          options,
-          (e) => {
-            if (e.type === 'text_delta') text += e.text;
-          },
-          true,
-        );
-      job.controller.signal.throwIfAborted();
-      const spec = validate(JSON.parse(text.trim()));
-      for (const agent of spec.agents) {
-        const selected = resolveMember(this.db, agent.id);
-        if (selected.connection.id !== agent.connection) throw new Error('计划成员连接与配置不符');
-      }
-      status = 'proposed';
+    const binding = resolveMember(this.db, agentId);
+    const roster = planningRoster(this.db, options.members);
+    const hash = createHash('sha256').update(JSON.stringify([goal, binding, roster, options.inspectionId, options.confirmUnmanaged])).digest('hex');
+    const previous = options.requestKey && this.requests.byKey(options.requestKey);
+    const respond = async (id: string) => {
+      if (options.background) return this.requests.get(id);
+      await this.jobs.get(id)?.finished;
+      const spec = this.requests.result(id);
       return { spec, preview: this.scheduler.preview(spec) };
-    })();
-    job.finished = pending.then(
-      () => {},
-      () => {},
-    );
-    try {
-      return await pending;
-    } finally {
-      this.jobs.delete(id);
-      this.mcp.close(id);
-      this.db.prepare('UPDATE plan_requests SET status=?,finished=? WHERE id=?').run(status, Date.now(), id);
+    };
+    if (previous) {
+      if (previous.request_hash !== hash) throw new Error('此规划请求标识已关联其他内容');
+      return respond(previous.id);
     }
+    this.checkConnection(binding);
+    const id = randomUUID();
+    const job: LiveJob = {
+      controller: new AbortController(), task: 'plan-' + id, planning: true,
+      member: agentId, connection: binding.connection.id, pool: binding.poolId,
+    };
+    const prompt = JSON.stringify({
+      goal, members: roster,
+      schema: z.toJSONSchema(workflowSpecSchema, { io: 'input', unrepresentable: 'any' }),
+      instruction: '根据用户目标生成一份符合 schema 的工作流，只返回单个 JSON 对象。只可从名单选择岗位，保留标识、名称与连接。不要执行任务。',
+    });
+    this.requests.start(id, agentId, binding.connection.id, roster.map((m) => m.id), options.requestKey, hash);
+    this.jobs.set(id, job);
+    let bytes = 0;
+    const run = async () => {
+      let text = '';
+      let lastProgress = 0;
+      const signal = job.controller.signal;
+      function append(delta: string) {
+        signal.throwIfAborted();
+        bytes += Buffer.byteLength(delta);
+        if (bytes > 128 * 1024) throw new Error('计划过大');
+        text += delta;
+      }
+      const receive = (delta: string) => {
+        append(delta);
+        if (bytes && (!lastProgress || bytes - lastProgress >= 4096)) {
+          this.requests.progress(id, bytes);
+          lastProgress = bytes;
+        }
+      };
+      const sent = () => this.requests.sent(id);
+      try {
+        signal.throwIfAborted();
+        if ('baseUrl' in binding.connection) {
+          let complete = false;
+          for await (const event of this.provider(binding, job).stream([{ role: 'user', content: prompt }], [], { signal, onDispatch: sent })) {
+            signal.throwIfAborted();
+            if (event.type === 'text_delta') receive(event.text);
+            if (event.type === 'completed') complete = true;
+            if (event.type === 'error') throw new ModelCallError(event.kind, event.message);
+          }
+          if (!complete) throw new Error('计划响应未完成');
+        } else {
+          await this.cli(binding, job, id, prompt, options, (event) => {
+            if (event.type === 'text_delta') receive(event.text);
+          }, true, sent);
+        }
+        signal.throwIfAborted();
+        const parsed = workflowSpecSchema.parse(JSON.parse(text.trim()));
+        for (const agent of parsed.agents) {
+          const approved = roster.find((member) => member.id === agent.id);
+          if (!approved || approved.connection !== agent.connection || approved.name !== agent.name)
+            throw new Error('返回的计划岗位与批准名单不符');
+        }
+        this.requests.finish(id, 'proposed', bytes, validate(parsed));
+      } catch {
+        this.requests.finish(id, signal.aborted ? (this.stopping ? 'interrupted' : 'cancelled') : 'failed', bytes);
+      } finally {
+        this.mcp.close(id);
+        this.jobs.delete(id);
+      }
+    };
+    // A background request has no waiting HTTP handler. Retain an unresolved write in
+    // memory and try to persist an interruption on the next status read or on startup.
+    job.finished = Promise.resolve().then(run).catch(() => this.requests.rememberWriteFailure(id, bytes));
+    return respond(id);
   }
 }

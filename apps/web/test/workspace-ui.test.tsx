@@ -963,3 +963,43 @@ it('在第二个网关验证框添加首个模型，取消或保存均回到原�
   expect(button('批准一次真实调用').disabled).toBe(false);
   expect(requests.filter((r) => r.method === 'POST').map((r) => r.path)).toEqual(['/api/models']);
 });
+
+it('负责人选择不会自动选取参与岗位，只有用户勾选的岗位会进入批准请求', async () => {
+  const members = ['lead', 'editor', 'other'].map(id => ({ id, name: id, role: id, enabled: true, connectionId: 'g' }));
+  serve = path => path === '/api/catalog' ? { members, connections: [{ id: 'g', kind: 'chat-completions' }], models: [], pools: [] } : [];
+  await render(<PlansPage openBoard={() => {}}/>);
+  for (const [selector, value] of [['select[aria-label="草案来源"]', 'lead'], ['#lead', 'lead']]) {
+    const element = container.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => { element.value = value; element.dispatchEvent(new window.Event('change', { bubbles: true })); });
+  }
+  expect(container.querySelectorAll('fieldset input:checked')).toHaveLength(0);
+  expect(requests.filter(r => r.path.includes('approval-route?'))).toHaveLength(0);
+  await click([...container.querySelectorAll<HTMLLabelElement>('fieldset label')].find(label => label.textContent.trim() === 'editor')!.querySelector('input')!);
+  const preview = requests.find(r => r.path.includes('approval-route?'));
+  expect(new URL(preview!.path, window.location.origin).searchParams.get('roster')).toBe('editor');
+  expect(requests.some(r => r.path.endsWith('plans/generate'))).toBe(false);
+});
+
+it('重新打开规划页只读原请求状态和进度，取消，只针对所选请求', async () => {
+  const { PlanningHistory } = await import('../src/planning-history.tsx');
+  let status = 'running';
+  let listCount = 0;
+  const path = '/api/workspaces/office/plan-requests';
+  serve = requested => {
+    if (requested === path) {
+      listCount++;
+      return [{ id: 'one', member: 'lead', memberIds: ['editor'], started: 1, phase: 'receiving', progressBytes: 42, status }];
+    }
+    if (requested === path + '/one/cancel') { status = 'cancelled'; return { status }; }
+    throw new Error('无此测试请求');
+  };
+  await render(<PlanningHistory workspace="office" refreshKey={0} onLoad={() => {}}/>);
+  expect(container.textContent).toContain('已记录回复 42 字节');
+  await render(<div/>);
+  await render(<PlanningHistory workspace="office" refreshKey={0} onLoad={() => {}}/>);
+  expect(listCount).toBe(2);
+  expect(requests.every(r => r.method === 'GET')).toBe(true);
+  await click(button('取消本次规划'));
+  expect(container.textContent).toContain('已取消');
+  expect(requests.filter(r => r.method === 'POST').map(r => r.path)).toEqual([path + '/one/cancel']);
+});

@@ -1,4 +1,5 @@
 import { ApprovalDetails, useApproval } from './approval.tsx';
+import { PlanningHistory } from './planning-history.tsx';
 import { usePlanDraft } from './plan-draft.ts';
 import { useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
@@ -54,12 +55,15 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
   const draft = saved.view.text;
   const [goal, setGoal] = useState('');
   const [agent, setAgent] = useState('');
+  const [roster, setRoster] = useState<string[]>([]);
   const [members, setMembers] = useState<string[]>([]);
   const [unmanaged, setUnmanaged] = useState(false);
   const [inspection, setInspection] = useState<Inspection>();
   const [preview, setPreview] = useState<PlanPreview>();
   const action = useAction();
   const draftRevision = useRef(0);
+  const [planningRefresh, setPlanningRefresh] = useState(0);
+  const submission = useRef<{ signature: string; key: string } | undefined>(undefined);
   function invalidatePreview() {
     draftRevision.current++;
     setPreview(undefined);
@@ -72,20 +76,24 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
   const member = enabled.find((m) => m.id === agent);
   const connection = catalog.data?.connections.find((c) => c.id === member?.connectionId);
   const cli = connection && !('baseUrl' in connection);
-  const approval = useApproval(source === 'lead' && member ? { purpose: 'plan', id: member.id } : undefined);
+  const approval = useApproval(source === 'lead' && member && roster.length ? { purpose: 'plan', id: member.id, roster: roster.join(',') } : undefined);
   const group = ['meeting', 'review', 'parallel'].includes(source);
   async function load() {
     const revision = draftRevision.current;
     if (source === 'lead') {
-      const result = await api<{ spec: WorkflowSpec; preview: PlanPreview }>('plans/generate', 'POST', {
-        goal,
-        agentId: agent,
-        approved: true,
+      const input = {
+        goal, agentId: agent, members: roster, approved: true, background: true,
         ...(cli && { inspectionId: inspection?.inspectionId, confirmUnmanaged: unmanaged }),
-      }, undefined, approval.preview?.stamp);
-      if (revision !== draftRevision.current) return;
-      edit(JSON.stringify(result.spec, null, 2));
-      setPreview(result.preview);
+      };
+      const signature = JSON.stringify([input, approval.preview?.stamp]);
+      if (submission.current?.signature !== signature)
+        submission.current = { signature, key: crypto.randomUUID() };
+      try {
+        await api('plans/generate', 'POST', { ...input, requestKey: submission.current.key }, undefined, approval.preview?.stamp);
+        submission.current = undefined;
+      } finally {
+        setPlanningRefresh((value) => value + 1);
+      }
     } else {
       const spec =
         source === 'revise'
@@ -199,6 +207,15 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
             </p>
           </>
         )}
+        {source === 'lead' && <fieldset>
+          <legend>允许规划的岗位</legend>
+          <p className="help">所选岗位的标识、名称、职责和连接标识将随目标发送给负责人。最多可选择 30 项。</p>
+          {enabled.map((m) => <label key={m.id} className="check">
+            <input type="checkbox" checked={roster.includes(m.id)} disabled={!roster.includes(m.id) && roster.length >= 30}
+              onChange={(event) => { setRoster(event.target.checked ? [...roster, m.id].sort() : roster.filter((id) => id !== m.id)); invalidatePreview(); }}/>
+            {m.name}
+          </label>)}
+        </fieldset>}
         {source === 'lead' && cli && (
           <>
             <p className="help">
@@ -234,14 +251,14 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
             {inspection && <InspectionPanel result={inspection} />}
           </>
         )}
-        {source === 'lead' && member && <ApprovalDetails approval={approval}/>}
+        {source === 'lead' && member && roster.length > 0 && <ApprovalDetails approval={approval}/>}
         {source !== 'manual' && (
           <div className="toolbar">
             <button
               disabled={
                 action.busy || saved.view.status === 'loading' ||
                 (source === 'lead' &&
-                  (!agent || !approval.preview ||
+                  (!agent || !roster.length || !approval.preview ||
                     !goal.trim() ||
                     (cli && !inspection) ||
                     (connection?.kind === 'claude' && !unmanaged))) ||
@@ -255,6 +272,11 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
           </div>
         )}
       </section>
+      {workspace && <PlanningHistory workspace={workspace} refreshKey={planningRefresh} onLoad={({ spec, preview }) => {
+        setSource('manual');
+        edit(JSON.stringify(spec, null, 2));
+        setPreview(preview ?? undefined);
+      }}/>}
       <section className="panel">
         <h2>工作流 spec</h2>
         {workspace && <div className="help" role="status">

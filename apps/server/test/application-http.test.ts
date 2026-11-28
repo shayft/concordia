@@ -167,7 +167,7 @@ it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计
   });
   expect(hostStatus).toBe(403);
   await configure(ui);
-  const goal={goal:spec.goal,agentId:'lead'};
+  const goal={goal:spec.goal,agentId:'lead',members:['lead']};
   expect((await ui.post('/api/plans/generate',goal)).status).toBe(400);
   expect(api.seen).toHaveLength(0);
   api.queue.push(res=>finish(res,spec));
@@ -224,7 +224,7 @@ it('仅支持 JSON 的网关从持久化配置完成连接验证、生成计划�
   api.queue.push(send(JSON.stringify(spec)));
   const generated = await ui.post('/api/plans/generate', {
     goal: spec.goal,
-    agentId: 'lead',
+    agentId: 'lead', members: ['lead'],
     approved: true,
   });
   expect(generated.status).toBe(200);

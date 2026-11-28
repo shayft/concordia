@@ -45,7 +45,7 @@ it('两个窗口编辑既有绑定后，五个真实入口均要求重新核对�
     const cases = [
       ['task&id=write', '/api/tasks/write/run', { mode: 'live', approved: true }],
       ['dispatch', '/api/dispatch', { approved: true, maxCalls: 1 }],
-      ['plan&id=writer', '/api/plans/generate', { agentId: 'writer', goal: '提纲', approved: true }],
+      ['plan&id=writer&roster=writer', '/api/plans/generate', { agentId: 'writer', members: ['writer'], goal: '提纲', approved: true }],
       ['member-test&id=writer', '/api/members/writer/test', { approved: true }],
       ['connection-test&id=g&modelId=m', '/api/connections/g/test', { approved: true, modelId: 'm' }],
     ] as const;

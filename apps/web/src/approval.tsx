@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
+import type { PlanningMember } from '@concordia/protocol/planning';
 import { api } from './api.ts';
 import { Notice } from './ui.tsx';
 
 type Route = { connection: string; protocol: string; member?: string; destination: string; model: string; credentials: string[]; permissions: string; pool: string; individual?: boolean; outputLimit?: {field: string; tokens: number} };
-interface Preview { stamp: string; routes: Route[]; simulated?: string[]; revision: number }
-interface Selection { purpose: 'task' | 'dispatch' | 'plan' | 'connection-test' | 'member-test'; id?: string; modelId?: string; projectId?: string; treeId?: string }
+interface Preview { stamp: string; routes: Route[]; simulated?: string[]; roster?: PlanningMember[]; revision: number }
+interface Selection { purpose: 'task' | 'dispatch' | 'plan' | 'connection-test' | 'member-test'; id?: string; roster?: string; modelId?: string; projectId?: string; treeId?: string }
 
 export function useApproval(selection?: Selection) {
   const query = new URLSearchParams();
@@ -33,6 +34,10 @@ export function ApprovalDetails({ approval }: { approval: ReturnType<typeof useA
       {route.outputLimit && <><br/>输出上限 {route.outputLimit.field} = {route.outputLimit.tokens}</>}
       {route.credentials.length > 0 && <><br/>凭据引用 {route.credentials.join('、')}</>}
     </p>)}
+    {approval.preview?.roster && <details open>
+      <summary>发送给负责人的岗位资料（{approval.preview.roster.length}）</summary>
+      <ul>{approval.preview.roster.map((m) => <li key={m.id}>{m.name}（{m.id}） · {m.role} · 连接 {m.connection}</li>)}</ul>
+    </details>}
     {!!approval.preview?.simulated?.length && <p>模拟成员 {approval.preview.simulated.join('、')}</p>}
     {approval.preview && <p>计划修订 {approval.preview.revision}</p>}
     <Notice error={approval.error}/>
