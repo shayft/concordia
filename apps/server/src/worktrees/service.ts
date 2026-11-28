@@ -147,6 +147,11 @@ export class WorktreeService {
     }
   }
 
+  async drainCommands(projectId: string) {
+    await Promise.all([...this.running].filter(([key]) => this.tree(key).projectId === projectId)
+      .map(([,command]) => command.done));
+  }
+
   async cancelAll(): Promise<void> {
     const active = [...this.running.values()];
     for (const item of active) item.controller.abort();

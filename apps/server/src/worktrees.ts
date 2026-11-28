@@ -9,6 +9,7 @@ export function serveWorktrees(
   service: WorktreeService,
   assertCanExecute?: () => void,
   getScope?: () => string | undefined,
+  revokeProjectWrites?: (id: string) => Promise<void>,
 ) {
   const treeId = z.uuid();
   const tree = z.strictObject({ treeId });
@@ -29,7 +30,18 @@ export function serveWorktrees(
     });
   }
   app.get('/api/worktrees/state', async () => ({ ...service.state(), activeScope: getScope?.() ?? null }));
-  post('projects', projectSchema, (value) => service.configure(value));
+  const revoking = new Set<string>();
+  post('projects', projectSchema, async (value) => {
+    if (revoking.has(value.id)) throw new Error('项目写入正在撤销，请等待原执行退出。');
+    const config = service.configure(value);
+    if (config.writeEnabled) return config;
+    revoking.add(config.id);
+    try {
+      // The persisted flag closes the gate for subsequent starts before any await.
+      await Promise.all([service.drainCommands(config.id), revokeProjectWrites?.(config.id)]);
+      return config;
+    } finally { revoking.delete(config.id); }
+  });
   post('member', z.strictObject({ projectId: z.string(), taskId: z.string() }), (v) =>
     service.member(v.projectId, v.taskId, getScope?.()),
   );
@@ -48,6 +60,9 @@ export function serveWorktrees(
     return { cancelled: true };
   });
   post('review-merge', tree, (v) => service.reviewMerge(v.treeId));
-  post('approve-merge', approval, (v) => service.approveMerge(v.id));
+  post('approve-merge', approval, (v) => {
+    assertCanExecute?.();
+    return service.approveMerge(v.id);
+  });
   post('remove', tree, (v) => service.remove(v.treeId));
 }

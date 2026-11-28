@@ -499,6 +499,23 @@ export class Worker {
       if (!batch.remaining || !this.jobs.size) this.batch = undefined;
     });
   }
+  async revokeProjectWrites(projectId: string) {
+    const active = [...this.jobs].filter(([,job]) => job.project === projectId && job.tree &&
+      (job.allowed?.has('write_file') || job.allowed?.has('commit_artifact') || job.allowed?.has('run_project_command')));
+    for (const [execution, job] of active) {
+      this.mcp.close(execution);
+      job.controller.abort();
+    }
+    try {
+      for (const [execution, job] of active) {
+        if (this.scheduler.board().tasks.some(task => task.id === job.task && task.active === execution))
+          this.scheduler.control(job.task, 'cancel');
+      }
+    } finally {
+      await Promise.allSettled(active.map(([,job]) => job.finished));
+    }
+  }
+
   cancelTask(id: string) {
     for (const [execution, job] of this.jobs)
       if (job.task === id) {

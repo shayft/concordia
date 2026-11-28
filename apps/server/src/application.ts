@@ -145,6 +145,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   });
   serveWorktrees(app, trees, assertRecovered, () =>
     current.scheduler.board().spec ? current.worker.treeScope() : undefined,
+    (id) => current.worker.revokeProjectWrites(id),
   );
   serveAuditExport(app, () => current.scheduler.board());
   serveExecutionCosts(app, () => current.scheduler.board().executions);
