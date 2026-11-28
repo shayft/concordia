@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, setActiveWorkspace, useAction, useResource } from './api.ts';
+import { subscribeEvents } from './events.ts';
 import { CatalogPage } from './catalog.tsx';
 import { BoardPage } from './board.tsx';
 import { PlansPage } from './plans.tsx';
@@ -33,7 +34,7 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   useEffect(() => {
-    const source = new EventSource('/api/events');
+    if (!data?.active) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const notify = () => {
       if (timer) return;
@@ -42,15 +43,13 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
         setEvents((n) => n + 1);
       }, 90);
     };
-    source.onopen = () => {
+    const close = subscribeEvents(() => {
       setOnline(true);
       void refresh();
       notify();
-    };
-    source.onmessage = notify;
-    source.onerror = () => setOnline(false);
+    }, notify, () => setOnline(false));
     return () => {
-      source.close();
+      close();
       clearTimeout(timer);
     };
   }, [data?.active, refresh]);

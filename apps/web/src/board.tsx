@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { Scheduler } from '../../../packages/core/src/workflow.ts';
-import { api, useAction, useResource } from './api.ts';
+import { api, browserFetch, useAction, useResource } from './api.ts';
 import { DisabledMcpServers, Empty, Field, Modal, Notice } from './ui.tsx';
 import type { Worktrees } from './worktrees.tsx';
 
@@ -47,7 +47,7 @@ function TaskProgress({ taskId }: { taskId: string }) {
     const controller = new AbortController();
     const load = async () => {
       try {
-        const response = await fetch('/api/tasks/' + encodeURIComponent(taskId) + '/progress', {
+        const response = await browserFetch('/api/tasks/' + encodeURIComponent(taskId) + '/progress', {
           credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
         });
         if (!response.ok) throw new Error('无法读取任务进度（HTTP ' + response.status + '）');

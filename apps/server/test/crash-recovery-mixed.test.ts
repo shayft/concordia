@@ -1,3 +1,4 @@
+import { browserSession } from './browser-session.ts';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
@@ -74,26 +75,16 @@ async function isolatedServer(web: string, data: string) {
     once(child, 'message').then(([url]) => new URL(String(url))),
     died.then(() => Promise.reject(new Error('临时服务提前退出'))),
   ]);
-  const exchange = await fetch(link.origin + '/session', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', origin: link.origin },
-    body: JSON.stringify({ token: link.hash.slice(1) }),
-  });
-  expect(exchange.status).toBe(204);
-  const headers = {
-    cookie: exchange.headers.get('set-cookie')!.split(';')[0],
-    origin: link.origin,
-    'content-type': 'application/json',
-  };
+  const client = await browserSession(link);
   return {
     kill,
     async post(path: string, body: unknown) {
-      const res = await fetch(link.origin + path, { method: 'POST', headers, body: JSON.stringify(body) });
+      const res = await client.post(path, body);
       expect(res.ok, path + ' HTTP ' + res.status).toBe(true);
       return res.json();
     },
     async get(path: string) {
-      const res = await fetch(link.origin + path, { headers });
+      const res = await client.get(path);
       expect(res.status).toBe(200);
       return res.json();
     },

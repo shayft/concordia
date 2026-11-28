@@ -419,10 +419,12 @@ it('活动页的下载使用当前会话的固定 JSON 摘要端点', async () =
   const { HistoryPage } = await import('../src/history.tsx');
   serve = (path) => (path === '/api/recovery' ? { recovered: [], unresolved: [] } : []);
   await render(<HistoryPage events={0} />);
-  const link = container.querySelector<HTMLAnchorElement>('a[download]')!;
-  expect(link.getAttribute('href')).toBe('/api/export/audit');
-  expect(link.download).toBe('concordia-audit.json');
   expect(requests.some((r) => r.path === '/api/export/audit')).toBe(false);
+  const clickLink = vi.spyOn(dom.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  await click(button('下载脱敏审计摘要'));
+  expect(requests.filter((r) => r.path === '/api/export/audit')).toHaveLength(1);
+  expect(clickLink).toHaveBeenCalledOnce();
+  clickLink.mockRestore();
 });
 
 it('模型可跳过定价、设置零输入单价并保留独立的输入和输出报价', async () => {

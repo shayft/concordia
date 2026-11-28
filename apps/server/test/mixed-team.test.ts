@@ -1,3 +1,4 @@
+import { browserSession } from './browser-session.ts';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -73,24 +74,14 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
     await writeFile(join(web, 'index.html'), '<title>mixed team</title>');
     app = await startLocalServer(web, join(root, 'data'));
     const launch = new URL(app.launchUrl);
-    const exchange = await fetch(launch.origin + '/session', {
-      method: 'POST',
-      headers: { origin: launch.origin, 'content-type': 'application/json' },
-      body: JSON.stringify({ token: launch.hash.slice(1) }),
-    });
-    expect(exchange.status).toBe(204);
-    const cookie = exchange.headers.get('set-cookie')!.split(';')[0];
+    const client = await browserSession(launch);
     const post = async (path: string, body: unknown) => {
-      const result = await fetch(launch.origin + path, {
-        method: 'POST',
-        headers: { cookie, origin: launch.origin, 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const result = await client.post(path, body);
       expect(result.ok, path + ' HTTP ' + result.status).toBe(true);
       return result.json();
     };
     const board = async () =>
-      (await fetch(launch.origin + '/api/board', { headers: { cookie } })).json() as Promise<State>;
+      (await client.get('/api/board')).json() as Promise<State>;
     await post('/api/connections', {
       id: 'cli',
       name: '脚本化 Codex',

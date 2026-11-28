@@ -1,3 +1,4 @@
+import { browserSession } from './browser-session.ts';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -22,23 +23,8 @@ const actions = [
   { type:'submit_result', summary:'请对照样例验收' },
 ];
 interface Application { launchUrl: string; close(): Promise<void> }
-interface Client {
-  origin: string;
-  cookie: string;
-  get(path: string): Promise<Response>;
-  post(path: string, body: unknown): Promise<Response>;
-}
-async function login(app: Application): Promise<Client> {
-  const launch = new URL(app.launchUrl);
-  const response = await fetch(launch.origin + '/session', {method:'POST',
-    headers:{origin:launch.origin,'content-type':'application/json'}, body:JSON.stringify({token:launch.hash.slice(1)})});
-  expect(response.status).toBe(204);
-  const cookie = response.headers.get('set-cookie')!.split(';')[0];
-  return { origin:launch.origin, cookie,
-    get: path => fetch(launch.origin + path,{headers:{cookie}}),
-    post: (path, body) => fetch(launch.origin + path,{method:'POST',headers:{cookie,origin:launch.origin,'content-type':'application/json'}, body:JSON.stringify(body)}),
-  };
-}
+type Client = Awaited<ReturnType<typeof browserSession>>;
+function login(app: Application) { return browserSession(new URL(app.launchUrl)); }
 
 function finish(res: ServerResponse, content: unknown) {
   const encoded = JSON.stringify(content);
@@ -227,9 +213,7 @@ it('阶段 5：取消正在接收的流；迟到的完整动作不能发布版�
   // A busy member is immutable. A successful no-op edit establishes that
   // the runtime and its finally block have finished processing the late frame.
   await vi.waitFor(async () => {
-    const res=await fetch(ui.origin+'/api/members/lead',{ method:'PUT',
-      headers:{origin:ui.origin,cookie:ui.cookie,'content-type':'application/json'},
-      body:JSON.stringify({id:'lead',name:'负责人',role:'负责验收',connectionId:'gateway',modelId:'custom'})});
+    const res = await ui.post('/api/members/lead', { id:'lead',name:'负责人',role:'负责验收',connectionId:'gateway',modelId:'custom' }, 'PUT');
     expect(res.status).toBe(200);
   });
   const current=await board(ui);
@@ -276,7 +260,7 @@ it('阶段 5：强制终止 HTTP 服务后，同一目录重新启动可追赶 S
   expect(replay.length).toBeGreaterThan(0);
   const controller=new AbortController();
   try {
-    const response=await fetch(restored.origin+'/api/events',{headers:{cookie:restored.cookie,'Last-Event-ID':String(after)},signal:controller.signal});
+    const response=await fetch(restored.origin+'/api/events',{headers:{...restored.headers,'Last-Event-ID':String(after)},signal:controller.signal});
     expect(response.headers.get('content-type')).toContain('text/event-stream');
     const reader=response.body!.getReader();let received='';
     while(!received.includes('id: '+replay.at(-1)!.seq+'\n')) {

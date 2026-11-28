@@ -8,7 +8,7 @@ import Fastify from 'fastify';
 import { registerApplication } from './application.ts';
 
 const webDirectory = fileURLToPath(new URL('../../web/dist/', import.meta.url));
-const cookieName = 'concordia_session';
+const proofHeader = 'x-concordia-session';
 
 const bootstrapScript = `
 const token = location.hash.slice(1);
@@ -20,7 +20,9 @@ async function openConcordia() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
     });
-    if (response.ok) {
+    const proof = response.headers.get('x-concordia-session');
+    if (response.ok && proof) {
+      localStorage.setItem('concordia.session', proof);
       location.replace('/');
       return;
     }
@@ -42,7 +44,7 @@ function matches(received: unknown, expected: string | undefined): boolean {
   return timingSafeEqual(Buffer.from(received), Buffer.from(expected));
 }
 
-function sessionCookie(header: string | undefined): string | undefined {
+function sessionCookie(header: string | undefined, cookieName: string): string | undefined {
   const prefix = cookieName + '=';
   const entries = header?.split(';').map(part => part.trim()).filter(part => part.startsWith(prefix));
   if (entries?.length === 1) return entries[0].slice(prefix.length);
@@ -68,6 +70,11 @@ export async function startLocalServer(directory = webDirectory, dataDirectory?:
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
   let launchToken: string | undefined = randomBytes(32).toString('base64url');
   const session = randomBytes(32).toString('base64url');
+  // Cookies on loopback are shared across ports. Static assets use an instance-specific
+  // cookie; application data additionally requires a proof held by this browser origin.
+  const cookieName = 'concordia_' + randomBytes(12).toString('hex');
+  const proof = randomBytes(32).toString('base64url');
+  let sessionHost: string | undefined;
 
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
@@ -96,7 +103,10 @@ export async function startLocalServer(directory = webDirectory, dataDirectory?:
     }
     if ((isRead && request.url === '/launch') ||
         (request.method === 'POST' && request.url === '/session')) return;
-    if (!matches(sessionCookie(request.headers.cookie), session)) return reply.code(401).send();
+    if (host !== sessionHost || !matches(sessionCookie(request.headers.cookie, cookieName), session))
+      return reply.code(401).send();
+    if (request.routeOptions.url?.startsWith('/api/') && !matches(request.headers[proofHeader], proof))
+      return reply.code(401).send();
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -109,7 +119,8 @@ export async function startLocalServer(directory = webDirectory, dataDirectory?:
   app.post<{ Body: { token?: unknown } | null }>('/session', async (request, reply) => {
     if (!matches(request.body?.token, launchToken)) return reply.code(401).send();
     launchToken = undefined;
-    return reply.header('set-cookie', cookieName + '=' + session + '; Path=/; HttpOnly; SameSite=Strict')
+    sessionHost = request.headers.host;
+    return reply.header(proofHeader, proof).header('set-cookie', cookieName + '=' + session + '; Path=/; HttpOnly; SameSite=Strict')
       .code(204).send();
   });
 

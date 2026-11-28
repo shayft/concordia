@@ -1,6 +1,6 @@
 import type { ExecutionCost } from '@concordia/protocol/pricing';
 import { useEffect } from 'react';
-import { useResource } from './api.ts';
+import { browserFetch, useAction, useResource } from './api.ts';
 import { Empty, Notice } from './ui.tsx';
 
 interface EventRecord {
@@ -9,6 +9,7 @@ interface EventRecord {
   data: Record<string, unknown>;
 }
 export function HistoryPage({ events }: { events: number }) {
+  const download = useAction();
   const { data, error, reload } = useResource<EventRecord[]>('history');
   const recovery = useResource<{ recovered: unknown; unresolved: unknown[] }>('recovery');
   const {
@@ -30,12 +31,19 @@ export function HistoryPage({ events }: { events: number }) {
           <button onClick={() => void Promise.all([reload(), reloadCosts(), recovery.reload()])}>
             刷新
           </button>
-          <a className="download" href="/api/export/audit" download="concordia-audit.json">
-            下载脱敏审计摘要
-          </a>
+          <button className="download" disabled={download.busy} onClick={() => void download.run(async () => {
+            const response = await browserFetch('/api/export/audit');
+            if (!response.ok) throw new Error('无法下载审计摘要。');
+            const url = URL.createObjectURL(await response.blob());
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'concordia-audit.json';
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          })}>下载脱敏审计摘要</button>
         </div>
       </header>
-      <Notice error={error || costError || recovery.error} />
+      <Notice error={error || costError || recovery.error || download.error} />
       {Boolean(recovery.data?.unresolved.length) && (
         <div className="notice error">
           有 {recovery.data?.unresolved.length} 个历史进程待人工核对，真实执行暂时受限。

@@ -1,3 +1,4 @@
+import { browserSession } from './browser-session.ts';
 import { execFile, fork } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -74,26 +75,14 @@ async function launch(web: string, data: string, scratch: string) {
 }
 
 async function session(url: URL) {
-  const login = await fetch(url.origin + '/session', {
-    method: 'POST',
-    headers: { origin: url.origin, 'content-type': 'application/json' },
-    body: JSON.stringify({ token: url.hash.slice(1) }),
-  });
-  expect(login.status).toBe(204);
-  const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
-  async function request(path: string, body?: unknown) {
-    return fetch(url.origin + path, {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: { cookie, origin: url.origin, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-  }
+  const client = await browserSession(url);
+  const request = (path: string, body?: unknown) => body === undefined ? client.get(path) : client.post(path, body);
   async function json<T>(path: string, body?: unknown): Promise<T> {
     const response = await request(path, body);
     if (!response.ok) throw new Error(`测试请求 ${path} 返回 ${response.status}。`);
     return (await response.json()) as T;
   }
-  return { cookie, request, json };
+  return { cookie: client.cookie, request, json };
 }
 
 function schemaVersions(path: string, workspaceId: string) {

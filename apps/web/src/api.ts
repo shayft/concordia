@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+export function browserFetch(path: string, options: RequestInit = {}) {
+  if (!path.startsWith('/api/')) throw new Error('无效的本地 API 路径。');
+  const headers = new Headers(options.headers);
+  const proof = window.localStorage.getItem('concordia.session');
+  if (proof) headers.set('x-concordia-session', proof);
+  return fetch(path, { ...options, headers, credentials: 'same-origin', cache: 'no-store', redirect: 'error' });
+}
+
 let activeWorkspace: string | undefined;
 export function setActiveWorkspace(id: string | undefined) {
   activeWorkspace = id;
@@ -11,7 +19,7 @@ export async function api<T>(
   body?: unknown,
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch('/api/' + path, {
+  const response = await browserFetch('/api/' + path, {
     method,
     signal,
     credentials: 'same-origin',

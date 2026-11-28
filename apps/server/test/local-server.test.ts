@@ -1,3 +1,4 @@
+import { browserSession } from './browser-session.ts';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -82,11 +83,13 @@ describe('本地服务的启动和访问边界', () => {
     expect((await exchange(launch.origin, '')).status).toBe(401);
     const responses = await Promise.all([exchange(), exchange()]);
     expect(responses.map(res => res.status).sort()).toEqual([204, 401]);
-    const header = responses.find(res => res.status === 204)?.headers.get('set-cookie') ?? '';
+    const accepted = responses.find(res => res.status === 204)!;
+    const header = accepted.headers.get('set-cookie') ?? '';
+    const proof = accepted.headers.get('x-concordia-session')!;
     const [cookie, ...attrs] = header.split('; ');
     expect(attrs).toEqual(expect.arrayContaining(['HttpOnly', 'SameSite=Strict', 'Path=/']));
     for (const route of ['/', '/assets/index-example.js', '/api/health']) {
-      const response = await fetch(launch.origin + route, { headers: { cookie } });
+      const response = await fetch(launch.origin + route, { headers: { cookie, 'x-concordia-session': proof } });
       expect(response.status).toBe(200);
       expect(response.headers.get('cache-control')).toBe('no-store');
     }
@@ -100,4 +103,20 @@ describe('本地服务的启动和访问边界', () => {
     expect((await exchange(launch.origin, oldToken)).status).toBe(401);
     expect((await fetch(launch.origin + '/', { headers: { cookie } })).status).toBe(401);
   });
+  it('两个合法实例在同一浏览器共用 Cookie 容器时，各自的 API 会话仍独立', async () => {
+    const other = await startLocalServer(directory);
+    try {
+      const a = await browserSession(launch);
+      const b = await browserSession(new URL(other.launchUrl));
+      const cookie = a.cookie + '; ' + b.cookie;
+      for (const [current, second] of [[a, b], [b, a]]) {
+        expect((await fetch(current.origin + '/api/health', { headers: { ...current.headers, cookie } })).status).toBe(200);
+        for (const headers of [{ cookie }, { ...second.headers, origin: current.origin, cookie }])
+          expect((await fetch(current.origin + '/api/health', { headers })).status).toBe(401);
+      }
+    } finally {
+      await other.close();
+    }
+  });
+
 });
