@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
@@ -80,3 +80,37 @@ for (const family of ['claude','codex'] as const) {
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory,{force:true, recursive:true}); }
   }, 120_000);
 }
+
+it('codex 停用本机配置的 MCP 服务器，只保留本次执行的动作通道', async () => {
+  kind = 'codex';
+  const directory = await mkdtemp(join(tmpdir(), 'concordia-cli-mcp-'));
+  const home = await mkdtemp(join(tmpdir(), 'concordia-cli-home-'));
+  await writeFile(join(home, '.codex-fake-mcp.json'), JSON.stringify(['computer-use', 'node_repl']));
+  const calls: PlatformAction[] = [];
+  const mcp = new ExecutionMcpServer(async (_id, action) => { calls.push(action); return { accepted:true }; });
+  const server = createServer(async (req, res) => {
+    const result = await mcp.handle({ executionId:req.url!.split('/').at(-1)!,
+      authorization:req.headers.authorization, body:JSON.parse(await text(req)) });
+    res.writeHead(result.status,{'content-type':'application/json'}).end(JSON.stringify(result.body));
+  }).listen(0,'127.0.0.1');
+  await once(server,'listening');
+  try {
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('没有本机端口');
+    const env = { ...process.env, HOME: home };
+    const input = { memberId:'member', taskId:'task', executionId:'mcp', prompt:'本机 MCP', cwd:directory,
+      permission:'read-only' as const, mcpOrigin:'http://127.0.0.1:' + addr.port };
+    const runtime = new CliAgentRuntime({ kind, executable:process.execPath, connectionId:'mcp', confirmUnmanaged:true, env }, mcp, new Map());
+    await runtime.run(input, () => {});
+    expect(calls[0]).toEqual({ type:'publish_artifact', slotId:'contract', content:'本机 MCP' });
+    const json = new CliAgentRuntime({ kind, executable:process.execPath, connectionId:'json', actionChannel:'json', confirmUnmanaged:true, env }, mcp, new Map());
+    await json.run({ ...input, executionId:'json', prompt:'JSON 最终动作' }, () => {});
+    expect(calls.at(-1)).toEqual({ type:'submit_result', summary:'JSON 最终动作' });
+    await writeFile(join(home, '.codex-fake-mcp.json'), JSON.stringify(['concordia']));
+    await expect(runtime.run({ ...input, executionId:'clash' }, () => {})).rejects.toThrow(/重名/);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await rm(directory,{ force:true, recursive:true });
+    await rm(home,{ force:true, recursive:true });
+  }
+}, 60_000);

@@ -3,7 +3,7 @@ import { resolveCliDirectory } from './cli-path.ts';
 import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { actionTools, type ActionName, type PlatformAction } from '@concordia/protocol';
-import { codexOptions, inspectCli, modelArgs, type CliOptions } from './cli.ts';
+import { codexMcpDisables, codexOptions, inspectCli, modelArgs, type CliOptions } from './cli.ts';
 import { prepareEnvironment, type CliKind } from './environment.ts';
 import { CliDiagnosticError, nativeCliFailure } from './errors.ts';
 import { ExecutionMcpServer } from './mcp.ts';
@@ -27,11 +27,13 @@ export interface AgentExecutionInput {
 export interface CliSessionStore { get(key: string): string | undefined; set(key: string, session: string): void }
 interface RuntimeConfig extends CliOptions { kind: CliKind; connectionId: string }
 const activeSessions = new Set<string>();
-const observedServers = z.tuple([z.object({ name: z.literal('concordia'), enabled: z.literal(true), transport: z.object({
+// The user's own MCP servers stay listed but must be disabled; only the platform server may run.
+const listedServers = z.array(z.object({ name: z.string(), enabled: z.boolean() }));
+const observedServer = z.object({ name: z.literal('concordia'), enabled: z.literal(true), transport: z.object({
   type: z.literal('streamable_http'), url: z.string(), bearer_token_env_var: z.literal('CONCORDIA_MCP_TOKEN'),
   http_headers_helper: z.null().optional(), http_headers: z.record(z.string(), z.never()).nullish(),
   env_http_headers: z.record(z.string(), z.never()).nullish(),
-}) })]);
+}) });
 
 function actionUrl(origin: string, executionId: string) {
   const url = new URL(origin);
@@ -137,11 +139,17 @@ export class CliAgentRuntime {
         const cfg = [...codexOptions];
         if (channel === 'mcp') {
           cfg.splice(-2, 2, '-c', 'mcp_servers={concordia={url=' + JSON.stringify(url) + ',bearer_token_env_var="CONCORDIA_MCP_TOKEN",required=true}}');
+        }
+        // Must follow the table assignment above, which would otherwise re-enable them.
+        cfg.push(...codexMcpDisables(diagnostic.disabledMcpServers ?? []));
+        if (channel === 'mcp') {
           const list = await runProcess(diagnostic.executable, [...cfg, 'mcp','list','--json'], options);
           let observed: unknown;
           try { observed = JSON.parse(list.stdout); } catch { /* Fail closed below. */ }
-          const parsed = observedServers.safeParse(observed);
-          if (list.exitCode !== 0 || !parsed.success || parsed.data[0].transport.url !== url) {
+          const listed = listedServers.safeParse(observed);
+          const active = listed.success ? (observed as unknown[]).filter((_, index) => listed.data[index].enabled) : [];
+          const parsed = observedServer.safeParse(active[0]);
+          if (list.exitCode !== 0 || active.length !== 1 || !parsed.success || parsed.data.transport.url !== url) {
             throw new CliDiagnosticError('Codex 的实际 MCP 配置不匹配。');
           }
         }

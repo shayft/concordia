@@ -41,6 +41,33 @@ const codexArgs = [
   '--sandbox', 'read-only', '--ephemeral', '--skip-git-repo-check', '--json', probePrompt,
 ];
 
+// Codex 0.172 merges `-c mcp_servers={...}` into the servers from the user's or a
+// trusted project's config.toml instead of replacing them, so each configured server
+// is disabled by name. A later table assignment re-enables them: these overrides must
+// follow any `mcp_servers=` argument. Codex splits override keys on dots and does not
+// accept quoted segments, so only bare names can be disabled.
+export const platformMcpServer = 'concordia';
+const bareServerName = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function codexMcpDisables(names: readonly string[]): string[] {
+  return names.flatMap(name => ['-c', 'mcp_servers.' + name + '.enabled=false']);
+}
+
+interface ListedServer { name: string; enabled: boolean }
+function isListedServer(value: unknown): value is ListedServer {
+  return typeof value === 'object' && value !== null
+    && typeof (value as ListedServer).name === 'string' && typeof (value as ListedServer).enabled === 'boolean';
+}
+
+function listedMcpServers(result: ProcessResult): ListedServer[] {
+  let servers: unknown;
+  try { servers = JSON.parse(result.stdout); } catch { /* Reject an unknown schema. */ }
+  if (result.exitCode !== 0 || !Array.isArray(servers) || !servers.every(isListedServer)) {
+    throw new CliDiagnosticError('Codex CLI 未能列出本次调用的 MCP 服务，已停止。请核对版本和本机策略。');
+  }
+  return servers;
+}
+
 export function modelArgs(model?: string): string[] {
   if (model === undefined) return [];
   if (!model.trim() || model.length > 200 || model.startsWith('-') || Array.from(model).some(c => c.charCodeAt(0) < 32)) {
@@ -80,7 +107,7 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   if (readVersion.exitCode !== 0 || !version) throw new CliDiagnosticError('无法识别官方 CLI 版本。');
   const help = await invoke(kind === 'claude' ? ['--help'] : ['exec', '--help']);
   const baseArgs = kind === 'claude' ? claudeArgs : codexArgs;
-  const args = options.model === undefined ? baseArgs : [...baseArgs.slice(0, -1), ...modelArgs(options.model), probePrompt];
+  let args = options.model === undefined ? baseArgs : [...baseArgs.slice(0, -1), ...modelArgs(options.model), probePrompt];
   const rootHelp = kind === 'codex' ? await invoke(['--help']) : help;
   const helpText = help.stdout + '\n' + rootHelp.stdout;
   const flags = args.filter(arg => arg.startsWith('--'));
@@ -98,6 +125,7 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
     throw new CliDiagnosticError('当前 CLI 帮助缺少校验所需参数，请核对版本。' + [...new Set(missing)].join(' '));
   }
 
+  let disabledMcpServers: string[] = [];
   if (kind === 'codex') {
     const featureList = await invoke([...codexOptions, 'features', 'list']);
     const inactive = new Set(featureList.stdout.split(/\r?\n/)
@@ -105,13 +133,29 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
     if (featureList.exitCode !== 0 || disabledFeatures.some(feature => !inactive.has(feature))) {
       throw new CliDiagnosticError('Codex CLI 无法确认只读校验所需的工具和扩展限制已生效。');
     }
-    checkMcp(await invoke([...codexOptions, 'mcp', 'list', '--json']));
+    disabledMcpServers = listedMcpServers(await invoke([...codexOptions, 'mcp', 'list', '--json']))
+      .map(server => server.name).sort();
+    if (disabledMcpServers.includes(platformMcpServer)) {
+      throw new CliDiagnosticError('Codex 配置中已有名为 concordia 的 MCP 服务器，与平台动作通道重名。请在 Codex 配置中改名后重新预检。');
+    }
+    const unnamed = disabledMcpServers.filter(name => !bareServerName.test(name));
+    if (unnamed.length) {
+      throw new CliDiagnosticError('Codex 配置中有 ' + unnamed.length + ' 个 MCP 服务器的名称含点号或其他字符，无法按名称停用。'
+        + '请在 Codex 配置中改为仅含字母、数字、下划线和连字符的名称后重新预检。');
+    }
+    const disables = codexMcpDisables(disabledMcpServers);
+    const remaining = listedMcpServers(await invoke([...codexOptions, ...disables, 'mcp', 'list', '--json']));
+    if (remaining.some(server => server.enabled)) {
+      throw new CliDiagnosticError('Codex CLI 未能确认本次调用的 MCP 服务已全部停用，已停止。请核对版本和本机策略。');
+    }
+    args = [...codexOptions, ...disables, ...args.slice(codexOptions.length)];
   }
   const auth = await invoke(kind === 'claude' ? ['auth', 'status'] : ['login', 'status']);
   const diagnostic = {
     kind, executable, version, billingEnvironment, actionChannel: options.actionChannel ?? 'auto',
     cwd: options.cwd === undefined ? '新建的空临时目录' : cwd,
     ...(kind === 'claude' && { unmanagedConfirmed: options.confirmUnmanaged === true }),
+    ...(kind === 'codex' && { disabledMcpServers }),
     ...parseAuth(kind, auth.stdout, auth.stderr, auth.exitCode),
     arguments: [...args],
   };
@@ -121,14 +165,6 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
 
 export function inspectCli(kind: CliKind, options: CliOptions = {}) {
   return inWorkspace(options, async cwd => (await prepare(kind, options, cwd)).diagnostic);
-}
-
-function checkMcp(result: ProcessResult) {
-  let servers: unknown;
-  try { servers = JSON.parse(result.stdout); } catch { /* Reject an unknown schema. */ }
-  if (result.exitCode !== 0 || !Array.isArray(servers) || servers.length !== 0) {
-    throw new CliDiagnosticError('Codex CLI 未能确认本次调用的 MCP 服务列表为空，已停止。请核对版本和本机策略。');
-  }
 }
 
 export async function runCliProbe(kind: CliKind, options: CliOptions & { approved: true; inspectionId: string }) {
