@@ -451,3 +451,58 @@ it('共享账户限流后，切换工作区仍须手动恢复，未恢复前不�
   expect((await board(first)).stoppedPools).toEqual([]);
   expect(api.seen).toHaveLength(1);
 }, 20_000);
+
+it('普通项目合并在发票和批准时复核主卡、工作区、当前计划版本与命令证据', async () => {
+  const repository = join(directory,'acceptance-repo');
+  await mkdir(repository);
+  git(repository,['init','-b','main','--template=']);
+  git(repository,['commit','--allow-empty','-m','base']);
+  const baseline = git(repository,['rev-parse','HEAD']).trim();
+  app = await startLocalServer(web,data);
+  const ui = await login(app);
+  await configure(ui);
+  await apply(ui);
+  const projectId = 'repo';
+  await ui.post('/api/worktrees/projects',{id:projectId,repository,targetBranch:'main',writeEnabled:true,
+    commands:[{name:'check',executable:process.execPath,args:['--version']}]});
+  const member = await (await ui.post('/api/worktrees/member',{projectId,taskId:'write'})).json() as {id:string};
+  api.queue.push(res=>finish(res,{actions:[
+    {type:'write_file',path:'sample.txt',content:'accepted source'},
+    {type:'commit_artifact',slotId:'sample'},
+    {type:'request_review',taskId:'write'},
+  ]}));
+  expect((await ui.post('/api/tasks/write/run',{mode:'live',approved:true,projectId,treeId:member.id})).status).toBe(200);
+  await vi.waitFor(async()=>expect((await board(ui)).tasks[0].status).toBe('review'),{timeout:10000});
+  const b = await board(ui);
+  const version = b.versions[0];
+  const publication = await (await ui.get('/api/versions/'+version.id)).json() as {content:string};
+  const result = await ui.post('/api/worktrees/integrate',{projectId, snapshot:[{treeId:member.id,sha:publication.content}]});
+  expect(result.status).toBe(200);
+  const treeId = ((await result.json()) as {tree:{id:string}}).tree.id;
+  const command = await (await ui.post('/api/worktrees/request-command',{treeId,name:'check'})).json() as {id:string};
+  expect((await ui.post('/api/worktrees/approve-command',{id:command.id})).status).toBe(200);
+  const review = () => ui.post('/api/worktrees/review-merge',{treeId});
+  expect((await review()).status).toBe(409);
+  expect((await ui.post('/api/tasks/write/control',{action:'accept',expectedExecutionId:version.executionId})).status).toBe(200);
+  const accept = async () => {
+    expect((await ui.post('/api/accept',{expected:(await board(ui)).acceptanceCandidate})).status).toBe(200);
+  };
+  await accept();
+  const pending = await review();
+  expect(pending.status).toBe(200);
+  const old = await pending.json() as {id:string};
+  expect(old).toMatchObject({checkId:command.id,acceptance:{workspaceId:'default',planId:spec.id,
+    sources:[{versionId:version.id,treeId:member.id,sha:publication.content}]}});
+  const revision = (await board(ui)).revision;
+  expect((await ui.post('/api/spec/apply',{spec:{...spec,title:'重新核对的需求'},expectedRevision:revision,approved:true})).status).toBe(200);
+  expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);
+  await accept();
+  expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);
+  expect(git(repository,['rev-parse','HEAD']).trim()).toBe(baseline);
+  const fresh = await review();
+  expect(fresh.status).toBe(200);
+  const ticket = await fresh.json() as {id:string;sha:string};
+  const approved = await ui.post('/api/worktrees/approve-merge',{id:ticket.id});
+  expect(await approved.json()).toMatchObject({merged:true});
+  expect(git(repository,['rev-parse','HEAD']).trim()).toBe(ticket.sha);
+}, 40_000);

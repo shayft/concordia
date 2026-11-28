@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { openWorktrees, type WorktreeService } from '../src/worktrees.ts';
@@ -257,3 +258,49 @@ it('成员差异分别显示暂存、工作文件及已发布版本，只读访�
   expect(run(tree.path, 'status', '--porcelain')).toBe(before);
   expect(run(tree.path, 'rev-parse', 'HEAD')).toBe(published.sha);
 });
+
+
+it.each(['at_candidate','at_baseline','unknown'])('重开时只读核对中断合并的目标（%s）', async observation => {
+  service.configure(config(true));
+  const member = service.member('demo','recover');
+  service.write(member.id,'new.txt','delivery');
+  const tree = service.integrate('demo',[service.publish(member.id)]).tree;
+  await service.approveCommand(service.requestCommand(tree.id,'test').id);
+  const ticket = service.reviewMerge(tree.id);
+  await service.close();
+  // Materialize the durable states on either side of the Git/SQLite boundary.
+  const db = new DatabaseSync(join(data,'worktrees.sqlite'));
+  try { db.prepare("UPDATE approvals SET status='running' WHERE id=?").run(ticket.id); } finally { db.close(); }
+  if (observation === 'at_candidate') platformGit(repo,['merge','--ff-only',ticket.sha]);
+  if (observation === 'unknown') platformGit(repo,['commit','--allow-empty','-m','independent change']);
+  const before = run(repo,'rev-parse','HEAD');
+  service = openWorktrees(data);
+  expect(service.state().results).toContainEqual(expect.objectContaining({
+    treeId:tree.id, status: observation === 'at_candidate' ? 'complete' : 'interrupted',
+    result: expect.objectContaining({ observation, merged: observation === 'unknown' ? null : observation === 'at_candidate' }),
+  }));
+  expect(run(repo,'rev-parse','HEAD')).toBe(before);
+  expect(() => service.approveMerge(ticket.id)).toThrow();
+}, 30_000);
+
+it('按实际执行顺序选择联调证据；随后失败或命令声明改变使旧票据失效', async () => {
+  const project = config(true);
+  const failed = {...declaration,name:'fail',args:['-e','process.exitCode=1']};
+  project.commands.push(failed);
+  service.configure(project);
+  const member = service.member('demo','evidence');
+  service.write(member.id,'new.txt','ready');
+  const tree = service.integrate('demo',[service.publish(member.id)]).tree;
+  const earlierRequest = service.requestCommand(tree.id,'fail');
+  const laterRequest = service.requestCommand(tree.id,'test');
+  await service.approveCommand(laterRequest.id);
+  const ticket = service.reviewMerge(tree.id);
+  expect((await service.approveCommand(earlierRequest.id)).passed).toBe(false);
+  expect(() => service.approveMerge(ticket.id)).toThrow();
+  expect(() => service.reviewMerge(tree.id)).toThrow();
+  await service.approveCommand(service.requestCommand(tree.id,'test').id);
+  project.commands = [{...declaration,args:['--version']}];
+  service.configure(project);
+  expect(() => service.reviewMerge(tree.id)).toThrow('命令声明已变化');
+  expect(run(repo,'rev-parse','HEAD')).toBe(tree.base);
+}, 30_000);

@@ -12,6 +12,7 @@ import { acquireDataDirectory, safeDatabasePath, safeDataDirectory } from './dat
 import { getCatalog, registerConnectionRoutes, resolveMember, cancelCatalogProbes } from './connections.ts';
 import type { WorktreeIssue } from './worktrees/service.ts';
 import { openWorktrees, serveWorktrees } from './worktrees.ts';
+import { acceptedCommits } from './worktrees/acceptance.ts';
 import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
 import { serveAuditExport } from './audit.ts';
@@ -56,7 +57,8 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     Date.now(),
   );
   db.prepare("INSERT OR IGNORE INTO workspaces VALUES('default','默认工作区',1)").run();
-  const trees = openWorktrees(directory, syncConflict);
+  const trees = openWorktrees(directory, syncConflict, undefined, (scope, project, inputs) =>
+    acceptedCommits(current.scheduler, db, current.id, scope, project, inputs));
   app.addHook('onClose', async () => trees.close());
   const workspaces = () =>
     db.prepare('SELECT id,name FROM workspaces ORDER BY rowid').all() as { id: string; name: string }[];

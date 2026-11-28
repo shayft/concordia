@@ -10,6 +10,7 @@ import { runProcess } from '@concordia/runtimes/process';
 import { worktreeFile, worktreePathParts } from '@concordia/runtimes/worktree-files';
 import { checkLocalConfig, git, gitResult, gitWorktrees, sameDirectory } from './git.ts';
 import { versionDiff, workingDiff } from './diff.ts';
+import type { CheckAcceptance, MergeAcceptance } from './acceptance.ts';
 
 const id = z.string().min(1).max(180);
 const sha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -67,7 +68,7 @@ function target(project: Project) {
 }
 
 function identifyWorktreeDatabase(db: DatabaseSync) {
-  const version = databaseVersion(db, 3);
+  const version = databaseVersion(db, 4);
   if (!version) return version;
   const tables = ['projects', 'trees', 'publications', 'approvals'];
   if (version >= 2) tables.push('conflict_issues');
@@ -75,6 +76,8 @@ function identifyWorktreeDatabase(db: DatabaseSync) {
   if (tables.some(name => !present.has(name)) ||
       (version >= 3 && !db.prepare("SELECT 1 FROM pragma_table_info('trees') WHERE name='scope'").get()))
     throw new Error('已有数据库未包含匹配的 Concordia 工作树表。');
+  if (version >= 4 && !db.prepare("SELECT 1 FROM pragma_table_info('approvals') WHERE name='acceptance'").get())
+    throw new Error('工作树数据库缺少审批证据字段。');
   return version;
 }
 
@@ -86,11 +89,14 @@ export class WorktreeService {
   private closed = false;
   private onConflict?: (issue: WorktreeIssue) => void;
   private readonly recoveryDir: string;
+  private readonly checkAcceptance?: CheckAcceptance;
   constructor(
     dataDirectory: string,
     onConflict?: (issue: WorktreeIssue) => void,
     recoveryDir = join(dataDirectory, 'processes'),
+    checkAcceptance?: CheckAcceptance,
   ) {
+    this.checkAcceptance = checkAcceptance;
     this.recoveryDir = recoveryDir;
     this.onConflict = onConflict;
     this.directory = safeDataDirectory(dataDirectory, 'worktrees');
@@ -105,25 +111,39 @@ export class WorktreeService {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const version = identifyWorktreeDatabase(this.db);
-      if (version === 0) {
-        this.db.exec(readFileSync(new URL('./001-worktrees.sql', import.meta.url), 'utf8'));
-        this.db.exec('PRAGMA user_version=1');
+      const scripts = ['001-worktrees.sql','002-conflict-issues.sql','003-task-scope.sql','004-merge-acceptance.sql'];
+      for (let i = version; i < scripts.length; i++) {
+        this.db.exec(readFileSync(new URL(scripts[i], import.meta.url), 'utf8'));
+        this.db.exec('PRAGMA user_version=' + (i + 1));
       }
-      if (version === 0 || version === 1) {
-        this.db.exec(readFileSync(new URL('./002-conflict-issues.sql', import.meta.url), 'utf8'));
-        this.db.exec('PRAGMA user_version=2');
-      }
-      if (version === 0 || version === 1 || version === 2) {
-        this.db.exec(readFileSync(new URL('./003-task-scope.sql', import.meta.url), 'utf8'));
-        this.db.exec('PRAGMA user_version=3');
-      } else if (version !== 3) throw new Error('工作区数据库版本不受支持。');
-      this.db.exec(
-        "UPDATE approvals SET status='interrupted' WHERE status='running'; UPDATE trees SET status='interrupted' WHERE status IN ('creating','integrating'); COMMIT",
-      );
+      this.db.exec("UPDATE approvals SET status='interrupted' WHERE status='running' AND kind='command'; UPDATE trees SET status='interrupted' WHERE status IN ('creating','integrating')");
+      this.reconcileMerges();
+      this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
       this.db.close();
       throw error;
+    }
+  }
+
+  private reconcileMerges() {
+    const rows = this.db.prepare("SELECT * FROM approvals WHERE kind='merge' AND (status='running' OR (status='interrupted' AND result IS NULL))").all();
+    for (const row of rows) {
+      const tree = this.tree(String(row.tree));
+      const project = this.project(tree.projectId);
+      let observation = 'unknown';
+      try {
+        checkLocalConfig(project.repository);
+        const current = git(project.repository, ['rev-parse','--verify',target(project)]).trim();
+        if (current === row.sha) observation = 'at_candidate';
+        else if (current === row.target) observation = 'at_baseline';
+      } catch { /* Keep this ticket ambiguous when its original repository is unavailable. */ }
+      const reason = observation === 'at_candidate' ? '只读核对时目标已在批准的提交。'
+        : observation === 'at_baseline' ? '只读核对时目标仍在审批基线。' : '目标已变化或仓库不可读，需要人工核对。';
+      const result = { observation, reason, branch: tree.branch, sha: row.sha,
+        merged: observation === 'unknown' ? null : observation === 'at_candidate' };
+      this.db.prepare('UPDATE approvals SET status=?,result=? WHERE id=?').run(
+        observation === 'at_candidate' ? 'complete' : 'interrupted', JSON.stringify(result), row.id);
     }
   }
 
@@ -441,11 +461,13 @@ export class WorktreeService {
   private commandEvidence(treeId: string, commit: string) {
     const row = this.db
       .prepare(
-        "SELECT id,name,status,result FROM approvals WHERE tree=? AND sha=? AND kind='command' AND status IN ('failed','complete','interrupted','running') ORDER BY rowid DESC LIMIT 1",
+        "SELECT id,name,command,status,result FROM approvals WHERE tree=? AND sha=? AND kind='command' AND status IN ('failed','complete','interrupted','running') ORDER BY run_order DESC LIMIT 1",
       )
       .get(treeId, commit);
     if (!row || row.status !== 'complete' || !JSON.parse(String(row.result)).passed)
       throw new Error('当前联调版本需要一条已批准并通过的项目命令记录。');
+    const declaration = this.project(this.tree(treeId).projectId).commands.find(c => c.name === row.name);
+    if (!declaration || JSON.stringify(declaration) !== row.command) throw new Error('联调命令声明已变化，需要重新运行。');
     return { id: String(row.id), name: String(row.name), result: JSON.parse(String(row.result)) };
   }
   private ticket(treeId: string, kind: 'merge' | 'command', name?: string) {
@@ -457,12 +479,13 @@ export class WorktreeService {
     if (kind === 'merge' && (tree.kind !== 'integration' || targetSha !== tree.base))
       throw new Error('需要针对当前目标分支重新联调。');
     const evidence = kind === 'merge' ? this.commandEvidence(treeId, tree.sha) : undefined;
+    const acceptance = kind === 'merge' ? this.checkAcceptance?.(tree.scope, tree.projectId, tree.snapshot) : undefined;
     const declaration = project.commands.find((c) => c.name === name);
     if (kind === 'command' && !declaration) throw new Error('项目未声明此命令。');
     const approvalId = randomUUID();
     this.db
       .prepare(
-        "INSERT INTO approvals(id,tree,kind,sha,target,name,command,status) VALUES(?,?,?,?,?,?,?,'pending')",
+        "INSERT INTO approvals(id,tree,kind,sha,target,name,command,acceptance,status) VALUES(?,?,?,?,?,?,?,?,'pending')",
       )
       .run(
         approvalId,
@@ -472,6 +495,7 @@ export class WorktreeService {
         targetSha,
         name ?? evidence?.id ?? null,
         declaration ? JSON.stringify(declaration) : null,
+        acceptance ? JSON.stringify(acceptance) : null,
       );
     return this.approval(approvalId);
   }
@@ -479,6 +503,7 @@ export class WorktreeService {
     const row = this.db.prepare("SELECT * FROM approvals WHERE id=? AND status='pending'").get(key);
     if (!row) throw new Error('审批请求已处理或不存在。');
     const tree = this.tree(String(row.tree));
+    const check = row.kind === 'merge' ? this.db.prepare('SELECT id,name,result FROM approvals WHERE id=?').get(String(row.name)) : undefined;
     const declaration = row.command
       ? (JSON.parse(String(row.command)) as z.infer<typeof command>)
       : undefined;
@@ -491,8 +516,9 @@ export class WorktreeService {
       ...(declaration ?? {}),
       ...(row.kind === 'merge'
         ? {
+            acceptance: row.acceptance ? JSON.parse(String(row.acceptance)) as MergeAcceptance : null,
             checkId: String(row.name),
-            check: this.db.prepare('SELECT id,name,result FROM approvals WHERE id=?').get(String(row.name)),
+            check: check?.result ? { id: String(check.id), name: String(check.name), result: JSON.parse(String(check.result)) } : null,
             diff: git(this.project(tree.projectId).repository, [
               'diff',
               '--no-ext-diff',
@@ -521,8 +547,13 @@ export class WorktreeService {
       head(tree.path) !== approval.sha
     )
       throw new Error('审批与工作区当前快照不匹配。');
+    if (kind === 'merge' && this.checkAcceptance) {
+      const current = this.checkAcceptance(tree.scope, tree.projectId, tree.snapshot);
+      if (!approval.acceptance || JSON.stringify(current) !== JSON.stringify(approval.acceptance))
+        throw new Error('批准时的主卡验收快照已失效，请重新审查。');
+    }
     if (
-      this.db.prepare("UPDATE approvals SET status='running' WHERE id=? AND status='pending'").run(key)
+      this.db.prepare("UPDATE approvals SET status='running',run_order=(SELECT COALESCE(MAX(run_order),0)+1 FROM approvals) WHERE id=? AND status='pending'").run(key)
         .changes !== 1
     )
       throw new Error('审批已使用。');
@@ -715,4 +746,5 @@ export const openWorktrees = (
   dataDirectory: string,
   onConflict?: (issue: WorktreeIssue) => void,
   recoveryDir?: string,
-) => new WorktreeService(dataDirectory, onConflict, recoveryDir);
+  checkAcceptance?: CheckAcceptance,
+) => new WorktreeService(dataDirectory, onConflict, recoveryDir, checkAcceptance);
