@@ -209,6 +209,27 @@ describe('真实 SQLite 与脚本化成员', () => {
     scheduler.control(replies[0].id,'resume');
     expect(scheduler.context(scheduler.claim(replies[0].id).id).questions).toHaveLength(2);
   });
+  it('执行中追加的问题交给下一份答复；用户取消该待办后不会重新派发', () => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    pub(api.id, 'backend-code', '后端');
+    submit(api.id, 'api');
+    const ui=scheduler.claim('ui');
+    const ask=(text:string) => scheduler.act(ui.id,{type:'ask_question',to:'backend',blocking:true,question:text}) as Question;
+    const first=ask('第一个问题');
+    const taskId=scheduler.board().tasks.find(t=>t.replyFor==='ui')!.id;
+    const replying=scheduler.claim(taskId);
+    ask('执行中到达的第二个问题');
+    scheduler.act(replying.id,{type:'answer_question',questionId:first.id,answer:'已确认'});
+    scheduler.act(replying.id,{type:'submit_result',summary:'已答复首个问题'});
+    const next=scheduler.board().tasks.filter(t=>t.replyFor==='ui' && t.status==='ready');
+    expect(next).toHaveLength(1);
+    scheduler.control(next[0].id,'cancel');
+    scheduler.recover();
+    expect(scheduler.board().tasks.filter(t=>t.replyFor==='ui')).toHaveLength(2);
+    expect(scheduler.board().tasks.filter(t=>t.replyFor==='ui' && t.status==='ready')).toHaveLength(0);
+  });
   it('全局停止后维持取消状态，不补发模型任务', () => {
     scheduler.apply(demoSpec());
     const api=scheduler.claim('api'); pub(api.id,'contract','v1');

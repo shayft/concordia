@@ -240,6 +240,29 @@ it('看板按负责人、未分配和全部筛选，保留后端计算的阻塞�
   expect(container.querySelectorAll('.card')).toHaveLength(3);
 });
 
+it('主卡验收弹窗保持打开时看到的快照，看板刷新不会替换批准内容', async () => {
+  const { BoardPage } = await import('../src/board.tsx');
+  const first = {planId:'meeting',revision:1,versions:{minutes:'v1'},executions:{summary:'run1'}};
+  const latest = {...first,versions:{minutes:'v2'},executions:{summary:'run2'}};
+  let candidate=first;
+  serve = path => {
+    if (path === '/api/board') return {
+      spec:{id:'meeting',title:'会议',goal:'总结',acceptance:[],maxCalls:2},revision:1,
+      tasks:[],agents:[],slots:[],executions:[],versions:[],messages:[],questions:[],stoppedPools:[],acceptanceCandidate:candidate,
+    };
+    if (path === '/api/accept') return new Response(JSON.stringify({error:'验收快照已改变，请重新核对'}),{status:409});
+    return {connections:[],members:[],models:[],pools:[]};
+  };
+  await render(<BoardPage openPlans={() => {}} events={0}/>);
+  await click(button('验收主卡'));
+  candidate=latest;
+  await render(<BoardPage openPlans={() => {}} events={1}/>);
+  expect(container.textContent).toContain('run1');
+  await click(button('检查并验收'));
+  expect(requests.filter(r=>r.path==='/api/accept').at(-1)?.body).toEqual({expected:first});
+  expect(container.textContent).toContain('验收快照已改变');
+});
+
 it('任务详情区分依赖等待和排队，旧记录保留未知，普通进度按需加载', async () => {
   const { BoardPage } = await import('../src/board.tsx');
   const task = {

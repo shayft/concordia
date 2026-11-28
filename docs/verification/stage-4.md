@@ -32,3 +32,11 @@ node_modules/.bin/vitest run apps/server/test/application-http.test.ts -t '阶�
 
 - **模拟测试通过。** `11cd5a9` 的仅 JSON 回环网关在重启后共收到三次非流式请求，分别来自连接验证、计划生成和任务执行。连接验证界面显示实际 HTTP 状态、耗时与上游可提供的用量。对应命令为 `pnpm exec vitest run apps/server/test/application-http.test.ts apps/web/test/workspace-ui.test.tsx`。[协议说明](../providers.md)
 - **模拟测试通过。** `4611fb4` 在批准前显示草案移除的预算及岗位变化。切换草案来源后，即使旧的预览返回，页面也不会重新出现旧计划的批准按钮。Linux 执行 `pnpm exec vitest run apps/web/test/workspace-ui.test.tsx packages/store/test/workflow.test.ts`，36 项通过。
+
+### 2026-11-28 调度回归
+
+| 验收场景 | 状态 | 执行的命令和结果 |
+|---|---|---|
+| 新建会议、并行比较和审查；修订旧计划 | 模拟测试通过 | `pnpm exec vitest run apps/server/test/application-http.test.ts apps/web/test/workspace-ui.test.tsx` 检查相同目标两次创建得到不同实例，旧会议的预算从自身归档读取；错误实例无法批准，正确修订可以应用。 |
+| 绑定成员审查、执行编号与主卡版本 | 模拟测试通过 | `pnpm exec vitest run packages/store/test/workflow.test.ts apps/server/test/application-http.test.ts` 检查过期执行和不匹配快照均被拒绝；不兼容上游使基于钉住旧版的必需审查失去验收资格。另以 `pnpm exec vitest run apps/web/test/workspace-ui.test.tsx -t 主卡验收弹窗` 验证打开弹窗后看板刷新仍提交原快照。 |
+| 阻塞答复的异常和重启恢复 | 模拟测试通过 | `pnpm exec vitest run packages/store/test/workflow.test.ts` 在收件人失败、取消、被改派、重启中断后分别验证两条同卡问题只有一个待决定答复任务；取消后的待办或全局停止不会重新派发。 |
