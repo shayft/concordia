@@ -1,3 +1,4 @@
+import { configSnapshot, recordDecision } from './governance.ts';
 import { BudgetExceeded, PoolSuspended, meterProvider, registerBudgets, dispatchBudget, noTargetStarted, reserveBudget, settleBudget, suspendPool } from './budget-ledger.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import type { FastifyInstance } from 'fastify';
@@ -172,6 +173,7 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
         mutate(db, () => {
           checkConfig(db, key, data, false);
           db.prepare('INSERT INTO ' + table + '(id, document) VALUES (?, ?)').run(data.id, JSON.stringify(data));
+          recordDecision(db, key + '.created', null, { after: configSnapshot(data) });
         });
         return reply.code(201).send(data);
       });
@@ -179,18 +181,20 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
         const data = parse(schema, request.body);
         if (data.id !== request.params.id) throw new CatalogError(400, '编辑时不能更改标识。');
         mutate(db, () => {
-          find(db, key, data.id);
+          const previous = find(db, key, data.id);
           checkIdle(key, data.id);
           checkConfig(db, key, data, true);
           db.prepare('UPDATE ' + table + ' SET document = ? WHERE id = ?').run(JSON.stringify(data), data.id);
+          recordDecision(db, key + '.updated', null, { before: configSnapshot(previous), after: configSnapshot(data) });
         });
         return data;
       });
       api.delete<ResourceParams>(path + '/:id', async (request, reply) => {
         mutate(db, () => {
-          find(db, key, request.params.id);
+          const previous = find(db, key, request.params.id);
           checkIdle(key, request.params.id);
           db.prepare('DELETE FROM ' + table + ' WHERE id = ?').run(request.params.id);
+          recordDecision(db, key + '.deleted', null, { before: configSnapshot(previous) });
         });
         return reply.code(204).send();
       });
@@ -239,14 +243,16 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
           if (!('inspectionId' in input) || typeof input.inspectionId !== 'string') throw new CatalogError(400, '请先完成 CLI 预检。');
           const started = performance.now();
           const reservation = reserveBudget(db,scope,'preparing');
+          let success = false;
           try {
             const result = await runCliProbe(connection.kind, { ...cli, approved: true, inspectionId: input.inspectionId, onDispatch: () => dispatchBudget(db,reservation), onSpawnRejected: () => noTargetStarted(db,reservation) });
+            success = true;
             return { ok: true, text: result.text, elapsedMs: Math.round(performance.now() - started) };
           } catch (error) {
             if (error instanceof CliDiagnosticError && (error.kind === 'rate_limit' || error.kind === 'budget'))
               suspendPool(db,scope.poolId);
             throw error;
-          } finally { settleBudget(db,reservation); }
+          } finally { settleBudget(db,reservation,{},controller.signal.aborted ? 'cancelled' : success ? 'success' : 'error'); }
         } finally {
           reply.raw.off('close', stop);
           probes.delete(probe);

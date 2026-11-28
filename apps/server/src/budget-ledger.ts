@@ -1,3 +1,4 @@
+import { currentApprovalId, recordDecision } from './governance.ts';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { FastifyInstance } from 'fastify';
@@ -17,6 +18,7 @@ export interface CallScope {
   poolId: string;
   estimate?: number;
 }
+export type CallOutcome = 'success' | 'error' | 'cancelled' | 'unknown';
 type Account = [BudgetScope, string];
 type Usage = { inputTokens?: number; outputTokens?: number; totalTokens?: number };
 export class BudgetExceeded extends Error {
@@ -84,12 +86,13 @@ export function reserveBudget(db: DatabaseSync, scope: CallScope, phase: 'prepar
       increment.run(kind, id, estimate);
     }
     const callId = randomUUID();
-    db.prepare("INSERT INTO budget_calls(id,scopes,estimated,started,status) VALUES (?,?,?,?,?)").run(
+    db.prepare("INSERT INTO budget_calls(id,scopes,estimated,started,status,approval_id) VALUES (?,?,?,?,?,?)").run(
       callId,
       JSON.stringify(accounts),
       estimate,
       Date.now(),
       phase,
+      currentApprovalId() ?? null,
     );
     return callId;
   });
@@ -119,7 +122,7 @@ export function noTargetStarted(db: DatabaseSync, id: string) {
   });
 }
 
-export function settleBudget(db: DatabaseSync, id: string, usage: Usage = {}): void {
+export function settleBudget(db: DatabaseSync, id: string, usage: Usage = {}, outcome: CallOutcome = 'unknown'): void {
   transaction(db, () => {
     const row = db
       .prepare("SELECT scopes,estimated,status FROM budget_calls WHERE id=? AND status IN ('preparing','running')")
@@ -144,8 +147,8 @@ export function settleBudget(db: DatabaseSync, id: string, usage: Usage = {}): v
     for (const [scope, key] of JSON.parse(String(row.scopes)) as Account[])
       update.run(tokens - estimate, scope, key);
     db.prepare(
-      "UPDATE budget_calls SET status='finished',input_tokens=?,output_tokens=?,total_tokens=?,finished=? WHERE id=?",
-    ).run(input, output, total, Date.now(), id);
+      "UPDATE budget_calls SET status='finished',outcome=?,input_tokens=?,output_tokens=?,total_tokens=?,finished=? WHERE id=?",
+    ).run(outcome, input, output, total, Date.now(), id);
   });
 }
 
@@ -156,11 +159,14 @@ export function meterProvider(db: DatabaseSync, scope: CallScope, provider: Mode
       options?.signal?.throwIfAborted();
       const id = reserveBudget(db, scope, 'preparing');
       const usage: Usage = {};
+      let outcome: CallOutcome = 'unknown';
       try {
         const mark = () => dispatchBudget(db, id, options?.onDispatch);
         const precise = provider.getCapabilities().dispatchSignal;
         if (!precise) mark();
         for await (const event of provider.stream(messages, tools, { ...options, onDispatch: precise ? mark : undefined })) {
+          if (event.type === 'error') outcome = 'error';
+          if (event.type === 'completed' && outcome !== 'error') outcome = 'success';
           if (event.type === 'error' && (event.kind === 'rate_limit' || (event.kind === 'budget' && event.httpStatus !== undefined)))
             suspendPool(db, scope.poolId);
           if (event.type === 'usage') {
@@ -170,14 +176,18 @@ export function meterProvider(db: DatabaseSync, scope: CallScope, provider: Mode
           }
           yield event;
         }
+      } catch (err) {
+        outcome = 'error';
+        throw err;
       } finally {
-        settleBudget(db, id, usage);
+        settleBudget(db, id, usage, options?.signal?.aborted ? 'cancelled' : outcome);
       }
     },
     async validateConnection(signal, onDispatch) {
       signal?.throwIfAborted();
       const id = reserveBudget(db, scope, 'preparing');
       let usage: Usage | undefined;
+      let outcome: CallOutcome = 'error';
       try {
         const mark = () => dispatchBudget(db, id, onDispatch);
         const precise = provider.getCapabilities().dispatchSignal;
@@ -185,10 +195,11 @@ export function meterProvider(db: DatabaseSync, scope: CallScope, provider: Mode
         const result = await provider.validateConnection(signal, precise ? mark : undefined);
         if (!result.ok && (result.error.kind === 'rate_limit' || (result.error.kind === 'budget' && result.error.httpStatus !== undefined)))
           suspendPool(db, scope.poolId);
+        outcome = result.ok ? 'success' : 'error';
         usage = result.usage;
         return result;
       } finally {
-        settleBudget(db, id, usage);
+        settleBudget(db, id, usage, signal?.aborted ? 'cancelled' : outcome);
       }
     },
   };
@@ -247,23 +258,32 @@ export function registerBudgets(app: FastifyInstance, db: DatabaseSync) {
       scope.data === 'global' ? id === 'all' : /^(?:connection:)?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(id);
     if (good && (scope.data === 'pool' || !id.includes(':'))) return scope.data;
   }
+  const priorCaps = db.prepare('SELECT max_calls,max_tokens,max_concurrent FROM budget_limits WHERE scope=? AND id=?');
   app.put<Params>('/api/budgets/:scope/:id', async (request, reply) => {
     const { id } = request.params;
     const scope = scopeFor(request.params.scope, id);
     const caps = budgetCapsSchema.safeParse(request.body);
     if (!scope || !caps.success) return reply.code(400).send({ error: '请指定有效预算范围与正整数上限。' });
     const { maxCalls, maxTokens, maxConcurrent } = caps.data;
-    db.prepare(
+    transaction(db, () => {
+      const before = priorCaps.get(scope,id) ?? null;
+      db.prepare(
       `INSERT INTO budget_limits(scope,id,max_calls,max_tokens,max_concurrent) VALUES(?,?,?,?,?)
       ON CONFLICT(scope,id) DO UPDATE SET max_calls=excluded.max_calls,max_tokens=excluded.max_tokens,max_concurrent=excluded.max_concurrent`,
     ).run(scope, id, maxCalls ?? null, maxTokens ?? null, maxConcurrent ?? null);
+      recordDecision(db, 'budget.updated', scope === 'workspace' ? id : null, { scope, id, before, after: priorCaps.get(scope,id) });
+    });
     return { scope, id, ...caps.data };
   });
   app.delete<Params>('/api/budgets/:scope/:id', async (request, reply) => {
     const { id } = request.params;
     const scope = scopeFor(request.params.scope, id);
     if (!scope) return reply.code(400).send({ error: '预算范围无效。' });
-    db.prepare('DELETE FROM budget_limits WHERE scope=? AND id=?').run(scope, id);
+    transaction(db, () => {
+      const before = priorCaps.get(scope,id);
+      db.prepare('DELETE FROM budget_limits WHERE scope=? AND id=?').run(scope, id);
+      if (before) recordDecision(db, 'budget.deleted', scope === 'workspace' ? id : null, { scope, id, before, after: null });
+    });
     return reply.code(204).send();
   });
 }

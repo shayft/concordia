@@ -15,6 +15,7 @@ const migrations = [
   { version: 7, name: '007-paused-pools.sql' },
   { version: 8, name: '008-plan-draft.sql' },
   { version: 9, name: '009-plan-requests.sql' },
+  { version: 10, name: '010-governance.sql' },
 ] as const;
 
 export function identifyStore(db: DatabaseSync): number {

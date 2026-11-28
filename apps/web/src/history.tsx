@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { api, browserFetch, useAction, useResource } from './api.ts';
 import { Empty, Notice } from './ui.tsx';
 
+import { GovernanceHistory } from './governance-history.tsx';
 import { useHistoryFeed } from './history-feed.ts';
 
 export function HistoryPage({ events }: { events: number }) {
@@ -52,6 +53,7 @@ export function HistoryPage({ events }: { events: number }) {
         </div>
       )}
       <Notice error={check.error} message={check.message} />
+      <GovernanceHistory />
       <section className="surface">
         <div className="section-head">
           <h2>执行成本</h2>
