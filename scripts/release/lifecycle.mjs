@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { execFile, fork } from 'node:child_process';
 import { once } from 'node:events';
 import { rm } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -13,7 +12,7 @@ const [oldPath, newPath, ...extra] = process.argv.slice(2);
 if (!oldPath || !newPath || extra.length) throw new Error('用法：node scripts/release/lifecycle.mjs <已安装旧源码> <已安装候选源码>');
 const previous = resolve(oldPath), candidate = resolve(newPath);
 const { privateTemporaryDirectory } = await import(pathToFileURL(join(candidate, 'packages/store/src/paths.ts')).href);
-const scratch = privateTemporaryDirectory(tmpdir(), 'concordia-release-check-');
+const scratch = privateTemporaryDirectory(tmpdir(), 'concordia-rc-');
 const environment = {};
 for (const name of ['PATH', 'SystemRoot', 'SystemDrive', 'WINDIR', 'ComSpec', 'ProgramFiles'])
   if (process.env[name]) environment[name] = process.env[name];
@@ -86,11 +85,16 @@ async function snapshot(request) {
   };
 }
 async function copyState(source, mode, from, to) {
-  const tsx = createRequire(join(source, 'package.json')).resolve('tsx/cli');
   try {
-    await promisify(execFile)(process.execPath, [tsx, join(source, 'apps/server/src/backup.ts'), mode, from, to],
+    // Invoke the installed backup CLI directly. A separate tsx CLI launcher opens
+    // an extra Unix IPC socket in TMPDIR, which may exceed macOS's pathname limit.
+    await promisify(execFile)(process.execPath, ['--import', 'tsx', join(source, 'apps/server/src/backup.ts'), mode, from, to],
       { cwd: source, env: environment, shell: false, timeout: 90_000, windowsHide: true });
-  } catch { throw new Error('离线 ' + mode + ' 失败。'); }
+  } catch (error) {
+    const code = String(error.stderr ?? '').match(/\b(?:ENAMETOOLONG|ECONNREFUSED|EADDRINUSE|EACCES|ENOENT|EPERM|ERR_MODULE_NOT_FOUND)\b/u)?.[0];
+    const reason = code ?? (String(error.stderr).includes('操作未完成') ? '应用完整性或路径检查' : '进程启动或退出');
+    throw new Error('离线 ' + mode + ' 失败：' + reason);
+  }
 }
 function versions(data) {
   return ['catalog.sqlite', 'worktrees.sqlite', 'boards/default/workspace.sqlite'].map(file => {
