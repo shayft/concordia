@@ -8,6 +8,7 @@ import { existingDataDirectory, safeDatabasePath, safeDataDirectory } from '@con
 import { runProcess } from '@concordia/runtimes/process';
 import { worktreeFile, worktreePathParts } from '@concordia/runtimes/worktree-files';
 import { checkLocalConfig, git, gitResult, gitWorktrees, sameDirectory } from './git.ts';
+import { versionDiff, workingDiff } from './diff.ts';
 
 const id = z.string().min(1).max(180);
 const sha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
@@ -323,6 +324,20 @@ export class WorktreeService {
       throw error;
     }
     return { treeId, taskId: tree.taskId!, sha: commit };
+  }
+  memberDiff(treeId: string, published?: string, scope?: string) {
+    const tree = this.tree(treeId);
+    if (tree.kind !== 'member' || tree.scope !== (scope ?? null)) throw new Error('成员工作树与当前计划不匹配。');
+    const repository = this.project(tree.projectId).repository;
+    if (published !== undefined) {
+      sha.parse(published);
+      if (!this.db.prepare('SELECT 1 FROM publications WHERE tree=? AND sha=?').get(treeId, published))
+        throw new Error('此提交不是该成员已发布的版本。');
+      checkLocalConfig(repository);
+      return { treeId, baseSha: tree.base, sha: published, diff: versionDiff(repository, tree.base, published), untracked: [] };
+    }
+    this.verified(treeId, false);
+    return { treeId, baseSha: head(tree.path), sha: null, ...workingDiff(tree.path) };
   }
   readPublication(projectId: string, treeId: string, version: string, path: string) {
     sha.parse(version);

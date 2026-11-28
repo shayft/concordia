@@ -236,3 +236,24 @@ it('以文件系统身份校验目录，拒绝其他目录和链接，接受 Win
   service.configure({ ...config(true), repository: alias });
   expect(service.member('demo', 'identity').status).toBe('ready');
 });
+
+it('成员差异分别显示暂存、工作文件及已发布版本，只读访问不会改变索引或分支', () => {
+  service.configure(config(true));
+  const tree = service.member('demo', 'diff', 'scope');
+  service.write(tree.id, 'file.txt', 'published');
+  const published = service.publish(tree.id);
+  service.write(tree.id, 'file.txt', 'staged');
+  run(tree.path, 'add', '--', 'file.txt');
+  service.write(tree.id, 'file.txt', 'unstaged');
+  service.write(tree.id, 'new.txt', 'untracked');
+  const before = run(tree.path, 'status', '--porcelain');
+  service.configure(config(false));
+  const working = service.memberDiff(tree.id, undefined, 'scope');
+  expect(working.untracked).toEqual(['new.txt']);
+  for (const line of ['+staged', '+unstaged', '+untracked']) expect(working.diff).toContain(line);
+  expect(service.memberDiff(tree.id, published.sha, 'scope').diff).toContain('+published');
+  expect(() => service.memberDiff(tree.id, undefined, 'other')).toThrow();
+  expect(() => service.memberDiff(tree.id, tree.base, 'scope')).toThrow();
+  expect(run(tree.path, 'status', '--porcelain')).toBe(before);
+  expect(run(tree.path, 'rev-parse', 'HEAD')).toBe(published.sha);
+});

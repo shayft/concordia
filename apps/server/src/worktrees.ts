@@ -33,6 +33,7 @@ export function serveWorktrees(
   post('member', z.strictObject({ projectId: z.string(), taskId: z.string() }), (v) =>
     service.member(v.projectId, v.taskId, getScope?.()),
   );
+  post('diff', tree.extend({ sha: z.string().max(64).optional() }), (v) => service.memberDiff(v.treeId, v.sha, getScope?.()));
   post('publish', tree, (v) => service.publish(v.treeId));
   post('integrate', z.strictObject({ projectId: z.string(), snapshot: snapshotSchema }), (v) =>
     service.integrate(v.projectId, v.snapshot),
