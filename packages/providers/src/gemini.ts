@@ -1,3 +1,4 @@
+import { throwUpstreamError } from './upstream-error.ts';
 import type { ModelAction, ModelEvent, ModelMessage, ModelTool, ProviderConfig } from './model-types.ts';
 import { action, list, obj, readJson, sse, string, usage, type Dictionary } from './wire.ts';
 
@@ -82,7 +83,8 @@ export async function* geminiEvents(res: Response, stream: boolean): AsyncGenera
   let callIndex = 0;
   let meter: ModelEvent[] = [];
   for await (const frame of frames()) {
-    if (frame.error || (frame.promptFeedback && obj(frame.promptFeedback).blockReason))
+    if (frame.error) throwUpstreamError(frame.error);
+    if (frame.promptFeedback && obj(frame.promptFeedback).blockReason)
       throw new Error('blocked');
     if (frame.usageMetadata) {
       const u = obj(frame.usageMetadata);

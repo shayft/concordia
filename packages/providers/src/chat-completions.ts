@@ -1,3 +1,4 @@
+import { throwUpstreamError } from './upstream-error.ts';
 import type { ModelEvent, ModelMessage, ModelTool, ProviderConfig } from './model-types.ts';
 import { action, list, obj, readJson, sse, string, usage } from './wire.ts';
 
@@ -46,6 +47,7 @@ export async function* chatEvents(response: Response, stream: boolean, rememberR
   };
   if (!stream) {
     const body = await readJson(response);
+    if (body.error) throwUpstreamError(body.error);
     const choice = obj(list(body.choices)[0]);
     finish(choice.finish_reason);
     const m = obj(choice.message);
@@ -70,7 +72,7 @@ export async function* chatEvents(response: Response, stream: boolean, rememberR
       return;
     }
     const frame = obj(JSON.parse(data));
-    if (frame.error) throw new Error('provider error');
+    if (frame.error) throwUpstreamError(frame.error);
     for (const item of list(frame.choices)) {
       const choice = obj(item);
       if (finished || (choice.index ?? 0) !== 0) throw new Error('unexpected choice');

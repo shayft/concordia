@@ -1,3 +1,4 @@
+import { StreamFailure } from './upstream-error.ts';
 import { readCredential, isCredentialReference } from './credentials.ts';
 import { readUntilStopped } from './gateway.ts';
 import { responsesBody, responsesEvents } from './responses.ts';
@@ -255,9 +256,10 @@ export function createModelProvider(
       if (tail) yield { type: 'text_delta', text: tail };
       yield* pending;
       yield { type: 'completed' };
-    } catch {
+    } catch (error) {
       if (options.signal?.aborted) yield failure('cancelled', '请求已取消。');
       else if (timeout?.aborted) yield failure('timeout', '请求已超时。');
+      else if (error instanceof StreamFailure) yield failure(error.kind, error.message, problem.httpStatus);
       else yield problem;
     } finally {
       cleanup.abort();
