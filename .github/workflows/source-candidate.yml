@@ -6,6 +6,7 @@ on:
     branches: [main]
   push:
     branches: [main]
+    tags: ['v*-rc.*']
 
 permissions:
   contents: read
@@ -108,8 +109,8 @@ jobs:
         run: node installed/concordia/scripts/release/lifecycle.mjs previous installed/concordia
 
   provenance:
-    name: Attest verified main candidate
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    name: Attest verified candidate
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref_type == 'tag')
     needs: [package, install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -131,3 +132,39 @@ jobs:
             bundle/source.json
             bundle/SHA256SUMS
           create-storage-record: false
+
+  publish:
+    name: Publish verified prerelease
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [package, install, provenance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.package.outputs.artifact_id }}
+          merge-multiple: true
+          path: bundle
+      - name: Verify eligibility and attach the tested files to the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MANIFEST_SHA: ${{ needs.package.outputs.manifest_sha }}
+        shell: bash
+        run: |
+          git merge-base --is-ancestor "$CANDIDATE_COMMIT" HEAD
+          test "$GITHUB_REF_NAME" = "v$(jq -r .version bundle/source.json)"
+          test "$CANDIDATE_COMMIT" = "$(jq -r .commit bundle/source.json)"
+          cd bundle
+          printf '%s  SHA256SUMS\n' "$MANIFEST_SHA" | sha256sum --check --status
+          sha256sum --check SHA256SUMS
+          git show "$CANDIDATE_COMMIT:CHANGELOG.md" > "$RUNNER_TEMP/concordia-release-notes.md"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --latest=false \
+            --title "Concordia $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/concordia-release-notes.md" \
+            SHA256SUMS source.json sbom.cdx.json concordia-source.tar

@@ -4,7 +4,10 @@ Concordia 分发带 MIT 许可证的源码。运行需要 Git、Node.js 24 LTS �
 
 ## 下载并验证
 
-进入对应提交的 **Source release candidate** 工作流，查看 **Package one immutable source candidate** 的作业摘要。摘要给出完整提交、`SHA256SUMS` 的 SHA-256 和 **Download candidate** 链接。GitHub Actions 制品保留 30 天，下载可能需要登录 GitHub。PR 上的作业用于合并前演练。main 的三个安装作业完成后，**Attest verified main candidate** 会用 GitHub 的工作流身份为各文件生成来源证明。[候选工作流](../.github/workflows/source-candidate.yml)
+已发布的测试版可从 Releases 下载四个独立文件。标签作业验证该提交已进入 main、版本与标签一致、三平台安装和来源证明均完成，再上传同一份已测试制品。下载后核对来源证明或对应作业摘要及 SHA-256。[GitHub Releases](https://github.com/shayft/concordia/releases)
+
+
+进入对应提交的 **Source release candidate** 工作流，查看 **Package one immutable source candidate** 的作业摘要。摘要给出完整提交、`SHA256SUMS` 的 SHA-256 和 **Download candidate** 链接。GitHub Actions 制品保留 30 天，下载可能需要登录 GitHub。PR 上的作业用于合并前演练。main 的三个安装作业完成后，**Attest verified candidate** 会用 GitHub 的工作流身份为各文件生成来源证明。[候选工作流](../.github/workflows/source-candidate.yml)
 
 解压 Actions 下载的 ZIP，将以下文件保存在同一目录，例如 `bundle`。
 
