@@ -72,8 +72,8 @@ export function privateDataDirectory(path: string): string {
   return directory(path, [], true, true);
 }
 
-export function existingDataDirectory(root: string): string {
-  return directory(root, [], false);
+export function existingDataDirectory(root: string, ...segments: string[]): string {
+  return directory(root, segments, false);
 }
 
 /** Reject symlinks, junctions, devices, directories, and files sharing another inode name. */

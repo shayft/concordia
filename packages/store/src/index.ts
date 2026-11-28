@@ -3,6 +3,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { safeDatabasePath } from './paths.ts';
 import { databaseVersion, verifyBeforeOpening } from './database-identity.ts';
 import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 
 const migrations = [
   { version: 1, name: '001-bootstrap.sql' },
@@ -28,10 +29,10 @@ function identifyStore(db: DatabaseSync): number {
 }
 
 /** 在写事务内再次读取版本，允许多个启动进程先后尝试迁移。 */
-function migrate(db: DatabaseSync): void {
+function migrate(db: DatabaseSync, identify: (connection: DatabaseSync) => number): void {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const current = identifyStore(db);
+    const current = identify(db);
 
     for (const { version, name } of migrations) {
       if (version <= current) continue;
@@ -48,11 +49,18 @@ function migrate(db: DatabaseSync): void {
 }
 
 /** 调用方负责选择私有数据目录、创建父目录，以及使用完毕时关闭数据库。 */
-export function openStore(databasePath: string): DatabaseSync {
+export function openStore(databasePath: string, options: { mustExist?: boolean } = {}): DatabaseSync {
   const absolute = resolve(databasePath);
   const file = safeDatabasePath(dirname(absolute), basename(absolute));
-  verifyBeforeOpening(file, identifyStore);
-  const db = new DatabaseSync(file);
+  function identify(connection: DatabaseSync) {
+    const version = identifyStore(connection);
+    if (options.mustExist && version === 0) throw new Error('已有数据库缺少迁移历史。');
+    return version;
+  }
+  verifyBeforeOpening(file, identify);
+  const uri = pathToFileURL(file);
+  if (options.mustExist) uri.searchParams.set('mode', 'rw'); // SQLite must never recreate a registered board.
+  const db = new DatabaseSync(uri.href);
   try {
     db.exec('PRAGMA busy_timeout = 5000');
     const mode = db.prepare('PRAGMA journal_mode = WAL').get();
@@ -60,7 +68,7 @@ export function openStore(databasePath: string): DatabaseSync {
       throw new Error('此数据库无法启用 WAL，请选择本地磁盘上的普通文件。');
     }
     db.exec('PRAGMA foreign_keys = ON');
-    migrate(db);
+    migrate(db, identify);
     return db;
   } catch (error) {
     db.close();

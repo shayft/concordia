@@ -7,6 +7,7 @@ import { demoSpec, meetingSpec, parallelSpec, reviewSpec, Scheduler } from '@con
 import { runDemo } from '@concordia/core/demo';
 import { acceptanceSnapshotSchema, workflowSpecSchema } from '@concordia/protocol/workflow';
 import { openStore } from '@concordia/store';
+import { initialWorkspace, openWorkspaceStore } from './workspace-storage.ts';
 import { WorkflowStore } from '@concordia/store/workflow';
 import { startProcessRecovery } from '@concordia/runtimes/process';
 import { acquireDataDirectory, safeDatabasePath, safeDataDirectory } from './data-directory.ts';
@@ -58,15 +59,13 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   db.prepare("UPDATE plan_requests SET status='interrupted',finished=? WHERE status='running'").run(
     Date.now(),
   );
-  db.prepare("INSERT OR IGNORE INTO workspaces VALUES('default','默认工作区',1)").run();
   const trees = openWorktrees(directory, syncConflict, undefined, (scope, project, inputs) =>
     acceptedCommits(current.scheduler, db, current.id, scope, project, inputs));
   app.addHook('onClose', async () => trees.close());
   const workspaces = () =>
     db.prepare('SELECT id,name FROM workspaces ORDER BY rowid').all() as { id: string; name: string }[];
-  function openBoard(id: string) {
-    const dir = safeDataDirectory(directory, 'boards', id);
-    const boardDb = openStore(safeDatabasePath(dir, 'workspace.sqlite'));
+  function openBoard(id: string, create: boolean) {
+    const { dir, boardDb } = openWorkspaceStore(directory, id, create);
     try {
       const scheduler = new Scheduler({
         storage: new WorkflowStore(boardDb, dir),
@@ -96,7 +95,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       throw error;
     }
   }
-  let current = openBoard(String(db.prepare('SELECT id FROM workspaces WHERE active=1').get()!.id));
+  let current = initialWorkspace(db, directory, openBoard);
   const feeds = new Set<() => void>();
   function closeFeeds() {
     for (const stop of [...feeds]) stop();
@@ -155,7 +154,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     if (current.id === id) return;
     if (current.worker.occupied()) throw new Error('工作区仍有执行或已授权批次');
     if (!newName && !workspaces().some((w) => w.id === id)) throw new Error('工作区不存在');
-    const next = openBoard(id);
+    const next = openBoard(id, newName !== undefined);
     try {
       db.exec('BEGIN IMMEDIATE');
       if (newName) db.prepare('INSERT INTO workspaces(id,name,active) VALUES(?,?,0)').run(id, newName);
