@@ -3,12 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { hashFile, verifyCandidate } from './verify.mjs';
+import { newDestination } from './paths.mjs';
 
 const [commit, bundle, expectedDigest, destination, ...extra] = process.argv.slice(2);
 if (!destination || extra.length || !/^[0-9a-f]{64}$/u.test(expectedDigest ?? ''))
   throw new Error('用法：node scripts/release/unpack.mjs <提交> <候选目录> <可信清单 SHA-256> <新目录>');
 const metadata = await verifyCandidate(bundle, commit, expectedDigest);
-const target = resolve(destination);
+const target = newDestination(destination);
 await mkdir(target, { mode: 0o700 }); // Never unpack on top of a user's installation.
 try {
   // Git Bash can put a GNU tar on PATH that interprets D: as a remote host.

@@ -3,14 +3,16 @@ import { execFile, fork } from 'node:child_process';
 import { once } from 'node:events';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
+import { existingDirectory } from './paths.mjs';
+
 const [oldPath, newPath, ...extra] = process.argv.slice(2);
 if (!oldPath || !newPath || extra.length) throw new Error('用法：node scripts/release/lifecycle.mjs <已安装旧源码> <已安装候选源码>');
-const previous = resolve(oldPath), candidate = resolve(newPath);
+const previous = existingDirectory(oldPath), candidate = existingDirectory(newPath);
 const { privateTemporaryDirectory } = await import(pathToFileURL(join(candidate, 'packages/store/src/paths.ts')).href);
 const scratch = privateTemporaryDirectory(tmpdir(), 'concordia-rc-');
 const environment = {};

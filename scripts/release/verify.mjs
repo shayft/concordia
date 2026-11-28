@@ -1,17 +1,24 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { assertSingleFile } from '../../packages/store/src/paths.ts';
+import { existingDirectory } from './paths.mjs';
+
 export async function hashFile(file) {
+  existingDirectory(dirname(file));
+  assertSingleFile(resolve(file));
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
 }
 export async function verifyCandidate(directory, commit, trustedManifestDigest) {
   if (!/^[0-9a-f]{40}$/u.test(commit ?? '')) throw new Error('需要完整 Git 提交 SHA。');
+  directory = existingDirectory(directory);
   const manifest = join(directory, 'SHA256SUMS');
+  assertSingleFile(manifest);
   if (trustedManifestDigest !== undefined && await hashFile(manifest) !== trustedManifestDigest)
     throw new Error('校验清单与可信来源的摘要不符。');
   const names = new Set(['concordia-source.tar', 'sbom.cdx.json', 'source.json']);

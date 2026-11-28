@@ -1,15 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, posix, resolve } from 'node:path';
+import { dirname, join, posix } from 'node:path';
 import { parse } from 'yaml';
 import { verifyCandidate, hashFile } from './verify.mjs';
+import { existingDirectory, newDestination } from './paths.mjs';
 
 const [operation, commit, destination, ...rest] = process.argv.slice(2);
 if (operation !== 'build' || !/^[a-f0-9]{40}$/u.test(commit ?? '') || !destination || rest.length)
   throw new Error('用法：node scripts/release/candidate.mjs build <完整 Git 提交 SHA> <新目录>');
 
+existingDirectory(process.cwd());
 const defaults = fileURLToPath(new URL('../../apps/server/src/worktrees/git.defaults', import.meta.url)).replaceAll('\\', '/');
 const gitEnvironment = {
   GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: defaults, GIT_ATTR_NOSYSTEM: '1',
@@ -84,9 +86,8 @@ for (const key of sorted(lock.snapshots)) {
       addEdge(item, key, name, version);
 }
 
-const final = resolve(destination);
+const final = newDestination(destination, true);
 if (existsSync(final)) throw new Error('候选目录已存在。');
-mkdirSync(dirname(final), { recursive: true });
 const stage = mkdtempSync(join(dirname(final), '.concordia-candidate-'));
 try {
   // Local info/attributes can mark tracked files export-ignore. Archive through
