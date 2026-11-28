@@ -1,3 +1,4 @@
+import { servePlanDraft } from './plan-draft.ts';
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -85,7 +86,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
           scheduler.resumePool(pool);
         }
       }
-      return { id, scheduler, worker, close: () => boardDb.close() };
+      return { id, boardDb, scheduler, worker, close: () => boardDb.close() };
     } catch (error) {
       boardDb.close();
       throw error;
@@ -188,6 +189,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     void __;
     return { ...board, stoppedPools: [...new Set([...board.stoppedPools, ...pausedPools(db)])] };
   });
+  servePlanDraft(app, () => current);
   app.get('/api/workspaces', async () => ({ ...browserWorkspace, workspaces: workspaces() }));
   app.get('/api/recovery', async () => recovery.report());
   app.post('/api/recovery/recheck', async (req, reply) => {
