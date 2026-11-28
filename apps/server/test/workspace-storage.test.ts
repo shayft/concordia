@@ -70,3 +70,16 @@ it('以前未启用工作区的真实旧库可以首次建立默认看板并保�
   try { expect(upgraded.prepare('SELECT value FROM preserved').get()?.value).toBe('旧版数据'); }
   finally { upgraded.close(); }
 });
+
+it('已有工作区登记但活动标志丢失时保留所有登记，不擅自建 default', async () => {
+  privateDataDirectory(data);
+  const file = join(data, 'catalog.sqlite');
+  const catalog = openStore(file);
+  catalog.exec("INSERT INTO workspaces(id,name,active) VALUES('older','已有工作区',0)");
+  catalog.close();
+  await expect(start()).rejects.toThrow('缺少活动登记');
+  await expect(access(join(data, 'boards', 'default'))).rejects.toThrow();
+  const check = new DatabaseSync(file, { readOnly: true });
+  try { expect(check.prepare('SELECT id,active FROM workspaces').all()).toEqual([{ id: 'older', active: 0 }]); }
+  finally { check.close(); }
+});
