@@ -7,7 +7,7 @@ export function subscribeEvents(onOpen: () => void, onEvent: () => void, onDisco
   let retry: ReturnType<typeof setTimeout> | undefined;
   async function connect() {
     try {
-      const response = await browserFetch('/api/events', {
+      const response = await browserFetch(cursor ? '/api/events' : '/api/events?tail=1', {
         headers: cursor ? { 'Last-Event-ID': cursor } : {},
         signal: controller.signal,
       });
@@ -25,10 +25,8 @@ export function subscribeEvents(onOpen: () => void, onEvent: () => void, onDisco
             const frame = pending.slice(0, end);
             pending = pending.slice(end + 2);
             const id = /^id: (\d+)$/m.exec(frame)?.[1];
-            if (id && /^data:/m.test(frame)) {
-              cursor = id;
-              onEvent();
-            }
+            if (id) cursor = id;
+            if (id && /^data:/m.test(frame)) onEvent();
           }
         }
       } finally {

@@ -231,7 +231,12 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     } catch (error) { return rejected(reply, error); }
   });
   app.get('/api/events', async (req, reply) => {
-    const sequence = Number(req.headers['last-event-id'] ?? 0);
+    const query = z.strictObject({ tail: z.literal('1').optional() }).safeParse(req.query);
+    if (!query.success) return reply.code(400).send();
+    const tail = query.data.tail && req.headers['last-event-id'] === undefined;
+    const sequence = tail
+      ? Number(current.boardDb.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM workflow_events').get()!.seq)
+      : Number(req.headers['last-event-id'] ?? 0);
     if (!Number.isSafeInteger(sequence) || sequence < 0) return reply.code(400).send();
     reply.hijack();
     const output = reply.raw;
@@ -240,7 +245,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       'Cache-Control': 'no-store',
       'X-Content-Type-Options': 'nosniff',
     });
-    output.write(': connected\n\n');
+    output.write(tail ? 'id: ' + sequence + '\n: connected\n\n' : ': connected\n\n');
     const stop = streamHistory(output, current.boardDb, sequence, () => feeds.delete(stop));
     feeds.add(stop);
   });
