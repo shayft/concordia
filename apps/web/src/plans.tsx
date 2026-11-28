@@ -1,3 +1,4 @@
+import { ApprovalDetails, useApproval } from './approval.tsx';
 import { usePlanDraft } from './plan-draft.ts';
 import { useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
@@ -71,6 +72,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
   const member = enabled.find((m) => m.id === agent);
   const connection = catalog.data?.connections.find((c) => c.id === member?.connectionId);
   const cli = connection && !('baseUrl' in connection);
+  const approval = useApproval(source === 'lead' && member ? { purpose: 'plan', id: member.id } : undefined);
   const group = ['meeting', 'review', 'parallel'].includes(source);
   async function load() {
     const revision = draftRevision.current;
@@ -80,7 +82,7 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
         agentId: agent,
         approved: true,
         ...(cli && { inspectionId: inspection?.inspectionId, confirmUnmanaged: unmanaged }),
-      });
+      }, undefined, approval.preview?.stamp);
       if (revision !== draftRevision.current) return;
       edit(JSON.stringify(result.spec, null, 2));
       setPreview(result.preview);
@@ -232,13 +234,14 @@ export function PlansPage({ openBoard, workspace }: { openBoard: () => void; wor
             {inspection && <InspectionPanel result={inspection} />}
           </>
         )}
+        {source === 'lead' && member && <ApprovalDetails approval={approval}/>}
         {source !== 'manual' && (
           <div className="toolbar">
             <button
               disabled={
                 action.busy || saved.view.status === 'loading' ||
                 (source === 'lead' &&
-                  (!agent ||
+                  (!agent || !approval.preview ||
                     !goal.trim() ||
                     (cli && !inspection) ||
                     (connection?.kind === 'claude' && !unmanaged))) ||

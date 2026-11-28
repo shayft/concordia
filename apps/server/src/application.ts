@@ -20,6 +20,7 @@ import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
 import { serveAuditExport } from './audit.ts';
 import { eventPage, historyQuery, streamHistory } from './event-history.ts';
 import { serveExecutionCosts } from './execution-cost.ts';
+import { protectPaidCalls } from './approval-route.ts';
 import { protectWorkspaceWrites } from './workspace-scope.ts';
 import { serveDelivery } from './delivery.ts';
 
@@ -138,6 +139,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   for (const issue of trees.issues()) syncConflict(issue);
   let browserWorkspace = { active: current.id, generation: randomUUID() };
   protectWorkspaceWrites(app, () => browserWorkspace);
+  protectPaidCalls(app, db, () => ({ ...current, generation: browserWorkspace.generation }));
   registerConnectionRoutes(app, db, {
     isRunning: (f) => current.worker.editingBlocked(f),
     runningCount: (f) => current.worker.count(f),

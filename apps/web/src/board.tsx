@@ -1,3 +1,4 @@
+import { ApprovalDetails, useApproval } from './approval.tsx';
 import { useEffect, useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
 import type { Scheduler } from '../../../packages/core/src/workflow.ts';
@@ -106,6 +107,9 @@ function TaskDetails({
     t.scope === work.data?.activeScope && t.taskId === task.id && t.kind === 'member' && t.status === 'ready'
   ) ?? [];
   const tree = eligibleTrees.find((t) => t.id === treeId);
+  const approval = useApproval(!simulation && connection && task.status === 'ready' ? {
+    purpose: 'task', id: task.id, treeId: tree?.id, projectId: tree?.projectId,
+  } : undefined);
   const needsUnmanaged = connection?.kind === 'claude';
   const id = 'tasks/' + encodeURIComponent(task.id) + '/';
   const perform = (name: ControlName) =>
@@ -244,6 +248,7 @@ function TaskDetails({
               {inspection && <InspectionPanel result={inspection} />}
             </>
           )}
+          {!simulation && <ApprovalDetails approval={approval}/>}
           <div className="toolbar">
             <button
               disabled={action.busy || !simulation}
@@ -260,7 +265,7 @@ function TaskDetails({
               className="primary"
               disabled={
                 action.busy ||
-                !connection?.enabled ||
+                !connection?.enabled || !approval.preview ||
                 Boolean(treeId && !tree) ||
                 !Number.isInteger(maxCalls) ||
                 maxCalls < 1 ||
@@ -276,7 +281,7 @@ function TaskDetails({
                     maxCalls: isCli ? 1 : maxCalls,
                     ...(tree && { treeId: tree.id, projectId: tree.projectId }),
                     ...(isCli && { confirmUnmanaged: unmanaged, inspectionId: inspection?.inspectionId }),
-                  });
+                  }, undefined, approval.preview?.stamp);
                   await refresh();
                 }, '已启动真实执行。')
               }
@@ -422,7 +427,6 @@ function TaskDetails({
 
 export function BoardPage({ openPlans, events }: { openPlans: () => void; events: number }) {
   const { data: board, error, reload } = useResource<Board>('board');
-  const catalog = useResource<Catalog>('catalog');
   const [owner, setOwner] = useState('');
   const [selected, setSelected] = useState('');
   const openRequest = useRef(0);
@@ -439,6 +443,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
     basedOn: Record<string, string>;
   }>();
   const [calls, setCalls] = useState(1);
+  const approval = useApproval(dialog === 'dispatch' ? { purpose: 'dispatch' } : undefined);
   const action = useAction();
   useEffect(() => {
     if (events) void reload();
@@ -641,29 +646,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
             <p>交付物版本</p><pre>{JSON.stringify(expected.versions, null, 2)}</pre>
             <p>已审执行</p><pre>{JSON.stringify(expected.executions, null, 2)}</pre>
           </div> : <p>{board?.acceptanceBlocker ?? '尚无可验收的快照'}</p>)}
-          {dialog === 'dispatch' && (
-            <div className="compact surface">
-              <h3>本工作区成员与调用来源</h3>
-              <ul>
-                {board?.agents.map((a) => {
-                  const m = catalog.data?.members.find((member) => member.id === a.id);
-                  const c = catalog.data?.connections.find((conn) => conn.id === a.connection);
-                  const model = catalog.data?.models.find((model) => model.id === m?.modelId);
-                  return (
-                    <li key={a.id}>
-                      {a.name} ·{' '}
-                      {a.connection.startsWith('mock-')
-                        ? '模拟成员'
-                        : (c?.name ?? a.connection) +
-                          ' / ' +
-                          (model?.modelId ?? '默认模型') +
-                          (c && !('baseUrl' in c) ? '（需单项授权）' : '')}
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
+          {dialog === 'dispatch' && <ApprovalDetails approval={approval}/>}
           {dialog === 'dispatch' && (
             <Field name="callBudget" label="本次调用上限">
               <input
@@ -684,14 +667,14 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
               disabled={
                 action.busy ||
                 (dialog === 'accept' && !expected) ||
-                (dialog === 'dispatch' && (!Number.isInteger(calls) || calls < 1 || calls > 50))
+                (dialog === 'dispatch' && (!approval.preview || !Number.isInteger(calls) || calls < 1 || calls > 50))
               }
               onClick={() =>
                 void action.run(async () => {
                   const url = { demo: 'demo/run', dispatch: 'dispatch', stop: 'stop', accept: 'accept' }[
                     dialog
                   ];
-                  await api(url, 'POST', dialog === 'dispatch' ? { approved: true, maxCalls: calls } : dialog === 'accept' ? { expected } : {});
+                  await api(url, 'POST', dialog === 'dispatch' ? { approved: true, maxCalls: calls } : dialog === 'accept' ? { expected } : {}, undefined, dialog === 'dispatch' ? approval.preview?.stamp : undefined);
                   await reload();
                   setDialog(undefined);
                 }, '已更新任务板。')

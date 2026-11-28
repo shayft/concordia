@@ -1,3 +1,4 @@
+import { modelEndpoint } from './model-endpoint.ts';
 import { StreamFailure } from './upstream-error.ts';
 import { readCredential, isCredentialReference } from './credentials.ts';
 import { readUntilStopped } from './gateway.ts';
@@ -49,33 +50,6 @@ const owned = new Set([
   'web_search_options',
   'mcp_servers',
 ]);
-function requestUrl(config: ProviderConfig, path: string) {
-  const root = new URL(config.baseUrl);
-  if (
-    root.username ||
-    root.password ||
-    root.hash ||
-    root.search ||
-    !(
-      root.protocol === 'https:' ||
-      (root.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(root.hostname))
-    )
-  ) {
-    throw new Error('invalid base url');
-  }
-  const endpoint = config.endpoint ?? path;
-  // Treat an endpoint as a path only. Never move credentials to a new authority.
-  if (
-    !endpoint ||
-    /[\\?#]/.test(endpoint) ||
-    endpoint.startsWith('//') ||
-    /^\w+:/.test(endpoint) ||
-    endpoint.split('/').some((p) => ['.', '..'].includes(decodeURIComponent(p)))
-  )
-    throw new Error('invalid endpoint');
-  root.pathname = root.pathname.replace(/\/+$/, '') + '/' + endpoint.replace(/^\/+/, '');
-  return root;
-}
 function failure(kind: ErrorKind, message: string, httpStatus?: number): ModelFailure {
   return { type: 'error', kind, message, ...(httpStatus === undefined ? {} : { httpStatus }) };
 }
@@ -163,23 +137,14 @@ export function createModelProvider(
         throw new Error('config');
       const useStream = options.stream ?? config.stream ?? true;
       const adapters = {
-        'chat-completions': { path: 'chat/completions', body: chatBody, events: chatEvents },
-        responses: { path: 'responses', body: responsesBody, events: responsesEvents },
-        gemini: {
-          path:
-            'models/' +
-            encodeURIComponent(config.model.replace(/^models\//, '')) +
-            ':' +
-            (useStream ? 'streamGenerateContent' : 'generateContent'),
-          body: geminiBody,
-          events: geminiEvents,
-        },
-        anthropic: { path: 'messages', body: anthropicBody, events: anthropicEvents },
+        'chat-completions': { body: chatBody, events: chatEvents },
+        responses: { body: responsesBody, events: responsesEvents },
+        gemini: { body: geminiBody, events: geminiEvents },
+        anthropic: { body: anthropicBody, events: anthropicEvents },
       };
       const adapter = adapters[config.protocol];
       if (!adapter) throw new Error('protocol');
-      const url = requestUrl(config, adapter.path);
-      if (config.protocol === 'gemini' && useStream) url.searchParams.set('alt', 'sse');
+      const url = modelEndpoint(config, useStream);
       const body = JSON.stringify(adapter.body(config, messages, tools, useStream, chatContinuations));
       if (Buffer.byteLength(body) > 128 * 1024) throw new Error('input size');
       const headers = headersFor(config);

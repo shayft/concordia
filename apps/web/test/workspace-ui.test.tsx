@@ -26,7 +26,9 @@ beforeEach(async () => {
     vi.fn(async (path: string, options: RequestInit) => {
       const body = options.body ? JSON.parse(String(options.body)) : undefined;
       requests.push({ path, method: options.method ?? 'GET', body });
-      const reply = await serve(path, body);
+      const reply = path.startsWith('/api/approval-route?')
+        ? { stamp: 'reviewed', revision: 1, routes: [{ connection: '测试', protocol: 'chat-completions', destination: '本机', model: '测试模型', credentials: [], permissions: '仅生成文本', pool: '测试' }] }
+        : await serve(path, body);
       return reply instanceof Response ? reply : Response.json(reply);
     }),
   );

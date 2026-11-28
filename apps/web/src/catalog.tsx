@@ -1,3 +1,4 @@
+import { ApprovalDetails, useApproval } from './approval.tsx';
 import { useRef, useEffect, useState, type FormEvent } from 'react';
 import type { Catalog, CatalogModel, Connection, Member, QuotaPool } from '@concordia/protocol/connections';
 import { modelPricingSchema } from '@concordia/protocol/pricing';
@@ -468,13 +469,17 @@ function TestConnection({
   const path = member
     ? 'members/' + encodeURIComponent(member.id)
     : 'connections/' + encodeURIComponent(connection.id);
+  const approval = useApproval(isCli || modelId ? {
+    purpose: member ? 'member-test' : 'connection-test', id: member?.id ?? connection.id,
+    modelId: member ? undefined : modelId || undefined,
+  } : undefined);
   const controller = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => controller.current?.abort(), []);
   async function probe<T>(mode: 'inspect' | 'test', data: object) {
     const current = new AbortController();
     controller.current = current;
     try {
-      return await api<T>(path + '/' + mode, 'POST', data, current.signal);
+      return await api<T>(path + '/' + mode, 'POST', data, current.signal, mode === 'test' ? approval.preview?.stamp : undefined);
     } finally {
       controller.current = undefined;
     }
@@ -559,11 +564,12 @@ function TestConnection({
             )}
           </div>
         )}
+        <ApprovalDetails approval={approval}/>
         <div className="modal-actions">
           <button onClick={close}>关闭</button>
           <button
             className="primary"
-            disabled={isCli ? !inspection || (connection.kind === 'claude' && !unmanaged) : !modelId}
+            disabled={!approval.preview || (isCli ? !inspection || (connection.kind === 'claude' && !unmanaged) : !modelId)}
             onClick={() =>
               void feedback.run(async () => {
                 setResult(undefined);

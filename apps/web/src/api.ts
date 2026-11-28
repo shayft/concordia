@@ -18,6 +18,7 @@ export async function api<T>(
   method = 'GET',
   body?: unknown,
   signal?: AbortSignal,
+  approval?: string,
 ): Promise<T> {
   const response = await browserFetch('/api/' + path, {
     method,
@@ -26,6 +27,7 @@ export async function api<T>(
     cache: 'no-store',
     headers: {
       ...(body !== undefined && { 'Content-Type': 'application/json' }),
+      ...(approval && { 'x-concordia-approval': approval }),
       ...(method !== 'GET' && activeWorkspace && { 'x-concordia-workspace': activeWorkspace.id, 'x-concordia-generation': activeWorkspace.generation }),
     },
     ...(body !== undefined && { body: JSON.stringify(body) }),
