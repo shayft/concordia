@@ -1,13 +1,14 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { PrivateDirectoryError } from '@concordia/store/private-directory';
 import { privateDataDirectory, safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 export { safeDatabasePath, safeDataDirectory };
 
 export function defaultDataDirectory(): string {
   if (process.env.CONCORDIA_DATA_DIR) {
     const path = process.env.CONCORDIA_DATA_DIR;
-    if (!isAbsolute(path)) throw new Error('自定义数据目录必须使用绝对路径。');
+    if (!isAbsolute(path)) throw new PrivateDirectoryError('自定义数据目录必须使用绝对路径。');
     return path;
   }
   if (process.platform === 'darwin') return join(homedir(), 'Library', 'Application Support', 'Concordia');

@@ -41,6 +41,9 @@ try {
 } catch { exit 1 }
 `;
 
+/** Only static descriptions of failed local permission checks are exposed. */
+export class PrivateDirectoryError extends Error {}
+
 export function checkPrivateDirectory(path: string, operation: 'create' | 'inspect' | 'secure-new-temp') {
   if (process.platform === 'win32') {
     const system = process.env.SystemRoot ?? 'C:\\Windows';
@@ -49,17 +52,17 @@ export function checkPrivateDirectory(path: string, operation: 'create' | 'inspe
         shell: false, windowsHide: true, stdio: 'ignore', timeout: 10_000,
         env: { SystemRoot: system, WINDIR: system, CONCORDIA_ACL_DIRECTORY: path, CONCORDIA_ACL_OPERATION: operation },
       });
-    if (result.status !== 0) throw new Error('无法确认此目录的 Windows 所有者和私有访问控制。');
+    if (result.status !== 0) throw new PrivateDirectoryError('无法确认此目录的 Windows 所有者和私有访问控制。');
     return;
   }
   const info = lstatSync(path);
   if (info.uid !== process.getuid!() || (info.mode & 0o077) !== 0)
-    throw new Error('数据目录必须归当前用户所有，并仅允许该用户访问。');
+    throw new PrivateDirectoryError('数据目录必须归当前用户所有，并仅允许该用户访问。');
   if (process.platform === 'darwin') {
     const acl = spawnSync('/bin/ls', ['-lde', '.'], { cwd: path, encoding: 'utf8', shell: false,
       env: { LC_ALL: 'C' }, timeout: 3_000, maxBuffer: 256 * 1024 });
     if (acl.status !== 0 || /^\s*\d+:.*\ballow\b/mu.test(acl.stdout))
-      throw new Error('数据目录的 macOS 扩展权限无法确认为私有。');
+      throw new PrivateDirectoryError('数据目录的 macOS 扩展权限无法确认为私有。');
   }
 }
 

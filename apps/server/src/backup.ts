@@ -16,6 +16,8 @@ const sidecar = /-(?:shm|wal|journal)$/u;
 const privatePath = /(?:^|[\\/])\.(?:claude|codex)(?:[\\/]|$)/iu;
 const isManagedSidecar = (path: string) => sidecar.test(path) && dbFile.test(path.replace(sidecar, ''));
 
+class PendingProcessRecovery extends Error {}
+
 function checkLocation(path: string): void {
   if (!isAbsolute(path) || privatePath.test(path)) throw new Error('请指定独立、绝对的 Concordia 路径。');
 }
@@ -120,7 +122,7 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
       })) {
         const names = await readdir(existingDataDirectory(records));
         if (names.some(name => name.endsWith('.json')))
-          throw new Error('应用仍有待核对的进程登记。请先在原数据目录启动、完成核对并正常停服。');
+          throw new PendingProcessRecovery('应用仍有待核对的进程登记。请先在原数据目录启动、完成核对并正常停服。');
       }
     }
     staging = privateTemporaryDirectory(dirname(to), '.concordia-copy-');
@@ -144,8 +146,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     process.exitCode = 2;
   } else {
     try { await copyApplicationState(mode, source, destination); process.stdout.write('数据复制和校验已完成。\n'); }
-    catch {
-      process.stderr.write('操作未完成。请检查服务是否已停止、路径及权限、数据库和内容完整性；保留原目录，勿启用不完整的目标。\n');
+    catch (error) {
+      const diagnostic = error instanceof PendingProcessRecovery ? error.message
+        : '请检查服务是否已停止、路径及权限、数据库和内容完整性；保留原目录，勿启用不完整的目标。';
+      process.stderr.write('操作未完成。' + diagnostic + '\n');
       process.exitCode = 1;
     }
   }
