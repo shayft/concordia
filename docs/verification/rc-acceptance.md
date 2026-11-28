@@ -21,3 +21,5 @@
 提交 `4d28747` 的同一份源码包在三种托管系统完成冻结安装、模拟交付、候选直接导入旧备份、旧数据原位升级、新备份恢复和旧程序回退。各系统均从 SQLite 版本 7/3/7 迁移至 10/4/10，并从升级前备份回到 7/3/7。三项状态分别为 **真实 Linux 测试通过**、**真实 macOS 测试通过**、**真实 Windows 测试通过**，模型部分为模拟测试。第一轮发现的 Windows tar 盘符问题与 macOS 临时路径下的旧版启动器问题均经第二轮复测。[同一制品的三平台演练](https://github.com/shayft/concordia/actions/runs/46149038763)
 
 同一提交的三个原生凭据库作业和三项未登录 CLI 预检通过。CLI 为 Claude Code 2.1.332 和 Codex CLI 0.172.0。此记录涵盖锁定版本的发现、版本、已安装能力和离线认证状态。[原生凭据库](https://github.com/shayft/concordia/actions/runs/46149038831) · [未登录 CLI](https://github.com/shayft/concordia/actions/runs/46149038771)
+
+Windows 托管回归曾在目录库丢失用例用时 5.27 秒时触发 Vitest 的 5 秒默认时限。该用例实际运行三次服务启动、六卡模拟、一次拒绝备份及恢复后的 HTTP 核对。该项单独使用 30 秒时限，仍须同时满足禁止新建替代库、未发布备份、原预算与验收均保留的断言。[该轮 Windows 记录](https://github.com/shayft/concordia/actions/runs/46149038785/job/140991322989)

@@ -36,7 +36,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { await stop(); await rm(scratch, { recursive: true, force: true }); });
 
-it('既有默认看板旁遗失目录库，重启不创建替代库；复原后仍保留上限及验收', async () => {
+it('既有默认看板旁遗失目录库，重启不创建替代库；复原后仍保留上限及验收', { timeout: 30_000 }, async () => {
   let ui = await start();
   await json(ui.post('/api/demo/run', {}));
   await json(ui.post('/api/budgets/global/all', { maxCalls: 1 }, 'PUT'));
