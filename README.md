@@ -86,9 +86,11 @@ pnpm credential:set keychain:my_openai_gateway
 pnpm verify run gateway --base-url "https://gateway.example.com/v1" --model "自定义模型ID" --credential keychain:my_openai_gateway --approve-call
 ```
 
-## 比较两种交付方式
+## 验证分工与交付耗时
 
-运行 `pnpm benchmark:delivery` 可在临时库中比较同一需求的整卡串行和阶段性交付。结果包含前端和测试的开工时间、总工期、等待依赖、排队和等待验收的时间。每类按墙钟区间合并，类别之间可能重叠。脚本使用固定时钟和模拟成员，供核对调度行为。个人试用时可用同一需求和验收条件分别记录实际耗时、返工、调用次数和账单。
+负责人可以在执行中提议新增或改派任务。在任务板的「分工提议」中预览任务、负责人和调用上限，然后批准或拒绝。当前有任务运行时，提议保留到运行结束。若其他窗口修改了计划或目标任务，请刷新差异后再决定。
+
+运行 `pnpm benchmark:delivery`，对同一需求依次比较整卡串行、整卡并发和提前发布接口的并发调度。结果分别记录主卡首次可验收、模拟用户确认和全部卡片结束的时间。运行 `pnpm benchmark:load` 可在本机临时库中重建 100 张卡和两种规模的执行历史，测量经会话验证的 HTTP 请求延迟与 SQLite WAL 大小。[测量方法和结果](docs/verification/proposals-and-load.md)
 
 ## 验证与人工验收
 
