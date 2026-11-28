@@ -8,6 +8,8 @@
 
 在 API 根路径下请求 `chat/completions`。任意模型 ID 原样传给配置的网关。工具参数的流式片段按索引拼接，收到结束原因和 SSE 的 `[DONE]` 后才交付工具动作。非流式从 `choices[0].message` 和 `usage` 解析。[OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create/) · [流事件](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events)
 
+在连接的「高级调用参数 → 输出上限字段」选择网关文档列出的字段。新建和旧连接默认使用 `max_completion_tokens`。只接受 `max_tokens` 的网关可选该项。每次请求只会出现选定的一个字段，独立验证命令、连接健康检查和正式任务使用相同的上限映射。更改连接后需要重新核对审批，运行中的同一次会话继续使用已批准配置。[OpenAI 输出限制](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create/) · [DeepSeek Chat 请求字段](https://api-docs.deepseek.com/api/create-chat-completion/)
+
 API 根路径由用户指定，端点覆盖须为同一根路径下的相对路径。非回环地址使用 HTTPS。可选的主凭据和附加请求头凭据均从操作系统凭据库读取。响应不跟随重定向；认证、限流、预算和服务错误报告固定诊断，保留 HTTP 状态。模型文本中过去或后续分块可能共同回显的已知凭据也会脱敏。将不依赖凭据的自建端点留空即可。
 
 请求正文至多 128 KiB，响应总量至多 2 MiB。默认最多生成 1024 个 token，可配置为 1 至 65536。默认超时 60 秒，包含等待凭据解锁和读取最后一个流事件。用户取消或达到上限时终止本次请求。调用方收到终止错误后应舍弃已展示的部分文本。真实用量来自上游；缺少的字段留空。

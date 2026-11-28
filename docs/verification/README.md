@@ -48,7 +48,7 @@ Windows 上一轮在临时测试程序的清理阶段出现一次 `EPERM`。本�
 
 ## 个人设备统一验收
 
-Linux、macOS、Windows 各填一份记录。以下是待执行菜单，初始状态为 **尚未验证**。在项目根目录执行命令，准备 Git、Node.js 24.16 或更新的 24.x、pnpm 11.25.0。托管浏览器使用临时浏览器配置，托管凭据库使用 runner 的测试账户。这两类结果与个人桌面会话分别登记。使用独立测试仓库和工作区，可将 `CONCORDIA_DATA_DIR` 设为个人账户专用的测试目录绝对路径。
+Linux、macOS、Windows 各填一份记录。这份机主清单适用于同一提交的源码归档和 Git 检出。请从所验收版本的项目根目录运行下列命令。对照[兼容矩阵](../compatibility.md)选择本机账户与策略。以下是待执行菜单，初始状态为 **尚未验证**。在项目根目录执行命令，准备 Git、Node.js 24.16 或更新的 24.x、pnpm 11.25.0。托管浏览器使用临时浏览器配置，托管凭据库使用 runner 的测试账户。这两类结果与个人桌面会话分别登记。使用独立测试仓库和工作区，可将 `CONCORDIA_DATA_DIR` 设为个人账户专用的测试目录绝对路径。
 
 ### 无模型费用的操作
 
@@ -79,6 +79,8 @@ pnpm exec vitest run packages/runtimes/test/recorded.test.ts
 ```sh
 pnpm verify run gateway --base-url "https://gateway.example.com/v1" --model "供应方模型ID" --credential keychain:my_openai_gateway --approve-call
 ```
+
+在网页高级设置与命令行选择同一输出上限及字段。示例使用默认 `max_completion_tokens=1024`。若端点文档要求 `max_tokens`，在上述命令添加 `--output-token-field max_tokens --max-output-tokens 1024`。核对输出字段需要实际运行一次工具、再回传结果时，为测试任务批准最多两次 API 请求，记录两个回合的状态、输出上限和所获用量。
 
 完整配置验收包括同一网关的两个手填模型（其中一个为 Kimi 或 DeepSeek），以及单独配置的 Gemini Native 连接。在 **连接与成员 → 模型** 逐个绑定，再从对应连接点击 **验证**，选择模型并点 **批准一次真实调用**。如果首个探针已经覆盖其中一个模型，剩余两项各批准一次即可。缺少供应方用量或账单时填「未知」。[协议与模型配置](../providers.md)
 
