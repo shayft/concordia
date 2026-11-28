@@ -20,6 +20,8 @@ import {
   PoolSuspended,
   meterProvider,
   reserveBudget,
+  dispatchBudget,
+  noTargetStarted,
   settleBudget,
   suspendPool,
 } from './budget-ledger.ts';
@@ -47,6 +49,7 @@ type LiveJob = {
   pool: string;
   project?: string;
   tree?: string;
+  firstDispatched?: boolean;
   allowed?: ReadonlySet<PlatformAction['type']>;
   finished?: Promise<void>;
 };
@@ -66,7 +69,19 @@ export class Worker {
     private directory: string,
     private workspace: string,
     private origin: () => string,
-  ) {}
+  ) {
+    // Board and catalog have separate SQLite files. A crash between the two
+    // commits leaves an identifiable, unissued reservation in the catalog.
+    const state = db.prepare('SELECT status FROM budget_calls WHERE id=?');
+    for (const execution of scheduler.board().executions) {
+      for (const meter of execution.meters ?? []) {
+        if (!meter.reservationId) continue;
+        const phase = state.get(meter.reservationId)?.status;
+        if (phase === 'preparing' || phase === 'not_sent')
+          scheduler.refundUnstartedCall(execution.id, meter.reservationId);
+      }
+    }
+  }
 
   busy(filter: RunningFilter = {}) {
     return this.count(filter) > 0;
@@ -217,7 +232,7 @@ export class Worker {
     if (options.treeId)
       this.trees.executionTree(options.projectId!, taskId, options.treeId, this.treeScope());
     if (shared && shared.remaining < 1) throw new Error('本批调用用尽');
-    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined);
+    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined, { deferCall: !!binding });
     if (shared) shared.remaining--;
     const job: LiveJob = {
       controller: new AbortController(),
@@ -271,16 +286,15 @@ export class Worker {
         this.scheduler.fail(
           exec.id,
           err instanceof CliDiagnosticError
-            ? err.kind === 'budget'
-              ? 'rate_limit'
-              : err.kind
-            : err instanceof ModelCallError && err.httpStatus === 402
+            ? err.kind === 'budget' ? 'rate_limit' : err.kind === 'context' ? 'budget' : err.kind
+            : err instanceof ModelCallError && err.kind === 'budget' && err.httpStatus !== undefined
               ? 'rate_limit'
               : failure,
         );
       })
       .finally(() => {
         this.mcp.close(exec.id);
+        if (shared && binding && !job.firstDispatched) shared.remaining++;
         this.jobs.delete(exec.id);
         this.wake();
       });
@@ -303,6 +317,12 @@ export class Worker {
       role: binding.member.role,
     });
     const instruction = binding.member.systemPrompt ?? '你负责 ' + binding.member.role;
+    const beforeSend = (reservationId?: string) => {
+      if (job.firstDispatched && shared && shared.remaining < 1) throw new ModelCallError('budget', '已达批次上限');
+      this.scheduler.reserveCall(exec.id, reservationId);
+      if (shared && job.firstDispatched) shared.remaining--;
+      job.firstDispatched = true;
+    };
     if ('baseUrl' in binding.connection) {
       await runBuiltin({
         provider: this.provider(binding, job),
@@ -311,13 +331,9 @@ export class Worker {
         mode: binding.model?.toolMode ?? 'native',
         signal: job.controller.signal,
         maxCalls: options.maxCalls,
+        maxContextBytes: this.scheduler.board().spec?.maxContextTokens,
         allowed: new Set(job.allowed),
-        beforeCall: (round) => {
-          if (!round) return;
-          if (shared && shared.remaining < 1) throw new ModelCallError('budget', '已达批次上限');
-          this.scheduler.reserveCall(exec.id);
-          if (shared) shared.remaining--;
-        },
+        beforeCall: (_round, id) => beforeSend(id),
         usage: (value) => this.scheduler.recordUsage(exec.id, value),
         dispatch: (action, deliveryId) => this.dispatch(exec.id, action, deliveryId),
       });
@@ -331,7 +347,7 @@ export class Worker {
           inputTokens: event.inputTokens,
           outputTokens: event.outputTokens,
         });
-    });
+    }, false, beforeSend);
     if (this.scheduler.board().tasks.find((t) => t.id === task.id)?.active === exec.id)
       await this.dispatch(exec.id, {
         type: 'submit_result',
@@ -391,6 +407,7 @@ export class Worker {
     options: Pick<Options, 'confirmUnmanaged' | 'inspectionId'>,
     emit: (event: AgentRuntimeEvent) => void,
     outputOnly = false,
+    beforeSend?: (reservationId: string) => void,
   ) {
     const c = binding.connection;
     if ('baseUrl' in c) throw new Error('连接类型不匹配');
@@ -418,7 +435,8 @@ export class Worker {
           .run(this.workspace + '|' + key, value);
       },
     });
-    const reservation = reserveBudget(this.db, this.budgetScope(job));
+    const reservation = reserveBudget(this.db, this.budgetScope(job), 'preparing');
+    let dispatchFailure: {error: unknown} | undefined;
     let usage: { inputTokens?: number; outputTokens?: number } | undefined;
     try {
       await runtime.run(
@@ -430,6 +448,18 @@ export class Worker {
           prompt,
           approvedInspectionId: options.inspectionId,
           outputOnly,
+          maxContextBytes: this.scheduler.board().spec?.maxContextTokens,
+          onDispatch: () => {
+            try { dispatchBudget(this.db, reservation, beforeSend); }
+            catch (error) { dispatchFailure = {error}; throw error; }
+          },
+          onSpawnRejected: () => {
+            noTargetStarted(this.db, reservation);
+            if (beforeSend && job.firstDispatched) {
+              this.scheduler.refundUnstartedCall(id, reservation);
+              job.firstDispatched = false;
+            }
+          },
           allowedActions: outputOnly ? new Set<never>() : job.allowed,
           permission: job.tree && job.allowed?.has('write_file') ? 'worktree-write' : 'read-only',
           authorizedWorktree: job.tree ? cwd : undefined,
@@ -444,6 +474,7 @@ export class Worker {
         },
       );
     } catch (error) {
+      if (dispatchFailure) throw dispatchFailure.error;
       if (error instanceof CliDiagnosticError && ['rate_limit', 'budget'].includes(error.kind))
         suspendPool(this.db, job.pool);
       throw error;
@@ -496,7 +527,7 @@ export class Worker {
           /* A disabled, saturated or waiting connection does not block other members. */
         }
       }
-      if (!batch.remaining || !this.jobs.size) this.batch = undefined;
+      if (!this.jobs.size) this.batch = undefined;
     });
   }
   async revokeProjectWrites(projectId: string) {

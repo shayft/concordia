@@ -1,4 +1,4 @@
-import { BudgetExceeded, PoolSuspended, meterProvider, registerBudgets, reserveBudget, settleBudget, suspendPool } from './budget-ledger.ts';
+import { BudgetExceeded, PoolSuspended, meterProvider, registerBudgets, dispatchBudget, noTargetStarted, reserveBudget, settleBudget, suspendPool } from './budget-ledger.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import type { FastifyInstance } from 'fastify';
 import { type z } from 'zod';
@@ -237,9 +237,9 @@ export function registerConnectionRoutes(app: FastifyInstance, db: DatabaseSync,
           if (mode === 'inspect') return await inspectCli(connection.kind, cli);
           if (!('inspectionId' in input) || typeof input.inspectionId !== 'string') throw new CatalogError(400, '请先完成 CLI 预检。');
           const started = performance.now();
-          const reservation = reserveBudget(db,scope);
+          const reservation = reserveBudget(db,scope,'preparing');
           try {
-            const result = await runCliProbe(connection.kind, { ...cli, approved: true, inspectionId: input.inspectionId });
+            const result = await runCliProbe(connection.kind, { ...cli, approved: true, inspectionId: input.inspectionId, onDispatch: () => dispatchBudget(db,reservation), onSpawnRejected: () => noTargetStarted(db,reservation) });
             return { ok: true, text: result.text, elapsedMs: Math.round(performance.now() - started) };
           } catch (error) {
             if (error instanceof CliDiagnosticError && (error.kind === 'rate_limit' || error.kind === 'budget'))

@@ -18,8 +18,9 @@ interface LoopOptions {
   mode: 'json' | 'native';
   signal: AbortSignal;
   maxCalls: number;
+  maxContextBytes?: number;
   allowed: Set<PlatformAction['type']>;
-  beforeCall(round: number): void;
+  beforeCall(round: number, reservationId?: string): void;
   usage(value: { inputTokens?: number; outputTokens?: number }): void;
   dispatch(action: PlatformAction, deliveryId: string): Promise<unknown>;
 }
@@ -54,7 +55,12 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
   let repaired = false;
   for (let round = 0; round < options.maxCalls; round++) {
     options.signal.throwIfAborted();
-    options.beforeCall(round);
+    const nativeTools = options.mode === 'native' ? tools : [];
+    const limit = options.maxContextBytes ?? 128_000;
+    const precise = options.provider.getCapabilities().dispatchSignal;
+    if (!precise && Buffer.byteLength(JSON.stringify({ messages, tools: nativeTools })) > limit)
+      throw new ModelCallError('budget', '本轮消息和工具超过配置的上下文限制。');
+    if (!precise) options.beforeCall(round);
     const calls: ModelAction[] = [];
     const reply: ModelMessage = { role: 'assistant', content: '' };
     let completed = false;
@@ -62,8 +68,9 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
     // Streams can report cumulative or partial counters repeatedly. Settle this
     // call once, including when it ends in an upstream error or is cancelled.
     try {
-      for await (const event of options.provider.stream(messages, options.mode === 'native' ? tools : [], {
-        signal: options.signal, assistantReply: reply,
+      for await (const event of options.provider.stream(messages, nativeTools, {
+        signal: options.signal, assistantReply: reply, maxContextBytes: limit,
+        onDispatch: precise ? (id) => options.beforeCall(round, id) : undefined,
       })) {
         if (event.type === 'usage') {
           if (event.inputTokens !== undefined) meter.inputTokens = event.inputTokens;
@@ -119,8 +126,6 @@ export async function runBuiltin(options: LoopOptions): Promise<void> {
           : { role: 'user', content: action.type + ' 的结果：' + feedback },
       );
     }
-    if (messages.reduce((sum, msg) => sum + msg.content.length, 0) > 128000)
-      throw new ModelCallError('budget', '执行上下文超过上限');
   }
   throw new ModelCallError('budget', '已使用本次批准的全部调用次数');
 }

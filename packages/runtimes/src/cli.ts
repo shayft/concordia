@@ -92,9 +92,9 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
   if (kind !== 'claude' && kind !== 'codex') throw new CliDiagnosticError('不支持的 CLI 类型。');
   const { childEnv, billingEnvironment } = prepareEnvironment(options.env ?? process.env, options.passEnv);
   const executable = await resolveExecutable(kind, childEnv, options.executable, options.env ?? process.env);
-  const invoke = async (args: string[], timeoutMs = 15_000) => {
+  const invoke = async (args: string[], timeoutMs = 15_000, lifecycle?: {onDispatch?: () => void; onSpawnRejected?: () => void}) => {
     try {
-      return await runProcess(executable, args, { cwd, env: childEnv, signal: options.signal, timeoutMs });
+      return await runProcess(executable, args, { ...lifecycle, cwd, env: childEnv, signal: options.signal, timeoutMs });
     } catch (error) {
       if (options.signal?.aborted) throw new CliDiagnosticError('CLI 执行已取消。');
       if (error instanceof Error && error.message === '进程运行超时') throw new CliDiagnosticError('CLI 执行超时。','transient');
@@ -169,7 +169,7 @@ export function inspectCli(kind: CliKind, options: CliOptions = {}) {
   return inWorkspace(options, async cwd => (await prepare(kind, options, cwd)).diagnostic);
 }
 
-export async function runCliProbe(kind: CliKind, options: CliOptions & { approved: true; inspectionId: string }) {
+export async function runCliProbe(kind: CliKind, options: CliOptions & { approved: true; inspectionId: string; onDispatch?: () => void; onSpawnRejected?: () => void }) {
   if (options.approved !== true) throw new CliDiagnosticError('执行一次真实 CLI 调用前需要用户明确批准。');
   return inWorkspace(options, async cwd => {
     const { diagnostic, invoke } = await prepare(kind, options, cwd);
@@ -180,7 +180,7 @@ export async function runCliProbe(kind: CliKind, options: CliOptions & { approve
       throw new CliDiagnosticError('请先在 Claude Code 的 /status 核对 Setting sources。仅在没有 Managed settings 时按说明确认并重新预检。');
     }
     if (diagnostic.login === '未登录') throw new CliDiagnosticError('CLI 报告未登录，请在官方程序中完成登录。','auth');
-    const result = await invoke(diagnostic.arguments, 60_000);
+    const result = await invoke(diagnostic.arguments, 60_000, { onDispatch: options.onDispatch, onSpawnRejected: options.onSpawnRejected });
     if (result.exitCode !== 0) {
       throw nativeCliFailure(result.stderr + '\n' + result.stdout, result.exitCode);
     }

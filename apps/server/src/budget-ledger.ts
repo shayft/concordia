@@ -61,7 +61,7 @@ function transaction<T>(db: DatabaseSync, write: () => T): T {
 }
 
 /** One reservation per upstream request or native CLI invocation. The estimate is retained if its outcome is unknown. */
-export function reserveBudget(db: DatabaseSync, scope: CallScope): string {
+export function reserveBudget(db: DatabaseSync, scope: CallScope, phase: 'preparing' | 'running' = 'running'): string {
   const estimate = scope.estimate ?? 1024;
   if (!Number.isSafeInteger(estimate) || estimate < 1) throw new Error('调用预算估计无效。');
   const accounts: Account[] = [
@@ -84,22 +84,48 @@ export function reserveBudget(db: DatabaseSync, scope: CallScope): string {
       increment.run(kind, id, estimate);
     }
     const callId = randomUUID();
-    db.prepare("INSERT INTO budget_calls(id,scopes,estimated,started,status) VALUES (?,?,?,?,'running')").run(
+    db.prepare("INSERT INTO budget_calls(id,scopes,estimated,started,status) VALUES (?,?,?,?,?)").run(
       callId,
       JSON.stringify(accounts),
       estimate,
       Date.now(),
+      phase,
     );
     return callId;
+  });
+}
+
+/** Receipt is persisted before handing the request to the transport. */
+export function dispatchBudget(db: DatabaseSync, id: string, beforeSend?: (id: string) => void): void {
+  const hold = db.prepare("SELECT scopes FROM budget_calls WHERE id=? AND status='preparing'").get(id);
+  if (!hold) throw new Error('调用预算预留已失效。');
+  const pool = (JSON.parse(String(hold.scopes)) as Account[]).find(([scope]) => scope === 'pool');
+  if (pool) assertPoolAvailable(db, pool[1]);
+  beforeSend?.(id);
+  db.prepare("UPDATE budget_calls SET status='running' WHERE id=? AND status='preparing'").run(id);
+}
+
+function refundPreparation(db: DatabaseSync, id: string, row: {scopes: unknown; estimated: unknown}) {
+  const refund = db.prepare('UPDATE budget_usage SET calls=calls-1,tokens=tokens-?,active=active-1 WHERE scope=? AND id=?');
+  for (const [scope, key] of JSON.parse(String(row.scopes)) as Account[]) refund.run(Number(row.estimated), scope, key);
+  db.prepare("UPDATE budget_calls SET status='not_sent',finished=? WHERE id=?").run(Date.now(), id);
+}
+
+/** A trusted supervisor positively confirmed it failed to spawn the native executable. */
+export function noTargetStarted(db: DatabaseSync, id: string) {
+  transaction(db, () => {
+    const row = db.prepare("SELECT scopes,estimated FROM budget_calls WHERE id=? AND status='running'").get(id);
+    if (row) refundPreparation(db, id, { scopes: row.scopes, estimated: row.estimated });
   });
 }
 
 export function settleBudget(db: DatabaseSync, id: string, usage: Usage = {}): void {
   transaction(db, () => {
     const row = db
-      .prepare("SELECT scopes,estimated FROM budget_calls WHERE id=? AND status='running'")
+      .prepare("SELECT scopes,estimated,status FROM budget_calls WHERE id=? AND status IN ('preparing','running')")
       .get(id);
     if (!row) return; // A duplicate settlement or interrupted call cannot release a second slot.
+    if (row.status === 'preparing') return refundPreparation(db, id, { scopes: row.scopes, estimated: row.estimated });
     const valid = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
     const input = valid(usage.inputTokens) ? usage.inputTokens : null;
     const output = valid(usage.outputTokens) ? usage.outputTokens : null;
@@ -125,14 +151,17 @@ export function settleBudget(db: DatabaseSync, id: string, usage: Usage = {}): v
 
 export function meterProvider(db: DatabaseSync, scope: CallScope, provider: ModelProvider): ModelProvider {
   return {
-    getCapabilities: () => provider.getCapabilities(),
+    getCapabilities: () => ({ ...provider.getCapabilities(), dispatchSignal: true }),
     async *stream(messages, tools, options) {
       options?.signal?.throwIfAborted();
-      const id = reserveBudget(db, scope);
+      const id = reserveBudget(db, scope, 'preparing');
       const usage: Usage = {};
       try {
-        for await (const event of provider.stream(messages, tools, options)) {
-          if (event.type === 'error' && (event.kind === 'rate_limit' || event.kind === 'budget'))
+        const mark = () => dispatchBudget(db, id, options?.onDispatch);
+        const precise = provider.getCapabilities().dispatchSignal;
+        if (!precise) mark();
+        for await (const event of provider.stream(messages, tools, { ...options, onDispatch: precise ? mark : undefined })) {
+          if (event.type === 'error' && (event.kind === 'rate_limit' || (event.kind === 'budget' && event.httpStatus !== undefined)))
             suspendPool(db, scope.poolId);
           if (event.type === 'usage') {
             if (event.inputTokens !== undefined) usage.inputTokens = event.inputTokens;
@@ -145,13 +174,16 @@ export function meterProvider(db: DatabaseSync, scope: CallScope, provider: Mode
         settleBudget(db, id, usage);
       }
     },
-    async validateConnection(signal) {
+    async validateConnection(signal, onDispatch) {
       signal?.throwIfAborted();
-      const id = reserveBudget(db, scope);
+      const id = reserveBudget(db, scope, 'preparing');
       let usage: Usage | undefined;
       try {
-        const result = await provider.validateConnection(signal);
-        if (!result.ok && (result.error.kind === 'rate_limit' || result.error.kind === 'budget'))
+        const mark = () => dispatchBudget(db, id, onDispatch);
+        const precise = provider.getCapabilities().dispatchSignal;
+        if (!precise) mark();
+        const result = await provider.validateConnection(signal, precise ? mark : undefined);
+        if (!result.ok && (result.error.kind === 'rate_limit' || (result.error.kind === 'budget' && result.error.httpStatus !== undefined)))
           suspendPool(db, scope.poolId);
         usage = result.usage;
         return result;
@@ -186,12 +218,22 @@ export function budgetReport(db: DatabaseSync): BudgetReport {
       tokens: Number(r.tokens),
       active: Number(r.active),
     }));
+  // Preparing calls hold capacity, but have no user-visible billed calls or tokens.
+  const held = new Map(usage.map(row => [JSON.stringify([row.scope, row.id]), row]));
+  for (const row of db.prepare("SELECT scopes,estimated FROM budget_calls WHERE status='preparing'").all()) {
+    for (const account of JSON.parse(String(row.scopes)) as Account[]) {
+      const entry = held.get(JSON.stringify(account));
+      if (entry) { entry.calls--; entry.tokens -= Number(row.estimated); }
+    }
+  }
   return { limits, usage };
 }
 
 /** Register once, after acquiring the application's exclusive data-directory lease. */
 export function registerBudgets(app: FastifyInstance, db: DatabaseSync) {
   transaction(db, () => {
+    for (const row of db.prepare("SELECT id,scopes,estimated FROM budget_calls WHERE status='preparing'").all())
+      refundPreparation(db, String(row.id), { scopes: row.scopes, estimated: row.estimated });
     db.exec(
       "UPDATE budget_calls SET status='interrupted' WHERE status='running'; UPDATE budget_usage SET active=0 WHERE active>0",
     );

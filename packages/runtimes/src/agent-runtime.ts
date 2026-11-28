@@ -21,6 +21,7 @@ export type AgentRuntimeEvent =
 
 export interface AgentExecutionInput {
   executionId: string; memberId: string; taskId: string; prompt: string; cwd: string;
+  maxContextBytes?: number; onDispatch?: () => void; onSpawnRejected?: () => void;
   permission: 'read-only' | 'worktree-write'; authorizedWorktree?: string;
   mcpOrigin: string; outputOnly?: boolean; approvedInspectionId?: string; allowedActions?: ReadonlySet<ActionName>; recoveryDir?: string; signal?: AbortSignal;
 }
@@ -99,6 +100,7 @@ export class CliAgentRuntime {
     input.signal?.addEventListener('abort', abort, { once: true });
     if (input.signal?.aborted) abort();
     let opened = false;
+    let contextExceeded = false;
     try {
       const signal = controller.signal;
       const diagnostic = await inspectCli(kind, { ...this.config, cwd, signal,
@@ -156,11 +158,23 @@ export class CliAgentRuntime {
         args = [...cfg,'--ask-for-approval','on-request','exec','--sandbox', nativeWrite ? 'workspace-write' : 'read-only',
           '--skip-git-repo-check','--json',...modelArgs(model), ...(previous ? ['resume',previous] : []), '-'];
       }
-      const token = this.mcp.open(executionId, action => emit({ type: 'action', action }), allowed);
-      opened = true;
-      const env = channel === 'mcp' ? { ...childEnv, CONCORDIA_MCP_TOKEN: token } : childEnv;
       const stdin = channel === 'json' ? JSON.stringify({ task:prompt, tools,
         instruction:'仅返回 JSON 动作或 {"actions":[...]}，每个动作的 type 等于工具名。提交结果时把 submit_result 放在最后。' }) : prompt;
+      let remaining = (input.maxContextBytes ?? 128_000) - Buffer.byteLength(stdin);
+      if (channel === 'mcp') remaining -= Buffer.byteLength(JSON.stringify({ tools }));
+      if (remaining < 0)
+        throw new CliDiagnosticError('本轮 CLI 输入和工具超过配置的上下文限制。', 'context');
+      const admitContext = (bytes: number) => {
+        remaining -= bytes;
+        if (remaining >= 0) return true;
+        contextExceeded = true;
+        this.cancel(executionId);
+        return false;
+      };
+      const token = this.mcp.open(executionId, action => emit({ type: 'action', action }), allowed,
+        channel === 'mcp' ? admitContext : undefined);
+      opened = true;
+      const env = channel === 'mcp' ? { ...childEnv, CONCORDIA_MCP_TOKEN: token } : childEnv;
       let saved: string | undefined;
       const bind = (session: string) => {
         if (saved === session) return;
@@ -173,6 +187,7 @@ export class CliAgentRuntime {
         saved = session;
       };
       const result = await runProcess(diagnostic.executable, args, { ...options, env, stdin, timeoutMs: 120_000,
+        onDispatch: input.onDispatch, onSpawnRejected: input.onSpawnRejected,
         observeStdout:watchSessionStart(kind, bind) });
       if (signal.aborted) throw new CliDiagnosticError('执行已取消。');
       if (result.exitCode !== 0) throw nativeCliFailure(result.stderr + '\n' + result.stdout);
@@ -189,6 +204,7 @@ export class CliAgentRuntime {
       if (output.usage) emit({ type: 'usage', inputTokens: output.usage.input_tokens, outputTokens: output.usage.output_tokens });
       emit({ type: 'completed' });
     } catch (err) {
+      if (contextExceeded) throw new CliDiagnosticError('本轮 CLI 工具上下文超过上限。', 'context');
       if (err instanceof CliDiagnosticError) throw err;
       if (err instanceof Error && err.message === '进程运行超时') throw new CliDiagnosticError('CLI 执行超时。','transient');
       throw new CliDiagnosticError(controller.signal.aborted ? '执行已取消。' : 'CLI 执行未完成。');

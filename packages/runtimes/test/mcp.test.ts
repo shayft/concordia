@@ -48,3 +48,21 @@ it('分配给执行的凭证不会进入请求编号、动作回执或错误正�
     expect(response.body).toHaveProperty('error');
   }
 });
+
+it('逐次检查派发前参数及传回 CLI 的工具结果，超限全文不进入回复', async () => {
+  const marker = '模型不应收到的全文'.repeat(200);
+  let space = 100;
+  const dispatch = vi.fn(async () => ({content:marker}));
+  const mcp = new ExecutionMcpServer(dispatch);
+  const token = mcp.open('exec', undefined, new Set(['read_artifact']), bytes => (space -= bytes) >= 0);
+  const send = (id:number, method:string, params:unknown) => mcp.handle({
+    executionId:'exec',authorization:'Bearer '+token,body:{jsonrpc:'2.0',id,method,params},
+  });
+  await send(1,'initialize',{});
+  const params = {name:'read_artifact',arguments:{slotId:'doc'}};
+  const answer = await send(2,'tools/call',params);
+  expect(answer).toMatchObject({body:{error:{message:'本轮工具回复超过上下文限制'}}});
+  expect(JSON.stringify(answer)).not.toContain(marker);
+  expect(await send(3,'tools/call',params)).toMatchObject({body:{error:{message:'本轮动作超过上下文限制'}}});
+  expect(dispatch).toHaveBeenCalledTimes(1);
+});

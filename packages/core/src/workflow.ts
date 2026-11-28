@@ -291,7 +291,7 @@ export class Scheduler {
           (!filter.poolId || e.pool === filter.poolId),
       );
   }
-  claim(taskId: string, model?: ModelSnapshot): Execution {
+  claim(taskId: string, model?: ModelSnapshot, options: { deferCall?: boolean } = {}): Execution {
     const result = this.write((s, log) => {
       const task = entity(s.tasks, taskId),
         plan = activePlan(s),
@@ -356,8 +356,8 @@ export class Scheduler {
         outputs: {},
         contextRef: this.deps.storage.putContent(encoded),
         started: this.deps.now(),
-        calls: 1,
-        meters: [{ reserved: plan.estimatedTokensPerCall ?? 1024 }],
+        calls: options.deferCall ? 0 : 1,
+        meters: options.deferCall ? [] : [{ reserved: plan.estimatedTokensPerCall ?? 1024 }],
         status: 'running',
       };
       for (const message of context.messages) message.deliveredTo = task.id;
@@ -404,7 +404,7 @@ export class Scheduler {
       return result;
     });
   }
-  reserveCall(executionId: string) {
+  reserveCall(executionId: string, reservationId?: string) {
     const ok = this.write((s, log) => {
       const exec = entity(s.executions, executionId),
         task = entity(s.tasks, exec.taskId),
@@ -420,12 +420,24 @@ export class Scheduler {
       exec.meters ??= Array.from({ length: exec.calls }, () => ({
         reserved: plan.estimatedTokensPerCall ?? 1024,
       }));
-      exec.meters.push({ reserved: plan.estimatedTokensPerCall ?? 1024 });
+      exec.meters.push({ reserved: plan.estimatedTokensPerCall ?? 1024, ...(reservationId && { reservationId }) });
       exec.calls++;
       log('call.reserved', { id: exec.id, calls: exec.calls });
       return true;
     });
     if (!ok) throw new Error('调用预算已用尽');
+  }
+  /** The catalog ledger or trusted supervisor confirmed that this exact request never left. */
+  refundUnstartedCall(executionId: string, reservationId: string) {
+    this.write((s, log) => {
+      const exec = entity(s.executions, executionId);
+      const meters = exec.meters;
+      const index = meters?.findIndex(m => m.reservationId === reservationId) ?? -1;
+      if (!meters || index < 0 || meters[index].input !== undefined || meters[index].output !== undefined) return;
+      meters.splice(index, 1);
+      exec.calls--;
+      log('call.not_sent', { id: executionId, calls: exec.calls });
+    });
   }
   recordUsage(executionId: string, usage: { inputTokens?: number; outputTokens?: number }) {
     this.write((s, log) => {

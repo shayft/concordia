@@ -47,6 +47,7 @@ async function supervise() {
         stop(message.graceMs);
       } else if (message.type === 'start' && !started && !stopping) {
         started = true;
+        let spawned = false;
         try {
           if (message.recoveryDir) {
             record = registerSupervisor(message.recoveryDir, performance.timeOrigin, message.executionId);
@@ -60,18 +61,19 @@ async function supervise() {
             shell: false,
             stdio: [message.stdin === undefined ? 'ignore' : 'pipe', 'inherit', 'inherit'],
           });
+          child.once('spawn', () => { spawned = true; });
           if (child.stdin) {
             child.stdin.on('error', () => {}); // A CLI may exit before consuming its input.
             child.stdin.end(message.stdin);
           }
           child.on('error', () => {
-            if (process.connected) process.send?.({ type: 'failed' }, () => {});
+            if (process.connected) process.send?.({ type: spawned ? 'failed' : 'spawn-rejected' }, () => {});
           });
           child.on('exit', (code) => {
             if (process.connected) process.send?.({ type: 'finished', code }, () => {});
           });
         } catch {
-          if (process.connected) process.send?.({ type: 'failed' }, () => {});
+          if (process.connected) process.send?.({ type: spawned ? 'failed' : 'spawn-rejected' }, () => {});
         }
       }
     },

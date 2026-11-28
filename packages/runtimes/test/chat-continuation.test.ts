@@ -36,3 +36,25 @@ it.each([true,false])('Chat 工具续调只在同一会话内回传思考字段�
   expect(JSON.stringify(dispatched.mock.calls)).not.toContain(reasoning);
   expect(JSON.stringify(usage.mock.calls)).not.toContain(reasoning);
 });
+
+it.each(['reasoning','tool'] as const)('每轮以最终协议字节检查思考及工具回执，超限的 %s 续调不派发', async excess => {
+  let requests = 0;
+  const marker = '图'.repeat(2000);
+  const baseUrl = await listen((_req,res) => {
+    requests++;
+    res.end(JSON.stringify({choices:[{finish_reason:'tool_calls',message:{
+      reasoning_content: excess === 'reasoning' ? marker : '',
+      tool_calls:[{id:'a',type:'function',function:{name:'progress',arguments:'{"message":"working"}'}}],
+    }}]}));
+  });
+  const beforeCall = vi.fn();
+  const dispatch = vi.fn(async () => ({content:excess === 'tool' ? marker : 'ok'}));
+  await expect(runBuiltin({
+    provider:createModelProvider({protocol:'chat-completions',stream:false,baseUrl,model:'custom'}),
+    instruction:'进度',prompt:'工作',signal:new AbortController().signal,mode:'native',maxCalls:2,
+    allowed:new Set(['progress']),maxContextBytes:2000,beforeCall,usage:()=>{},dispatch,
+  })).rejects.toMatchObject({kind:'budget'});
+  expect(requests).toBe(1);
+  expect(beforeCall).toHaveBeenCalledTimes(1);
+  expect(dispatch).toHaveBeenCalledTimes(1);
+});

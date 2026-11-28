@@ -2,6 +2,7 @@ import type { WorkflowSpec } from '@concordia/protocol/workflow';
 import type { Execution, State, Task } from './state.ts';
 
 export interface CallMeter {
+  reservationId?: string;
   reserved: number;
   input?: number;
   output?: number;

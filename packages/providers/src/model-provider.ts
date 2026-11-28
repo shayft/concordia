@@ -119,6 +119,7 @@ export function createModelProvider(
   ): AsyncGenerator<ModelEvent> {
     let problem = failure('invalid', '连接参数、消息、工具或上下文大小无效。');
     let timeout: AbortSignal | undefined;
+    let dispatchDenied = false;
     const cleanup = new AbortController();
     try {
       const timeoutMs = config.timeoutMs ?? 60_000;
@@ -146,7 +147,11 @@ export function createModelProvider(
       if (!adapter) throw new Error('protocol');
       const url = modelEndpoint(config, useStream);
       const body = JSON.stringify(adapter.body(config, messages, tools, useStream, chatContinuations));
-      if (Buffer.byteLength(body) > 128 * 1024) throw new Error('input size');
+      const byteLimit = Math.min(options.maxContextBytes ?? 128 * 1024, 128 * 1024);
+      if (!Number.isSafeInteger(byteLimit) || byteLimit < 1 || Buffer.byteLength(body) > byteLimit) {
+        yield failure('budget', '本轮请求含工具、历史及协议字段，超过配置的上下文限制。');
+        return;
+      }
       const headers = headersFor(config);
       timeout = AbortSignal.timeout(timeoutMs);
       const signal = AbortSignal.any(
@@ -183,6 +188,8 @@ export function createModelProvider(
       }
       signal.throwIfAborted();
       problem = failure('transport', '网关网络请求失败。');
+      try { options.onDispatch?.(); }
+      catch (error) { dispatchDenied = true; throw error; }
       const response = await fetch(url, { method: 'POST', headers, body, redirect: 'manual', signal });
       reportStatus?.(response.status);
       if (!response.ok) {
@@ -222,6 +229,7 @@ export function createModelProvider(
       yield* pending;
       yield { type: 'completed' };
     } catch (error) {
+      if (dispatchDenied) throw error;
       if (options.signal?.aborted) yield failure('cancelled', '请求已取消。');
       else if (timeout?.aborted) yield failure('timeout', '请求已超时。');
       else if (error instanceof StreamFailure) yield failure(error.kind, error.message, problem.httpStatus);
@@ -232,15 +240,15 @@ export function createModelProvider(
   }
   return {
     stream,
-    getCapabilities: () => ({ nativeTools: true, streaming: true }),
-    async validateConnection(signal) {
+    getCapabilities: () => ({ nativeTools: true, streaming: true, dispatchSignal: true }),
+    async validateConnection(signal, onDispatch) {
       let reply = '';
       let httpStatus: number | undefined;
       let usage: ModelUsage | undefined;
       for await (const event of stream(
         [{ role: 'user', content: 'Reply with exactly CONCORDIA_OK.' }],
         [],
-        { stream: false, signal },
+        { stream: false, signal, onDispatch },
         status => { httpStatus = status; },
       )) {
         if (event.type === 'text_delta') reply += event.text;

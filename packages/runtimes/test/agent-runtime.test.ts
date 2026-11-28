@@ -45,6 +45,9 @@ for (const family of ['claude','codex'] as const) {
         expect(events.map(e => e.type)).toEqual(['action','text_delta','usage','completed']);
         return text!.text;
       };
+      const onDispatch = vi.fn();
+      await expect(runtime.run({...input, maxContextBytes:40, onDispatch}, () => {})).rejects.toThrow(/上下文限制/);
+      expect(onDispatch).not.toHaveBeenCalled();
       const first = await collect({});
       const again = await collect({executionId:'two'});
       const interrupted = runtime.run({...input,taskId:'interrupted',executionId:'interrupted',prompt:'interrupt'},()=>{});
