@@ -29,6 +29,7 @@ function browserTab(origin: string, cookie: string, proof: string) {
     const approval: Record<string,string> = {};
     if (purpose) {
       const query = new URLSearchParams({ purpose });
+      if (typeof input.maxCalls === 'number') query.set('maxCalls', String(input.maxCalls));
       if (purpose === 'plan' && Array.isArray(input.members)) query.set('roster', input.members.join(','));
       if (purpose !== 'dispatch') query.set('id', purpose === 'plan' ? String(input.agentId) : decodeURIComponent(id));
       for (const key of ['modelId', 'projectId', 'treeId'])

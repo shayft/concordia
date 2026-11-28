@@ -109,7 +109,7 @@ function TaskDetails({
   ) ?? [];
   const tree = eligibleTrees.find((t) => t.id === treeId);
   const approval = useApproval(!simulation && connection && task.status === 'ready' ? {
-    purpose: 'task', id: task.id, treeId: tree?.id, projectId: tree?.projectId,
+    purpose: 'task', id: task.id, maxCalls: String(isCli ? 1 : maxCalls), treeId: tree?.id, projectId: tree?.projectId,
   } : undefined);
   const needsUnmanaged = connection?.kind === 'claude';
   const id = 'tasks/' + encodeURIComponent(task.id) + '/';
@@ -445,7 +445,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
     basedOn: Record<string, string>;
   }>();
   const [calls, setCalls] = useState(1);
-  const approval = useApproval(dialog === 'dispatch' ? { purpose: 'dispatch' } : undefined);
+  const approval = useApproval(dialog === 'dispatch' ? { purpose: 'dispatch', maxCalls: String(calls) } : undefined);
   const action = useAction();
   useEffect(() => {
     if (events) void reload();

@@ -5,7 +5,7 @@ import { Notice } from './ui.tsx';
 
 type Route = { connection: string; protocol: string; member?: string; destination: string; model: string; credentials: string[]; permissions: string; pool: string; individual?: boolean; outputLimit?: {field: string; tokens: number} };
 interface Preview { stamp: string; routes: Route[]; simulated?: string[]; roster?: PlanningMember[]; revision: number }
-interface Selection { purpose: 'task' | 'dispatch' | 'plan' | 'connection-test' | 'member-test'; id?: string; roster?: string; modelId?: string; projectId?: string; treeId?: string }
+interface Selection { purpose: 'task' | 'dispatch' | 'plan' | 'connection-test' | 'member-test'; id?: string; maxCalls?: string; roster?: string; modelId?: string; projectId?: string; treeId?: string }
 
 export function useApproval(selection?: Selection) {
   const query = new URLSearchParams();

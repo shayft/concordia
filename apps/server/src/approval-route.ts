@@ -12,6 +12,7 @@ import { getCatalog, resolveMember, providerConfig } from './connections.ts';
 const id = z.string().min(1).max(180);
 const querySchema = z.strictObject({
   purpose: z.enum(['task', 'dispatch', 'plan', 'connection-test', 'member-test']),
+  maxCalls: z.coerce.number().int().min(1).max(50).optional(),
   id: id.optional(), roster: z.string().max(3900).optional(), modelId: id.optional(), projectId: id.optional(), treeId: id.optional(),
 });
 type Selection = z.infer<typeof querySchema>;
@@ -26,11 +27,11 @@ function selectionFor(request: FastifyRequest): Selection | undefined {
   switch (request.routeOptions.url) {
     case '/api/tasks/:id/run':
       if (body.mode !== 'live') return;
-      return { purpose: 'task', id, projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
+      return { purpose: 'task', id, maxCalls: Number(body.maxCalls ?? 1), projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
         treeId: typeof body.treeId === 'string' ? body.treeId : undefined };
     case '/api/plans/generate': return { purpose: 'plan', id: String(body.agentId),
       roster: Array.isArray(body.members) ? body.members.join(',') : undefined };
-    case '/api/dispatch': return { purpose: 'dispatch' };
+    case '/api/dispatch': return { purpose: 'dispatch', maxCalls: Number(body.maxCalls) };
     case '/api/connections/:id/test': return { purpose: 'connection-test', id, modelId };
     case '/api/members/:id/test': return { purpose: 'member-test', id, modelId };
   }
@@ -39,6 +40,7 @@ function selectionFor(request: FastifyRequest): Selection | undefined {
 export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspace: () => Context) {
   function preview(raw: Selection) {
     const selection = querySchema.parse(raw);
+    if (selection.purpose === 'dispatch' || selection.purpose === 'task') selection.maxCalls ??= 1;
     const current = workspace();
     const board = current.scheduler.board();
     const bindings: Binding[] = [];
@@ -85,7 +87,9 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
     const limits = db.prepare('SELECT * FROM budget_limits ORDER BY scope,id').all()
       .filter(l => accounts.get(String(l.scope))?.has(String(l.id)));
     const policy = {
-      revision: board.revision, limits,
+      revision: board.revision, limits, maxCalls: selection.maxCalls ?? 1,
+      plan: board.spec && { maxCalls: board.spec.maxCalls, maxTokens: board.spec.maxTokens,
+        maxConcurrent: board.spec.maxConcurrent, maxContextTokens: board.spec.maxContextTokens },
       routes: bindings.map((b,i) => ({
         connection: configSnapshot(b.connection), member: b.member && configSnapshot(b.member),
         model: b.model && configSnapshot(b.model), pool: b.poolId, poolLimit: b.poolLimit,
@@ -121,10 +125,9 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
           recordDecision(db, 'approval.rejected', workspace().id, { purpose: selection.purpose });
           return reply.code(409).send({ error: '调用配置或计划已改变，请重新查看调用信息后批准。' });
         }
-        const maxCalls = (req.body as { maxCalls?: unknown }).maxCalls;
         const id = recordDecision(db, 'approval.granted', workspace().id, {
           purpose: selection.purpose, stamp: checked.stamp, policy: checked.policy,
-          maxCalls: typeof maxCalls === 'number' && Number.isSafeInteger(maxCalls) ? maxCalls : 1,
+          maxCalls: checked.policy.maxCalls,
         });
         return withApproval(id, () => handler.call(this, req, reply));
       }

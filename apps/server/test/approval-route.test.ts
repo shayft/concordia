@@ -54,6 +54,12 @@ it('两个窗口编辑既有绑定后，五个真实入口均要求重新核对�
       expect(res.status).toBe(200);
       return res.json() as Promise<{ stamp: string; revision: number; routes: { destination: string; model: string; permissions: string }[] }>;
     };
+    for (const [query, path, input] of cases.slice(0,2)) {
+      const one = await review(query + '&maxCalls=1');
+      const two = await review(query + '&maxCalls=2');
+      expect(one.stamp).not.toBe(two.stamp);
+      expect((await client.post(path, { ...input, maxCalls: 2 }, 'POST', one.stamp)).status).toBe(409);
+    }
     const views = await Promise.all(cases.map(([query]) => review(query)));
     expect(views[0].routes[0]).toMatchObject({ destination: first.baseUrl + '/chat/completions', model: 'upstream-one' });
     // A second legitimate tab edits the same named connection while the first still displays those views.
