@@ -245,12 +245,21 @@ export class Worker {
         && task.maxCalls - board.executions.filter(e => e.taskId === task.id).reduce((n, e) => n + e.calls, 0) > 1
         && (board.spec?.maxCalls ?? 0) - board.executions.reduce((n, e) => n + e.calls, 0) > 1
       : binding.connection.actionChannel === 'mcp' || (binding.connection.kind === 'codex' && binding.connection.actionChannel !== 'json'));
-    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined, {
-      deferCall: !!binding, readArtifacts: !!canRead && !!canReceive,
-    });
     const approvalId = currentApprovalId();
-    if (approvalId) this.db.prepare("INSERT INTO approved_executions(execution,approval_id,status) VALUES(?,?,'running')")
-      .run(exec.id, approvalId);
+    const exec = this.scheduler.claim(taskId, binding?.model ?? undefined, {
+      deferCall: !!binding || !!approvalId, readArtifacts: !!canRead && !!canReceive, approvalId,
+    });
+    if (approvalId) {
+      try {
+        this.db.prepare("INSERT INTO approved_executions(execution,approval_id,status) VALUES(?,?,'running')")
+          .run(exec.id, approvalId);
+      } catch {
+        // Claim and catalog are in different databases. No transport has started.
+        if (shared === this.batch) this.batch = undefined;
+        this.scheduler.fail(exec.id, 'fatal');
+        throw new Error('执行关联未保存，请核对审计存储后重试');
+      }
+    }
     if (shared) shared.remaining--;
     const job: LiveJob = {
       controller: new AbortController(),
@@ -276,6 +285,7 @@ export class Worker {
       .then(async () => {
         if (binding) await this.execute(exec, job, binding, options, shared);
         else {
+          if (approvalId) this.scheduler.reserveCall(exec.id);
           for (const slotId of task.produces)
             await this.dispatch(exec.id, {
               type: 'publish_artifact',
@@ -314,8 +324,13 @@ export class Worker {
         this.mcp.close(exec.id);
         if (shared && binding && !job.firstDispatched) shared.remaining++;
         if (approvalId) {
-          const outcome = this.scheduler.board().executions.find(e => e.id === exec.id)?.status ?? 'unknown';
-          this.db.prepare('UPDATE approved_executions SET status=? WHERE execution=?').run(outcome,exec.id);
+          try {
+            const outcome = this.scheduler.board().executions.find(e => e.id === exec.id)?.status ?? 'unknown';
+            this.db.prepare('UPDATE approved_executions SET status=? WHERE execution=?').run(outcome,exec.id);
+          } catch {
+            // The execution and its approval are durable on the board. Reconcile when the workspace next opens.
+            if (shared === this.batch) this.batch = undefined;
+          }
         }
         this.jobs.delete(exec.id);
         this.wake();
@@ -529,7 +544,7 @@ export class Worker {
       if (!batch || this.stopping) return;
       const board = this.scheduler.board();
       for (const task of board.tasks.filter((t) => t.status === 'ready')) {
-        if (!batch.remaining) break;
+        if (batch !== this.batch || !batch.remaining) break;
         const agent = board.agents.find((a) => a.id === task.owner);
         if (!agent) continue;
         const fake = agent.connection.startsWith('mock-');

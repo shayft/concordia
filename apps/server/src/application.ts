@@ -19,7 +19,7 @@ import { openWorktrees, serveWorktrees } from './worktrees.ts';
 import { acceptedCommits } from './worktrees/acceptance.ts';
 import { Worker, runOptions } from './worker.ts';
 import { pausedPools, resumeSharedPool } from './budget-ledger.ts';
-import { registerGovernance } from './governance.ts';
+import { reconcileApprovedExecutions, registerGovernance } from './governance.ts';
 import { serveAuditExport } from './audit.ts';
 import { eventPage, historyQuery, streamHistory } from './event-history.ts';
 import { serveExecutionCosts } from './execution-cost.ts';
@@ -71,8 +71,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   function openBoard(id: string, create: boolean) {
     const { dir, boardDb } = openWorkspaceStore(directory, id, create);
     try {
+      const storage = new WorkflowStore(boardDb, dir);
       const scheduler = new Scheduler({
-        storage: new WorkflowStore(boardDb, dir),
+        storage,
         now: Date.now,
         nextId: randomUUID,
       });
@@ -83,6 +84,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
         return 'http://127.0.0.1:' + address.port;
       });
       scheduler.recover();
+      reconcileApprovedExecutions(db, id, storage);
       // A user may have resumed a shared account from a different workspace.
       const board = scheduler.board();
       const shared = pausedPools(db);

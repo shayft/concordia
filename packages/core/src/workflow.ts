@@ -332,7 +332,7 @@ export class Scheduler {
           (!filter.poolId || e.pool === filter.poolId),
       );
   }
-  claim(taskId: string, model?: ModelSnapshot, options: { deferCall?: boolean; readArtifacts?: boolean } = {}): Execution {
+  claim(taskId: string, model?: ModelSnapshot, options: { deferCall?: boolean; readArtifacts?: boolean; approvalId?: string } = {}): Execution {
     const result = this.write((s, log) => {
       const task = entity(s.tasks, taskId),
         plan = activePlan(s),
@@ -387,6 +387,7 @@ export class Scheduler {
       if (new TextEncoder().encode(encoded).byteLength > (plan.maxContextTokens ?? 128_000))
         throw new Error('输入超过上下文限制');
       const execution: Execution = {
+        ...(options.approvalId && { approvalId: options.approvalId }),
         ...(model && {
           modelSnapshot: {
             modelId: model.modelId,

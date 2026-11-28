@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import type { State, WorkflowStorage } from '@concordia/core/state';
 import type { FastifyInstance } from 'fastify';
 import type { CatalogModel, Connection, Member, QuotaPool } from '@concordia/protocol/connections';
 
@@ -35,6 +36,43 @@ export function configSnapshot(c: Config) {
     ...('baseUrl' in c && { outputLimit: c.maxOutputTokens, outputField: c.outputTokenField }),
     ...('pricing' in c && { pricing: c.pricing }),
   };
+}
+
+/** Board results survive a catalog write failure or a crash between the two commits. */
+export function reconcileApprovedExecutions(db: DatabaseSync, workspace: string, storage: WorkflowStorage) {
+  if (!db.prepare("SELECT 1 FROM governance WHERE workspace=? AND action='approval.granted' LIMIT 1").get(workspace)) return;
+  const active = storage.read();
+  const known = new Map(db.prepare(`SELECT e.execution, e.status FROM approved_executions e
+    JOIN governance g ON g.id=e.approval_id WHERE g.workspace=?`).all(workspace)
+    .map(row => [String(row.execution), String(row.status)]));
+  const updates: { id: string; status: string; approvalId?: string }[] = [];
+  function collect(state: State) {
+    for (const e of state.executions) {
+      if (e.status === 'running') continue;
+      const previous = known.get(e.id);
+      // Older boards lack approvalId. Existing catalog links remain authoritative for those rows.
+      if (previous === 'running' || previous === 'unknown_after_restart' || (!previous && e.approvalId))
+        updates.push({ id: e.id, status: e.status, approvalId: e.approvalId });
+    }
+  }
+  collect(active);
+  for (const archive of active.archives) collect(JSON.parse(storage.getContent(archive.ref)) as State);
+  if (!updates.length) return;
+  const pending = db.prepare(`UPDATE approved_executions SET status=? WHERE execution=?
+    AND status IN ('running','unknown_after_restart') AND approval_id IN (SELECT id FROM governance WHERE workspace=?)`);
+  const missing = db.prepare(`INSERT INTO approved_executions(execution,approval_id,status)
+    SELECT ?,id,? FROM governance WHERE id=? AND workspace=? ON CONFLICT(execution) DO NOTHING`);
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const e of updates) {
+      if (!known.has(e.id) && e.approvalId) missing.run(e.id, e.status, e.approvalId, workspace);
+      else pending.run(e.status, e.id, workspace);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 export function registerGovernance(app: FastifyInstance, db: DatabaseSync, workspace: () => string) {

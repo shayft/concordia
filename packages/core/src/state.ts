@@ -30,6 +30,7 @@ export interface Task extends TaskSpec {
   replyFor?: string;
 }
 export interface Execution {
+  approvalId?: string;
   modelSnapshot?: ModelSnapshot;
   id: string;
   taskId: string;
