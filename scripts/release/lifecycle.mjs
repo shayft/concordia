@@ -93,6 +93,12 @@ try {
   const originalVersions = versions(data);
   assert.deepEqual(originalVersions, [7, 3, 7], '旧版基线与预期不匹配');
   await copyState(previous, 'create', data, before);
+  const imported = join(scratch, 'old-backup-opened-by-candidate');
+  await copyState(candidate, 'restore', before, imported);
+  await withService(candidate, imported, async request => {
+    assert.deepEqual(await snapshot(request), legacy, '候选直接恢复旧版备份后未保留验收或交付正文');
+    assert.equal((await request('/api/workspaces')).workspaces.length, 1);
+  });
   let addedWorkspace;
   const current = await withService(candidate, data, async request => {
     assert.deepEqual(await snapshot(request), legacy, '升级未保留旧版验收和正文');
@@ -101,6 +107,7 @@ try {
     return snapshot(request);
   });
   const migrated = versions(data);
+  assert.deepEqual(versions(imported), migrated, '旧备份转换与原位升级得到不同数据库版本');
   assert.ok(migrated.every((v, i) => v > originalVersions[i]), '候选未升级所有已知旧库');
   await copyState(candidate, 'create', data, after);
   await copyState(candidate, 'restore', after, restored);
@@ -116,6 +123,6 @@ try {
     assert.equal((await request('/api/workspaces')).workspaces.length, 1);
   });
   assert.deepEqual(versions(rollback), originalVersions);
-  console.log('模拟交付、升级、候选备份恢复和旧版回退均通过。SQLite 版本 ' +
+  console.log('模拟交付、旧备份由候选直接恢复、原位升级、候选备份恢复和旧版回退均通过。SQLite 版本 ' +
     originalVersions.join('/') + ' → ' + migrated.join('/') + ' → ' + versions(rollback).join('/') + '。');
 } finally { await rm(scratch, { recursive: true, force: true, maxRetries: 4, retryDelay: 250 }); }
