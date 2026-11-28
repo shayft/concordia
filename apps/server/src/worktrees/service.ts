@@ -701,6 +701,14 @@ export class WorktreeService {
     return issue ? (JSON.parse(String(issue.snapshot)) as Snapshot) : [];
   }
   state() {
+    // A new member tree already has a HEAD before anything has been published.
+    const publications = new Map<string, string[]>();
+    for (const row of this.db.prepare('SELECT tree,sha FROM publications ORDER BY rowid DESC').iterate()) {
+      const id = String(row.tree);
+      const list = publications.get(id) ?? [];
+      list.push(String(row.sha));
+      publications.set(id, list);
+    }
     return {
       projects: this.db
         .prepare('SELECT id FROM projects')
@@ -709,7 +717,7 @@ export class WorktreeService {
       trees: this.db
         .prepare('SELECT * FROM trees ORDER BY rowid')
         .all()
-        .map((r) => this.view(r)),
+        .map((r) => ({ ...this.view(r), publishedShas: publications.get(String(r.id)) ?? [] })),
       issues: this.issues(),
       approvals: this.db
         .prepare("SELECT id,tree,kind,sha,target FROM approvals WHERE status='pending'")

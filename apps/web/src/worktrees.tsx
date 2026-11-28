@@ -22,6 +22,7 @@ export interface Tree {
   base: string;
   status: string;
   sha: string | null;
+  publishedShas: string[];
   conflicts: string[];
   snapshot: { treeId: string; sha: string }[];
 }
@@ -206,7 +207,7 @@ export function WorktreesPage() {
                     {t.path} · {t.sha?.slice(0, 12) ?? t.status}
                   </p>
                   {t.conflicts?.length > 0 && <p>冲突文件：{t.conflicts.join('、')}</p>}
-                  {t.kind === 'member' && t.sha && (
+                  {t.kind === 'member' && t.sha && t.publishedShas?.includes(t.sha) && (
                     <label className="check">
                       <input
                         type="checkbox"
@@ -229,10 +230,27 @@ export function WorktreesPage() {
                       <button disabled={feedback.busy} onClick={() => showDiff(t.id)}>
                         查看未提交差异
                       </button>
-                      {t.sha && (
-                        <button disabled={feedback.busy} onClick={() => showDiff(t.id, t.sha!)}>
-                          查看已发布差异
-                        </button>
+                      {t.publishedShas?.length > 0 && (
+                        <form
+                          className="actions"
+                          key={t.publishedShas[0]}
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            showDiff(t.id, String(new FormData(event.currentTarget).get('sha')));
+                          }}
+                        >
+                          <label>
+                            已发布版本{' '}
+                            <select name="sha" defaultValue={t.publishedShas[0]}>
+                              {t.publishedShas.map((sha) => (
+                                <option key={sha} value={sha}>{sha.slice(0, 12)}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <button type="submit" disabled={feedback.busy}>
+                            查看已发布差异
+                          </button>
+                        </form>
                       )}
                     </>
                   )}

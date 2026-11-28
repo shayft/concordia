@@ -314,7 +314,7 @@ it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
     writeEnabled: true,
     commands: [],
   };
-  let sha = 'a'.repeat(40);
+  const publishedShas = ['a'.repeat(40)];
   const tree = () => ({
     id: 'tree',
     projectId: 'app',
@@ -324,14 +324,15 @@ it('工作树刷新后联调仍使用勾选时的提交版本', async () => {
     branch: 'concordia/task1',
     base: 'base',
     status: 'ready',
-    sha,
+    sha: publishedShas[0],
+    publishedShas,
     conflicts: [],
     snapshot: [],
   });
   serve = (path) => {
     if (path === '/api/worktrees/state')
       return { projects: [project], trees: [tree()], approvals: [], issues: [], results: [] };
-    if (path === '/api/worktrees/publish') sha = 'b'.repeat(40);
+    if (path === '/api/worktrees/publish') publishedShas.unshift('b'.repeat(40));
     if (path === '/api/board') return { tasks: [] };
     if (path === '/api/delivery') return { phase: 'idle' };
     return {};
@@ -683,6 +684,7 @@ it('读取旧活动页时 SSE 不移动页码，回到最新后按游标增量�
 it('从成员树分别查看未提交和固定提交的差异，不创建交付或审批票', async () => {
   const { WorktreesPage } = await import('../src/worktrees.tsx');
   const sha = 'b'.repeat(40);
+  const older = 'c'.repeat(40);
   serve = (path, body) => {
     if (path === '/api/worktrees/state')
       return {
@@ -696,9 +698,11 @@ it('从成员树分别查看未提交和固定提交的差异，不创建交付�
             kind: 'member',
             status: 'ready',
             sha,
+            publishedShas: [sha, older],
             conflicts: [],
             snapshot: [],
           },
+          { id: 'new', projectId: 'app', kind: 'member', status: 'ready', sha, publishedShas: [] },
         ],
         approvals: [],
         issues: [],
@@ -719,11 +723,17 @@ it('从成员树分别查看未提交和固定提交的差异，不创建交付�
   await click(button('查看未提交差异'));
   expect(container.querySelector('dialog')?.textContent).toContain('draft.txt');
   await click(container.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!);
+  const selectors = container.querySelectorAll<HTMLSelectElement>('select[name="sha"]');
+  expect(selectors).toHaveLength(1);
+  const versions = selectors[0]!;
+  expect([...versions.options].map((option) => option.value)).toEqual([sha, older]);
+  expect(versions.value).toBe(sha);
+  versions.value = older;
   await click(button('查看已发布差异'));
-  expect(container.querySelector('dialog')?.textContent).toContain(sha);
+  expect(container.querySelector('dialog')?.textContent).toContain(older);
   expect(requests.filter((r) => r.method === 'POST')).toEqual([
     { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member' } },
-    { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member', sha } },
+    { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member', sha: older } },
   ]);
 });
 
