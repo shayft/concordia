@@ -440,7 +440,7 @@ it('岗位保存直属上级和显式空动作白名单，重新打开仍为受�
 
 it('活动页的下载使用当前会话的固定 JSON 摘要端点', async () => {
   const { HistoryPage } = await import('../src/history.tsx');
-  serve = (path) => (path === '/api/recovery' ? { recovered: [], unresolved: [] } : []);
+  serve = (path) => path.startsWith('/api/history/page') ? { events:[], hasMore:false } : path === '/api/recovery' ? { recovered: [], unresolved: [] } : [];
   await render(<HistoryPage events={0} />);
   expect(requests.some((r) => r.path === '/api/export/audit')).toBe(false);
   const clickLink = vi.spyOn(dom.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
@@ -504,7 +504,7 @@ it('活动页显示任务执行时价格、已知成本和未知用量，并随�
       ? [first, { ...first, id: 'e2', modelId: null, pricing: null, amount: null, inputTokens: null }]
       : path === '/api/recovery'
         ? { recovered: 0, unresolved: [] }
-        : [];
+        : {events:[],hasMore:false};
   await render(<HistoryPage events={0} />);
   expect(container.textContent).toContain('0.00002 USD');
   expect(container.textContent).toContain('未知模型');
@@ -601,4 +601,192 @@ it('API 连接验证展示实际 HTTP 状态、毫秒数和已知用量，缺失
   await click(button('批准一次真实调用'));
   expect(container.textContent).toContain('HTTP 401');
   expect(container.textContent).toContain('Token 用量 · 未知');
+});
+
+it.each([
+  ['/opt/concordia/codex', '/var/tmp/任务'],
+  ['/Applications/Tools/codex', '/Users/test/工作区'],
+  ['C:\\Program Files\\Tools\\codex.exe', 'D:\\工作区'],
+])('预检后才能核对实际可执行文件 %s 及工作目录，核对时不启动 CLI', async (executable, cwd) => {
+  serve = (path) =>
+    path === '/api/catalog'
+      ? {
+          connections: [{ id: 'probe', name: '本机', kind: 'codex', enabled: true }],
+          models: [],
+          members: [],
+          pools: [],
+        }
+      : { inspectionId: 'i', executable, cwd, version: '1.0' };
+  await render(<CatalogPage />);
+  await click(button('验证'));
+  await click(button('预检路径、版本和登录状态'));
+  expect(container.textContent).toContain(executable);
+  expect(container.textContent).toContain(cwd);
+  expect(requests.some((r) => r.path.endsWith('/test'))).toBe(false);
+});
+
+it('读取旧活动页时 SSE 不移动页码，回到最新后按游标增量；人工复核解除阻塞', async () => {
+  const { HistoryPage } = await import('../src/history.tsx');
+  let unresolved = ['未完成'];
+  const record = (seq: number) => ({ seq, type: '事件' + seq, data: {} });
+  let latest = 102;
+  serve = (path) => {
+    if (path.includes('history/page')) {
+      if (path.includes('before=101')) return { events: [record(100)], hasMore: false };
+      if (path.includes('after=102')) return { events: [record(103)], hasMore: false };
+      return { events: [record(101), record(latest)], hasMore: true };
+    }
+    if (path === '/api/recovery/recheck') unresolved = [];
+    if (path.startsWith('/api/recovery')) return { recovered: [], unresolved };
+    return [];
+  };
+  await render(<HistoryPage events={0} />);
+  await click(button('重新核对进程'));
+  expect(container.textContent).not.toContain('历史进程待人工核对');
+  await click(button('更早的记录'));
+  expect(container.textContent).toContain('事件100');
+  await render(<HistoryPage events={1} />);
+  expect(container.textContent).not.toContain('事件102');
+  await click(button('返回最新记录'));
+  latest = 103;
+  await render(<HistoryPage events={2} />);
+  expect(container.textContent).toContain('事件103');
+  expect(requests.some((r) => r.path === '/api/history')).toBe(false);
+  expect(requests.some((r) => r.path.endsWith('after=102'))).toBe(true);
+});
+
+it('从成员树分别查看未提交和固定提交的差异，不创建交付或审批票', async () => {
+  const { WorktreesPage } = await import('../src/worktrees.tsx');
+  const sha = 'b'.repeat(40);
+  serve = (path, body) => {
+    if (path === '/api/worktrees/state')
+      return {
+        projects: [
+          { id: 'app', repository: 'test', targetBranch: 'main', writeEnabled: true, commands: [] },
+        ],
+        trees: [
+          {
+            id: 'member',
+            projectId: 'app',
+            kind: 'member',
+            status: 'ready',
+            sha,
+            conflicts: [],
+            snapshot: [],
+          },
+        ],
+        approvals: [],
+        issues: [],
+        results: [],
+      };
+    if (path === '/api/worktrees/diff')
+      return {
+        treeId: 'member',
+        baseSha: 'a'.repeat(40),
+        sha: (body as { sha?: string }).sha ?? null,
+        diff: '+ change',
+        untracked: ['draft.txt'],
+      };
+    if (path === '/api/board') return { tasks: [] };
+    return { phase: 'idle' };
+  };
+  await render(<WorktreesPage />);
+  await click(button('查看未提交差异'));
+  expect(container.querySelector('dialog')?.textContent).toContain('draft.txt');
+  await click(container.querySelector<HTMLButtonElement>('dialog [aria-label="关闭"]')!);
+  await click(button('查看已发布差异'));
+  expect(container.querySelector('dialog')?.textContent).toContain(sha);
+  expect(requests.filter((r) => r.method === 'POST')).toEqual([
+    { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member' } },
+    { path: '/api/worktrees/diff', method: 'POST', body: { treeId: 'member', sha } },
+  ]);
+});
+
+it('保存工作区草稿，切换到另一工作区无内容，返回时需重新预览', async () => {
+  const draft = new Map<string, { text: string; revision: number }>();
+  const spec = {
+    id: 'mock',
+    goal: '内部测试',
+    title: '任务',
+    acceptance: [],
+    tasks: [],
+    agents: [],
+    maxCalls: 1,
+  };
+  serve = (path, body) => {
+    if (path.startsWith('/api/plan-draft/')) {
+      const saved = draft.get(path) ?? { text: '', revision: 0 };
+      if (!body) return saved;
+      const value = body as typeof saved;
+      expect(value.revision).toBe(saved.revision);
+      const result = { text: value.text, revision: value.revision + 1 };
+      draft.set(path, result);
+      return result;
+    }
+    if (path === '/api/templates/demo') return spec;
+    if (path === '/api/spec/preview')
+      return { revision: 2, spec, settings: [], taskChanges: [], added: [], removed: [], changed: [] };
+    return { connections: [], members: [], models: [], pools: [] };
+  };
+  await render(<PlansPage key="a" workspace="a" openBoard={() => {}} />);
+  await click(button('载入模板'));
+  await click(button('校验并预览差异'));
+  expect(button('批准并应用此版本')).toBeTruthy();
+  await render(<PlansPage key="b" workspace="b" openBoard={() => {}} />);
+  expect(container.querySelector<HTMLTextAreaElement>('#draft')?.value).toBe('');
+  await render(<PlansPage key="a" workspace="a" openBoard={() => {}} />);
+  expect(container.querySelector<HTMLTextAreaElement>('#draft')?.value).toContain('内部测试');
+  expect(container.textContent).not.toContain('批准并应用此版本');
+  expect(requests.filter((r) => r.method === 'PUT')).toHaveLength(1);
+  expect(requests.filter((r) => r.path.endsWith('/apply') || r.path.endsWith('/generate'))).toHaveLength(0);
+});
+
+it('合并确认前能核对已验收修订、来源 SHA 和通过的项目命令', async () => {
+  const { WorktreesPage } = await import('../src/worktrees.tsx');
+  const sha = 'b'.repeat(40);
+  serve = (path) => {
+    if (path === '/api/worktrees/state')
+      return {
+        projects: [{ id: 'p', repository: 'repo', targetBranch: 'main', commands: [] }],
+        trees: [
+          {
+            id: 'tree',
+            projectId: 'p',
+            kind: 'integration',
+            status: 'ready',
+            sha,
+            conflicts: [],
+            snapshot: [],
+          },
+        ],
+        approvals: [
+          {
+            id: 'ticket',
+            treeId: 'tree',
+            kind: 'merge',
+            available: true,
+            sha,
+            targetSha: 'a'.repeat(40),
+            diff: '+ allow',
+            acceptance: {
+              workspaceId: 'research',
+              planId: 'review',
+              revision: 7,
+              sources: [{ versionId: 'api-v1', treeId: 'author', sha }],
+            },
+            check: { id: 'check1', name: '合同测试', result: { exitCode: 0, elapsedMs: 32, passed: true } },
+          },
+        ],
+        issues: [],
+        results: [],
+      };
+    if (path === '/api/board') return { tasks: [] };
+    return { phase: 'idle' };
+  };
+  await render(<WorktreesPage />);
+  await click(button('查看并审批'));
+  const dialog = container.querySelector('dialog')!;
+  for (const value of ['修订 7', 'api-v1', 'author', sha, '合同测试', '退出码 0', '32 ms'])
+    expect(dialog.textContent).toContain(value);
+  expect(requests.some((r) => r.path.endsWith('approve-merge'))).toBe(false);
 });

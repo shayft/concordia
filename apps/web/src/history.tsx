@@ -1,16 +1,14 @@
 import type { ExecutionCost } from '@concordia/protocol/pricing';
 import { useEffect } from 'react';
-import { browserFetch, useAction, useResource } from './api.ts';
+import { api, browserFetch, useAction, useResource } from './api.ts';
 import { Empty, Notice } from './ui.tsx';
 
-interface EventRecord {
-  seq: number;
-  type: string;
-  data: Record<string, unknown>;
-}
+import { useHistoryFeed } from './history-feed.ts';
+
 export function HistoryPage({ events }: { events: number }) {
   const download = useAction();
-  const { data, error, reload } = useResource<EventRecord[]>('history');
+  const { data, error, loading, historic, hasOlder, load } = useHistoryFeed(events);
+  const check = useAction();
   const recovery = useResource<{ recovered: unknown; unresolved: unknown[] }>('recovery');
   const {
     data: costs,
@@ -18,8 +16,8 @@ export function HistoryPage({ events }: { events: number }) {
     reload: reloadCosts,
   } = useResource<ExecutionCost[]>('execution-costs');
   useEffect(() => {
-    if (events) void Promise.all([reload(), reloadCosts()]);
-  }, [events, reload, reloadCosts]);
+    if (events) void reloadCosts();
+  }, [events, reloadCosts]);
   return (
     <>
       <header className="page-title">
@@ -28,7 +26,7 @@ export function HistoryPage({ events }: { events: number }) {
           <p>按事件序号查看执行、交付与状态变化。</p>
         </div>
         <div className="actions">
-          <button onClick={() => void Promise.all([reload(), reloadCosts(), recovery.reload()])}>
+          <button onClick={() => void Promise.all([load('latest'), reloadCosts(), recovery.reload()])}>
             刷新
           </button>
           <button className="download" disabled={download.busy} onClick={() => void download.run(async () => {
@@ -47,8 +45,13 @@ export function HistoryPage({ events }: { events: number }) {
       {Boolean(recovery.data?.unresolved.length) && (
         <div className="notice error">
           有 {recovery.data?.unresolved.length} 个历史进程待人工核对，真实执行暂时受限。
+          <button disabled={check.busy} onClick={()=>void check.run(async()=>{
+            await api('recovery/recheck','POST',{});
+            await recovery.reload();
+          },'已重新核对进程记录。')}>重新核对进程</button>
         </div>
       )}
+      <Notice error={check.error} message={check.message} />
       <section className="surface">
         <div className="section-head">
           <h2>执行成本</h2>
@@ -93,7 +96,7 @@ export function HistoryPage({ events }: { events: number }) {
       <section className="surface">
         <div className="section-head">
           <h2>工作区事件</h2>
-          <span>{data?.length ?? '—'} 项</span>
+          <span>{historic ? '历史页' : '最新记录'} · {data?.length ?? '—'} 项</span>
         </div>
         {data
           ?.slice()
@@ -108,6 +111,10 @@ export function HistoryPage({ events }: { events: number }) {
             </details>
           ))}
         {data && !data.length && <Empty>此工作区尚无事件。</Empty>}
+        <div className="toolbar">
+          {hasOlder && <button disabled={loading} onClick={()=>void load('older')}>更早的记录</button>}
+          {historic && <button disabled={loading} onClick={()=>void load('latest')}>返回最新记录</button>}
+        </div>
       </section>
     </>
   );
