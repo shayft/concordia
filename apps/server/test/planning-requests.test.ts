@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import type { PlanningRequest } from '@concordia/protocol/planning';
 import { PlanningRequests } from '../src/planning-requests.ts';
 import { startLocalServer } from '../src/local-server.ts';
 import { browserSession } from './browser-session.ts';
+import { installHoldingCodex, running } from './fixtures/holding-codex.ts';
 
 const spec = (id: string) => ({ id: 'notes', title: '写作', goal: '公开提纲', acceptance: ['可审阅'],
   agents: [{ id, name: id, connection: 'office' }], tasks: [{ id: 'write', owner: id, title: '编写' }] });
@@ -162,3 +163,29 @@ it('后台状态写入失败时保留现场，恢复可写后标记中断且不�
   expect((await list())[0]).toMatchObject({ id: job.id, status: 'interrupted', hasResult: false });
   expect(sent).toHaveLength(1);
 });
+
+it('单项取消等到假 CLI 规划的进程及两代后代停止，再返回终态', async () => {
+  const fixtureDir = join(directory, 'holding-cli');
+  await mkdir(fixtureDir);
+  const executable = await installHoldingCodex(fixtureDir, 'planner');
+  expect((await ui.post('/api/connections', { id: 'local', name: '假命令行', kind: 'codex', executable, cwd: fixtureDir })).ok).toBe(true);
+  expect((await ui.post('/api/members', { id: 'planner', name: '负责人', role: '整理提纲', connectionId: 'local' })).ok).toBe(true);
+  const inspection = await ui.post('/api/plans/inspect', { agentId: 'planner' });
+  expect(inspection.ok).toBe(true);
+  const { inspectionId } = await inspection.json();
+  const start = await ui.post('/api/plans/generate', { ...req('planner', ['editor']), inspectionId });
+  expect(start.ok).toBe(true);
+  const job = await start.json() as PlanningRequest;
+
+  let pids: number[] = [];
+  await vi.waitFor(async () => {
+    pids = await Promise.all([0, 1, 2].map(async n => Number(await readFile(join(fixtureDir, 'pid-' + n), 'utf8'))));
+    expect(pids.every(pid => Number.isSafeInteger(pid) && pid > 0 && running(pid))).toBe(true);
+  }, { timeout: 30_000 });
+  const cancel = await ui.post(path + '/' + job.id + '/cancel', {});
+  expect(cancel.ok).toBe(true);
+  expect(await cancel.json()).toMatchObject({ id: job.id, status: 'cancelled' });
+  expect(pids.map(running)).toEqual([false, false, false]);
+  expect((await list())[0]).toMatchObject({ status: 'cancelled', hasResult: false });
+  expect(sent).toHaveLength(0);
+}, 90_000);

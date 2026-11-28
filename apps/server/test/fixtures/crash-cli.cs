@@ -40,7 +40,14 @@ internal static class CrashCli
             "[{\"name\":\"concordia\",\"enabled\":true,\"transport\":{\"type\":\"streamable_http\",\"url\":\""+url+"\",\"bearer_token_env_var\":\"CONCORDIA_MCP_TOKEN\"}}]");
         else if (args.Contains("status")) Console.WriteLine("Logged in using ChatGPT");
         else {
-            if (url==null || !args.Contains("read-only")) return 2;
+            if (!args.Contains("read-only")) return 2;
+            if (Path.GetFileNameWithoutExtension(Exe)=="planning-codex") {
+                if (url!=null || !String.IsNullOrEmpty(Environment.GetEnvironmentVariable("CONCORDIA_MCP_TOKEN"))) return 4;
+                Console.In.ReadToEnd();
+                Hold(0);
+                return 0;
+            }
+            if (url==null) return 2;
             using(var http=new WebClient()) {
                 http.Proxy=null;
                 foreach (var payload in new[] {
