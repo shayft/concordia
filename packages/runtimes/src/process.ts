@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { forgetSupervisor } from './process-recovery.ts';
-export { recoverProcessGroups } from './process-recovery.ts';
+export { recoverProcessGroups, startProcessRecovery } from './process-recovery.ts';
 
 export interface ProcessOptions {
   cwd?: string;

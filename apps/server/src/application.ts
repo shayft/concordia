@@ -6,7 +6,7 @@ import { runDemo } from '@concordia/core/demo';
 import { workflowSpecSchema } from '@concordia/protocol/workflow';
 import { openStore } from '@concordia/store';
 import { WorkflowStore } from '@concordia/store/workflow';
-import { recoverProcessGroups } from '@concordia/runtimes/process';
+import { startProcessRecovery } from '@concordia/runtimes/process';
 import { acquireDataDirectory, safeDatabasePath, safeDataDirectory } from './data-directory.ts';
 import { getCatalog, registerConnectionRoutes, resolveMember, cancelCatalogProbes } from './connections.ts';
 import type { WorktreeIssue } from './worktrees/service.ts';
@@ -39,9 +39,9 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   const lease = acquireDataDirectory(path),
     directory = lease.directory;
   app.addHook('onClose', async () => lease.release());
-  const recovery = await recoverProcessGroups(safeDataDirectory(directory, 'processes'));
+  const recovery = await startProcessRecovery(safeDataDirectory(directory, 'processes'));
   const assertRecovered = () => {
-    if (recovery.unresolved.length) throw new Error('上次执行的进程尚待人工核对');
+    if (recovery.report().unresolved.length) throw new Error('上次执行的进程尚待人工核对');
   };
   const db = openStore(safeDatabasePath(directory, 'catalog.sqlite'));
   app.addHook('onClose', async () => db.close());
@@ -185,7 +185,11 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     return { ...board, stoppedPools: [...new Set([...board.stoppedPools, ...pausedPools(db)])] };
   });
   app.get('/api/workspaces', async () => ({ active: current.id, workspaces: workspaces() }));
-  app.get('/api/recovery', async () => recovery);
+  app.get('/api/recovery', async () => recovery.report());
+  app.post('/api/recovery/recheck', async (req, reply) => {
+    if (!empty.safeParse(req.body).success) return reply.code(400).send();
+    return recovery.recheck();
+  });
   app.get('/api/templates/demo', async () => demoSpec());
   app.get('/api/tasks/:id/progress', async (req, reply) => {
     try {
