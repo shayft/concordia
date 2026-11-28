@@ -46,9 +46,11 @@ type FormProps = {
   id?: string;
   onClose: () => void;
   refresh: () => Promise<void>;
+  fixedConnection?: string;
+  saved?: (id: string) => void;
 };
 
-function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
+function Editor({ tab, catalog, id, onClose, refresh, fixedConnection, saved }: FormProps) {
   const connection = catalog.connections.find((c) => c.id === id);
   const cliConnection = connection && !('baseUrl' in connection) ? connection : undefined;
   const apiConnection = connection && 'baseUrl' in connection ? connection : undefined;
@@ -58,7 +60,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
   const item = { connections: connection, models: model, members: member, pools: pool }[tab];
   const [kind, setKind] = useState<Connection['kind']>(connection?.kind ?? 'chat-completions');
   const [connectionId, setConnectionId] = useState(
-    (tab === 'members' ? member : model)?.connectionId ?? catalog.connections[0]?.id ?? '',
+    fixedConnection ?? (tab === 'members' ? member : model)?.connectionId ?? catalog.connections[0]?.id ?? '',
   );
   const feedback = useAction();
   const selectable = catalog.models.filter((m) => m.connectionId === connectionId);
@@ -131,6 +133,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
               : { ...base, maxConcurrent: Number(text(fields, 'maxConcurrent')) };
       await api(tab + (id ? '/' + encodeURIComponent(id) : ''), id ? 'PUT' : 'POST', data);
       await refresh();
+      saved?.(recordId);
       onClose();
     });
   }
@@ -265,6 +268,7 @@ function Editor({ tab, catalog, id, onClose, refresh }: FormProps) {
               <Field name="connectionId" label="连接">
                 <select
                   id="connectionId"
+                  disabled={Boolean(fixedConnection)}
                   value={connectionId}
                   required
                   onChange={(e) => setConnectionId(e.target.value)}
@@ -461,16 +465,20 @@ function TestConnection({
   connection,
   models,
   member,
+  initialModelId,
+  addModel,
   close,
 }: {
   connection: Connection;
   models: CatalogModel[];
   member?: Member;
+  initialModelId?: string;
+  addModel: () => void;
   close: () => void;
 }) {
   const isCli = cli(connection.kind);
   const [modelId, setModel] = useState(
-    member ? (member.modelId ?? '') : isCli ? '' : (models[0]?.id ?? ''),
+    member ? (member.modelId ?? '') : isCli ? '' : (models.find((model) => model.id === initialModelId)?.id ?? models[0]?.id ?? ''),
   );
   const [unmanaged, setUnmanaged] = useState(false);
   const [inspection, setInspection] = useState<Inspection>();
@@ -556,6 +564,9 @@ function TestConnection({
             ))}
           </select>
         </Field>
+        {!isCli && !member && !models.length && (
+          <p>此连接还没有已启用的模型。 <button type="button" onClick={addModel}>为此连接添加模型</button></p>
+        )}
         <p className="help">此操作向所选连接发送一次只读请求，可能产生费用或消耗订阅额度。</p>
         <Notice error={feedback.error || result?.error} message={result?.ok ? result.text : undefined} />
         {result && (
@@ -610,8 +621,8 @@ export function CatalogPage() {
   const resource = useResource<Catalog>('catalog');
   const feedback = useAction();
   const [tab, setTab] = useState<Tab>('connections');
-  const [editor, setEditor] = useState<{ id?: string }>();
-  const [test, setTest] = useState<{ connection: Connection; member?: Member }>();
+  const [editor, setEditor] = useState<{ id?: string; forConnection?: string }>();
+  const [test, setTest] = useState<{ connection: Connection; member?: Member; modelId?: string }>();
   const [remove, setRemove] = useState<{ id: string; name: string }>();
   const catalog = resource.data;
   const rows: Row[] = catalog?.[tab] ?? [];
@@ -738,23 +749,28 @@ export function CatalogPage() {
                     ? '使用同一订阅或网关账户的连接可以共享并发上限。'
                     : '先添加连接，再设置模型和负责该岗位的成员。'}
               </p>
+              {tab === 'connections' && <a href="#board">去任务板体验免费模拟</a>}
             </Empty>
           )}
         </section>
       )}
       {catalog && editor && (
         <Editor
-          tab={tab}
+          tab={editor.forConnection ? 'models' : tab}
+          fixedConnection={editor.forConnection}
+          saved={editor.forConnection ? (modelId) => setTest((current) => current && { ...current, modelId }) : undefined}
           catalog={catalog}
           id={editor.id}
           onClose={() => setEditor(undefined)}
           refresh={resource.reload}
         />
       )}
-      {catalog && test && (
+      {catalog && test && !editor && (
         <TestConnection
           connection={test.connection}
           member={test.member}
+          initialModelId={test.modelId}
+          addModel={() => setEditor({ forConnection: test.connection.id })}
           models={catalog.models.filter((m) => m.connectionId === test.connection.id && m.enabled)}
           close={() => setTest(undefined)}
         />

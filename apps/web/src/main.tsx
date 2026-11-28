@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api, setActiveWorkspace, useAction, useResource } from './api.ts';
 import { subscribeEvents } from './events.ts';
@@ -28,6 +28,20 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
   const [page, setPage] = useState<Page>(current);
   const [online, setOnline] = useState(false);
   const [events, setEvents] = useState(0);
+  const content = useRef<HTMLElement>(null);
+  const previousPage = useRef(page);
+  function focusContent() {
+    const target = content.current?.querySelector('h1') ?? content.current;
+    if (target) {
+      target.tabIndex = -1;
+      target.focus();
+    }
+  }
+  useEffect(() => {
+    document.title = pages[page][1] + ' · Concordia';
+    if (previousPage.current !== page) focusContent();
+    previousPage.current = page;
+  }, [page]);
   useEffect(() => {
     const onHash = () => setPage(current());
     window.addEventListener('hashchange', onHash);
@@ -43,11 +57,15 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
         setEvents((n) => n + 1);
       }, 90);
     };
-    const close = subscribeEvents(() => {
-      setOnline(true);
-      void refresh();
-      notify();
-    }, notify, () => setOnline(false));
+    const close = subscribeEvents(
+      () => {
+        setOnline(true);
+        void refresh();
+        notify();
+      },
+      notify,
+      () => setOnline(false),
+    );
     return () => {
       close();
       clearTimeout(timer);
@@ -55,6 +73,16 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
   }, [data?.active, refresh]);
   return (
     <div className="shell">
+      <a
+        className="skip-navigation"
+        href="#workspace-content"
+        onClick={(event) => {
+          event.preventDefault();
+          focusContent();
+        }}
+      >
+        跳到当前页面内容
+      </a>
       <aside>
         <a className="brand" href="#connections">
           <span className="brand-mark" aria-hidden="true">
@@ -82,29 +110,35 @@ function Workspace({ data, refresh }: { data?: WorkspaceList; refresh: () => Pro
           </div>
           <WorkspaceMenu data={data} refresh={refresh} />
         </div>
-        {page === 'connections' ? (
-          <CatalogPage />
-        ) : page === 'board' ? (
-          <BoardPage
-            events={events}
-            openPlans={() => {
-              location.hash = 'plans';
-            }}
-          />
-        ) : page === 'plans' ? (
-          data ? <PlansPage
-            workspace={data.active}
-            openBoard={() => {
-              location.hash = 'board';
-            }}
-          /> : <p role="status">正在打开工作区…</p>
-        ) : page === 'worktrees' ? (
-          <WorktreesPage />
-        ) : page === 'budgets' ? (
-          <BudgetsPage workspace={data?.workspaces.find((w) => w.id === data.active)} events={events} />
-        ) : (
-          <HistoryPage events={events} />
-        )}
+        <section ref={content} id="workspace-content" aria-label={pages[page][1]}>
+          {page === 'connections' ? (
+            <CatalogPage />
+          ) : page === 'board' ? (
+            <BoardPage
+              events={events}
+              openPlans={() => {
+                location.hash = 'plans';
+              }}
+            />
+          ) : page === 'plans' ? (
+            data ? (
+              <PlansPage
+                workspace={data.active}
+                openBoard={() => {
+                  location.hash = 'board';
+                }}
+              />
+            ) : (
+              <p role="status">正在打开工作区…</p>
+            )
+          ) : page === 'worktrees' ? (
+            <WorktreesPage />
+          ) : page === 'budgets' ? (
+            <BudgetsPage workspace={data?.workspaces.find((w) => w.id === data.active)} events={events} />
+          ) : (
+            <HistoryPage events={events} />
+          )}
+        </section>
       </main>
     </div>
   );
@@ -183,10 +217,18 @@ function WorkspaceMenu({ data, refresh }: { data?: WorkspaceList; refresh: () =>
   );
 }
 function App() {
-  const { data, reload } = useResource<WorkspaceList>('workspaces');
+  const { data, error, reload } = useResource<WorkspaceList>('workspaces');
   useEffect(() => {
     setActiveWorkspace(data?.active, data?.generation);
   }, [data?.active, data?.generation]);
+  if (!data && error)
+    return (
+      <main>
+        <h1>工作区暂时无法打开</h1>
+        <Notice error={error} />
+        <button onClick={() => void reload()}>重试打开工作区</button>
+      </main>
+    );
   return <Workspace key={data?.generation ?? 'loading'} data={data} refresh={reload} />;
 }
 const root = document.getElementById('root');

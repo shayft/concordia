@@ -896,3 +896,48 @@ it('任务与负责人在各自预检入口显示实际目录和权限，核对�
     '/api/plans/inspect',
   ]);
 });
+
+it('空连接目录给出免费模拟入口，进入任务板不自动批准运行', async () => {
+  serve = () => ({ connections: [], members: [], models: [], pools: [] });
+  await render(<CatalogPage />);
+  const link = [...container.querySelectorAll('a')].find((el) => el.textContent.includes('免费模拟'));
+  expect(link?.getAttribute('href')).toBe('#board');
+  expect(requests.filter((request) => request.method !== 'GET')).toHaveLength(0);
+});
+it('在第二个网关验证框添加首个模型，取消或保存均回到原网关，未授权前不发请求', async () => {
+  const connections = ['alpha', 'beta'].map((id) => ({
+    id,
+    name: id,
+    enabled: true,
+    kind: 'chat-completions',
+    baseUrl: 'https://fixture.invalid/v1',
+  }));
+  const models: Record<string, unknown>[] = [];
+  serve = (path, body) => {
+    if (path === '/api/catalog') return { connections, models, members: [], pools: [] };
+    if (path === '/api/models') models.push(body as Record<string, unknown>);
+    return {};
+  };
+  await render(<CatalogPage />);
+  await click([...container.querySelectorAll('button')].filter((b) => b.textContent === '验证')[1]);
+  expect(button('批准一次真实调用').disabled).toBe(true);
+  await click(button('为此连接添加模型'));
+  expect(container.querySelector<HTMLSelectElement>('#connectionId')?.value).toBe('beta');
+  expect(container.querySelector<HTMLSelectElement>('#connectionId')?.disabled).toBe(true);
+  await click(button('取消'));
+  expect(container.querySelector('dialog h2')?.textContent).toBe('验证 · beta');
+  await click(button('为此连接添加模型'));
+  for (const [id, value] of [
+    ['name', '模型 B'],
+    ['id', 'model-b'],
+    ['modelId', 'vendor-model'],
+  ]) {
+    container.querySelector<HTMLInputElement>('#' + id)!.value = value;
+  }
+  await click(button('保存模型'));
+  expect(models[0]).toMatchObject({ id: 'model-b', connectionId: 'beta', modelId: 'vendor-model' });
+  expect(container.querySelector('dialog h2')?.textContent).toBe('验证 · beta');
+  expect(container.querySelector<HTMLSelectElement>('#testModel')?.value).toBe('model-b');
+  expect(button('批准一次真实调用').disabled).toBe(false);
+  expect(requests.filter((r) => r.method === 'POST').map((r) => r.path)).toEqual(['/api/models']);
+});

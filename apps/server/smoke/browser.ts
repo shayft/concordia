@@ -73,6 +73,43 @@ async function smoke() {
     await page.getByRole('heading', { name: '连接与成员', exact: true }).waitFor();
     await page.getByText('实时更新已连接', { exact: true }).waitFor();
     assert.equal(new URL(page.url()).hash, '');
+    phase = '同一浏览器重开启动链接，沿免费入口使用键盘切页和后退';
+    await page.goto(service.launchUrl, { waitUntil: 'commit' });
+    const entry = page.getByRole('link', { name: '去任务板体验免费模拟', exact: true });
+    await entry.focus();
+    await entry.press('Enter');
+    async function focusedPage(title: string) {
+      await page.getByRole('heading', { name: title, exact: true, level: 1 }).waitFor();
+      await page.waitForFunction(
+        (name) =>
+          document.title === name + ' · Concordia' &&
+          document.activeElement?.tagName === 'H1' &&
+          document.activeElement.textContent === name,
+        title,
+      );
+    }
+    await focusedPage('协作任务板');
+    await page.getByRole('button', { name: '运行固定模拟', exact: true }).waitFor();
+    await page.goBack({ waitUntil: 'commit' });
+    await focusedPage('连接与成员');
+    phase = '添加无凭据的演示网关并从验证页面补齐模型';
+    await page.getByRole('button', { name: '＋ 添加连接', exact: true }).click();
+    const connectionForm = page.getByRole('dialog', { name: '添加连接', exact: true });
+    await connectionForm.getByLabel('显示名称').fill('示例网关');
+    await connectionForm.getByLabel('标识（英文、数字或连字符）').fill('first-gateway');
+    await connectionForm.getByLabel('API 根地址').fill('https://smoke.invalid/v1');
+    await connectionForm.getByRole('button', { name: '保存连接' }).click();
+    await page.getByRole('button', { name: '验证', exact: true }).click();
+    const probe = page.getByRole('dialog', { name: '验证 · 示例网关', exact: true });
+    await probe.getByRole('button', { name: '为此连接添加模型' }).click();
+    const modelForm = page.getByRole('dialog', { name: '添加模型', exact: true });
+    await modelForm.getByLabel('显示名称').fill('示例模型');
+    await modelForm.getByLabel('标识（英文、数字或连字符）').fill('sample-model');
+    await modelForm.getByLabel('供应方模型 ID').fill('vendor-model');
+    await modelForm.getByRole('button', { name: '保存模型' }).click();
+    await probe.getByRole('combobox', { name: '测试模型' }).waitFor();
+    assert.equal(await probe.getByRole('combobox', { name: '测试模型' }).inputValue(), 'sample-model');
+    await probe.getByRole('button', { name: '关闭', exact: true }).last().click();
     phase = '通过页面载入模板并预览差异';
     await page.getByRole('link', { name: '计划与审批', exact: true }).click();
     await page.getByRole('button', { name: '载入模板', exact: true }).click();
@@ -132,6 +169,8 @@ async function smoke() {
     assert.equal(httpFailures, 0);
     assert.deepEqual(mutations, [
       '/session',
+      '/api/connections',
+      '/api/models',
       '/api/spec/preview',
       '/api/spec/preview',
       '/api/spec/apply',
@@ -153,7 +192,7 @@ async function smoke() {
 try {
   await smoke();
   process.stdout.write(
-    '浏览器冒烟通过：一次性会话、模板预览与批准、六张任务卡、模拟交付、验收快照及刷新后的活动记录。\n',
+    '浏览器冒烟通过：一次性会话和再次打开、键盘返回首页、免费模拟入口、网关模型配置、模板预览与批准、六张任务卡、模拟交付、验收快照及刷新后的活动记录。\n',
   );
 } catch (error) {
   // Launch and navigation errors can embed arguments, URLs or DOM text.
