@@ -104,15 +104,25 @@ describe('本地服务的启动和访问边界', () => {
     expect((await fetch(launch.origin + '/', { headers: { cookie } })).status).toBe(401);
   });
   it('两个合法实例在同一浏览器共用 Cookie 容器时，各自的 API 会话仍独立', async () => {
-    const other = await startLocalServer(directory);
+    await server.close();
+    server = await startLocalServer(directory, join(directory, 'instance-a'));
+    launch = new URL(server.launchUrl);
+    const other = await startLocalServer(directory, join(directory, 'instance-b'));
     try {
       const a = await browserSession(launch);
       const b = await browserSession(new URL(other.launchUrl));
       const cookie = a.cookie + '; ' + b.cookie;
       for (const [current, second] of [[a, b], [b, a]]) {
-        expect((await fetch(current.origin + '/api/health', { headers: { ...current.headers, cookie } })).status).toBe(200);
-        for (const headers of [{ cookie }, { ...second.headers, origin: current.origin, cookie }])
-          expect((await fetch(current.origin + '/api/health', { headers })).status).toBe(401);
+        for (const path of ['/api/health', '/api/events', '/api/export/audit']) {
+          const address = current.origin + path;
+          for (const headers of [{ cookie }, { ...second.headers, origin: current.origin, cookie }])
+            expect((await fetch(address, { headers })).status).toBe(401);
+          const response = await fetch(address, { headers: { ...current.headers, cookie } });
+          expect(response.status).toBe(200);
+          if (path.endsWith('/events')) expect(response.headers.get('content-type')).toBe('text/event-stream');
+          if (path.endsWith('/audit')) expect(response.headers.get('content-disposition')).toContain('attachment');
+          await response.body?.cancel();
+        }
       }
     } finally {
       await other.close();
