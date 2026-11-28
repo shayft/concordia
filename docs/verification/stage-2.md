@@ -52,3 +52,7 @@ node_modules/.bin/vitest run packages/store/test/workflow.test.ts packages/provi
 | Ubuntu 26.04 | 真实 Linux 测试通过，原生凭据脚本退出 0。[作业](https://github.com/shayft/concordia/actions/runs/45998469897/job/140503749838) |
 | macOS 26 ARM64 | 真实 macOS 测试通过，原生凭据脚本退出 0。[作业](https://github.com/shayft/concordia/actions/runs/45998469897/job/140503749154) |
 | Windows Server 2025 | 真实 Windows 测试通过，原生凭据脚本退出 0。[作业](https://github.com/shayft/concordia/actions/runs/45998469897/job/140503749619) |
+
+### 2026-11-28 协议、上下文和预算复核
+
+**模拟测试通过。** 在 Linux 运行 `pnpm exec vitest run apps/server/test/budget-ledger.test.ts apps/server/test/dispatch-context.test.ts packages/providers/test/stream-errors.test.ts packages/runtimes/test/chat-continuation.test.ts`，4 个文件、21 项通过。覆盖完整请求的逐轮上下文检查、工具按权限分页读取、DeepSeek 两种返回形式的两轮工具续调、HTTP 200 后的流内错误，以及未派发退款和可能已派发后的保守结算。模型和网关使用测试替身。个人私有网关的协议行为与计费仍为**尚未验证**。
