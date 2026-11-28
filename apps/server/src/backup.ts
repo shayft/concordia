@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { assertSingleFile, existingDataDirectory, safeDatabasePath } from '@concordia/store/paths';
+import { privateTemporaryDirectory } from '@concordia/store/private-directory';
 import { acquireDataDirectory } from './data-directory.ts';
 import { verifyBackupReferences } from './backup-integrity.ts';
 
@@ -122,7 +123,7 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
           throw new Error('应用仍有待核对的进程登记。请先在原数据目录启动、完成核对并正常停服。');
       }
     }
-    staging = await mkdtemp(join(dirname(to), '.concordia-copy-'));
+    staging = privateTemporaryDirectory(dirname(to), '.concordia-copy-');
     const digest = await copyState(from, staging, mode === 'create');
     if (mode === 'create') await writeFile(join(staging, manifest), digest + '\n', { mode: 0o600, flag: 'wx' });
     else if (digest !== expected) throw new Error('备份摘要不匹配。');

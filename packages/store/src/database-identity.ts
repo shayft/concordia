@@ -1,6 +1,7 @@
-import { constants, copyFileSync, lstatSync, mkdtempSync, rmSync } from 'node:fs';
+import { constants, copyFileSync, lstatSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { privateTemporaryDirectory } from './private-directory.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 
@@ -26,7 +27,7 @@ export function verifyBeforeOpening(path: string, identify: (db: DatabaseSync) =
   let probe: DatabaseSync | undefined;
   try {
     if (journals.length) {
-      scratch = mkdtempSync(join(tmpdir(), 'concordia-schema-'));
+      scratch = privateTemporaryDirectory(tmpdir(), 'concordia-schema-');
       const database = join(scratch, 'inspection.sqlite');
       for (const suffix of ['', ...journals])
         copyFileSync(path + suffix, database + suffix, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
