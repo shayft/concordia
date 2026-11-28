@@ -66,8 +66,22 @@ async function snapshot(request) {
   assert.ok(board.acceptance?.integration && board.executions.length > 0, '模拟主卡尚未验收');
   const artifact = await request('/api/versions/' + board.acceptance.integration);
   assert.ok(artifact.content.length > 0, '交付正文丢失');
+  const approvals = [];
+  let after = 0;
+  while (true) {
+    const page = await request('/api/history?after=' + after);
+    if (page.length === 0) break;
+    for (const event of page) {
+      assert.ok(Number.isSafeInteger(event.seq) && event.seq > after, '历史游标未前进');
+      after = event.seq;
+      if (event.type === 'plan.accepted' || (event.type === 'task.control' && event.data.operation === 'accept'))
+        approvals.push([event.seq, event.type]);
+    }
+  }
+  assert.ok(approvals.some(([, type]) => type === 'task.control') &&
+    approvals.some(([, type]) => type === 'plan.accepted'), '缺少已记录的任务和主卡验收决定');
   return {
-    acceptance: board.acceptance, versions: board.versions.map(({ id, contentRef }) => [id, contentRef]),
+    approvals, acceptance: board.acceptance, versions: board.versions.map(({ id, contentRef }) => [id, contentRef]),
     executions: board.executions.map(({ id, status }) => [id, status]), integration: artifact.content,
   };
 }
