@@ -141,3 +141,5 @@ pnpm exec tsx apps/server/src/backup.ts restore "/absolute/backups/concordia-01"
 源码按 MIT 许可发布，允许商用、修改和再分发，分发时须保留版权与许可声明。候选包提供提交标识、依赖锁、SHA-256 和 CycloneDX 依赖清单；三系统从同一份归档安装并演练回退。[MIT 许可](LICENSE) · [下载与核验源码候选](docs/release-artifacts.md)
 
 在 **活动记录** 可以检查模型调用批准、历史预算和对应的执行。个人账户的计费、企业受管设备策略和真实三成员交付各自有验收入口。[私有审计记录](docs/governance.md) · [个人设备验收](docs/verification/README.md) · [报告问题与安全联系方式](SECURITY.md)
+
+[本版变更记录](CHANGELOG.md) · [候选验收结果与独立试用清单](docs/verification/rc-acceptance.md)
