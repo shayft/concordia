@@ -6,6 +6,7 @@ import type { Scheduler } from '@concordia/core/workflow';
 import type { Connection, CatalogModel, Member } from '@concordia/protocol/connections';
 import { configSnapshot, fingerprint, recordDecision, withApproval } from './governance.ts';
 import { planningRoster } from './planning-roster.ts';
+import { applicableLimits, type Account } from './budget-policy.ts';
 import { modelEndpoint } from '@concordia/providers/model-endpoint';
 import { getCatalog, resolveMember, providerConfig } from './connections.ts';
 
@@ -39,8 +40,8 @@ function selectionFor(request: FastifyRequest): Selection | undefined {
 
 export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspace: () => Context) {
   function preview(raw: Selection) {
-    const selection = querySchema.parse(raw);
-    if (selection.purpose === 'dispatch' || selection.purpose === 'task') selection.maxCalls ??= 1;
+    const selection = querySchema.parse(raw.purpose === 'dispatch' || raw.purpose === 'task'
+      ? { ...raw, maxCalls: raw.maxCalls ?? 1 } : raw);
     const current = workspace();
     const board = current.scheduler.board();
     const bindings: Binding[] = [];
@@ -79,17 +80,19 @@ export function protectPaidCalls(app: FastifyInstance, db: DatabaseSync, workspa
       ...(c.kind === 'chat-completions' && { outputLimit: { field: c.outputTokenField ?? 'max_completion_tokens', tokens: c.maxOutputTokens ?? 1024 } }),
       pool: poolId,
     }));
-    const accounts = new Map<string, Set<string>>([
-      ['global', new Set(['all'])], ['workspace', new Set([current.id])],
-      ['connection', new Set(bindings.map(b => b.connection.id))], ['pool', new Set(bindings.map(b => b.poolId))],
-      ['member', new Set(bindings.flatMap(b => b.member ? [b.member.id] : []))],
-    ]);
-    const limits = db.prepare('SELECT * FROM budget_limits ORDER BY scope,id').all()
-      .filter(l => accounts.get(String(l.scope))?.has(String(l.id)));
+    const accounts: Account[] = [['global','all'],['workspace',current.id]];
+    for (const b of bindings) {
+      accounts.push(['connection',b.connection.id],['pool',b.poolId]);
+      if (b.member) accounts.push(['member',b.member.id]);
+    }
+    const limits = applicableLimits(db,accounts);
+    const task = selection.purpose === 'task' ? board.tasks.find(t => t.id === selection.id) : undefined;
     const policy = {
       revision: board.revision, limits, maxCalls: selection.maxCalls ?? 1,
-      plan: board.spec && { maxCalls: board.spec.maxCalls, maxTokens: board.spec.maxTokens,
+      plan: board.spec && { id: board.spec.id, maxCalls: board.spec.maxCalls, maxTokens: board.spec.maxTokens,
         maxConcurrent: board.spec.maxConcurrent, maxContextTokens: board.spec.maxContextTokens },
+      task: task && { id: task.id, maxCalls: task.maxCalls, maxCallsPerExecution: task.maxCallsPerExecution, maxTokens: task.maxTokens },
+      project: selection.projectId && fingerprint(selection.projectId), tree: selection.treeId && fingerprint(selection.treeId),
       routes: bindings.map((b,i) => ({
         connection: configSnapshot(b.connection), member: b.member && configSnapshot(b.member),
         model: b.model && configSnapshot(b.model), pool: b.poolId, poolLimit: b.poolLimit,

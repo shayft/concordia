@@ -1,3 +1,4 @@
+import { budgetPolicyMatches } from './budget-policy.ts';
 import { currentApprovalId, recordDecision } from './governance.ts';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -22,8 +23,8 @@ export type CallOutcome = 'success' | 'error' | 'cancelled' | 'unknown';
 type Account = [BudgetScope, string];
 type Usage = { inputTokens?: number; outputTokens?: number; totalTokens?: number };
 export class BudgetExceeded extends Error {
-  constructor() {
-    super('此调用超出已配置的预算或并发上限。');
+  constructor(message = '此调用超出已配置的预算或并发上限。') {
+    super(message);
   }
 }
 export class PoolSuspended extends Error {
@@ -74,6 +75,7 @@ export function reserveBudget(db: DatabaseSync, scope: CallScope, phase: 'prepar
   if (scope.workspaceId) accounts.push(['workspace', scope.workspaceId]);
   if (scope.memberId) accounts.push(['member', scope.memberId]);
   return transaction(db, () => {
+    if (!budgetPolicyMatches(db,currentApprovalId(),accounts)) throw new BudgetExceeded('预算策略已改变，请重新批准。');
     assertPoolAvailable(db, scope.poolId);
     const check = db.prepare(`SELECT 1 AS exceeded FROM budget_limits l
       LEFT JOIN budget_usage u USING (scope,id)
@@ -100,9 +102,12 @@ export function reserveBudget(db: DatabaseSync, scope: CallScope, phase: 'prepar
 
 /** Receipt is persisted before handing the request to the transport. */
 export function dispatchBudget(db: DatabaseSync, id: string, beforeSend?: (id: string) => void): void {
-  const hold = db.prepare("SELECT scopes FROM budget_calls WHERE id=? AND status='preparing'").get(id);
+  const hold = db.prepare("SELECT scopes,approval_id FROM budget_calls WHERE id=? AND status='preparing'").get(id);
   if (!hold) throw new Error('调用预算预留已失效。');
-  const pool = (JSON.parse(String(hold.scopes)) as Account[]).find(([scope]) => scope === 'pool');
+  const accounts = JSON.parse(String(hold.scopes)) as Account[];
+  if (!budgetPolicyMatches(db,typeof hold.approval_id === 'string' ? hold.approval_id : undefined,accounts))
+    throw new BudgetExceeded('预算策略已改变，请重新批准。');
+  const pool = accounts.find(([scope]) => scope === 'pool');
   if (pool) assertPoolAvailable(db, pool[1]);
   beforeSend?.(id);
   db.prepare("UPDATE budget_calls SET status='running' WHERE id=? AND status='preparing'").run(id);

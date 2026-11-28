@@ -4,7 +4,7 @@ import { api } from './api.ts';
 import { Notice } from './ui.tsx';
 
 type Route = { connection: string; protocol: string; member?: string; destination: string; model: string; credentials: string[]; permissions: string; pool: string; individual?: boolean; outputLimit?: {field: string; tokens: number} };
-interface Preview { stamp: string; routes: Route[]; simulated?: string[]; roster?: PlanningMember[]; revision: number }
+interface Preview { policy?: { limits: {scope:string; id:string; max_calls:number|null; max_tokens:number|null; max_concurrent:number|null}[] }; stamp: string; routes: Route[]; simulated?: string[]; roster?: PlanningMember[]; revision: number }
 interface Selection { purpose: 'task' | 'dispatch' | 'plan' | 'connection-test' | 'member-test'; id?: string; maxCalls?: string; roster?: string; modelId?: string; projectId?: string; treeId?: string }
 
 export function useApproval(selection?: Selection) {
@@ -39,6 +39,9 @@ export function ApprovalDetails({ approval }: { approval: ReturnType<typeof useA
       <ul>{approval.preview.roster.map((m) => <li key={m.id}>{m.name}（{m.id}） · {m.role} · 连接 {m.connection}</li>)}</ul>
     </details>}
     {!!approval.preview?.simulated?.length && <p>模拟成员 {approval.preview.simulated.join('、')}</p>}
+    {Boolean(approval.preview?.policy?.limits.length) && <details><summary>适用预算上限</summary>
+      <ul>{approval.preview?.policy?.limits.map(l => <li key={l.scope + '/' + l.id}>{l.scope} / {l.id} · 次数 {l.max_calls ?? '未设'} · token {l.max_tokens ?? '未设'} · 并发 {l.max_concurrent ?? '未设'}</li>)}</ul>
+    </details>}
     {approval.preview && <p>计划修订 {approval.preview.revision}</p>}
     <Notice error={approval.error}/>
     <button type="button" onClick={approval.reload}>刷新调用信息</button>

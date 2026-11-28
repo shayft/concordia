@@ -65,3 +65,29 @@ it('将当前会话批准、当时的预算和调度结果关联；改限额使�
     await rm(root,{recursive:true,force:true});
   }
 }, 30000);
+
+it('批准后新增或放宽预算也会阻止同批的后续预留及准备中的派发', async () => {
+  const { openStore } = await import('@concordia/store');
+  const { recordDecision, withApproval } = await import('../src/governance.ts');
+  const { reserveBudget, dispatchBudget, settleBudget } = await import('../src/budget-ledger.ts');
+  const root = await mkdtemp(join(tmpdir(),'concordia-governance-cap-'));
+  const db = openStore(join(root,'catalog.sqlite'));
+  try {
+    const scope = { connectionId:'g', poolId:'p', workspaceId:'default' };
+    const id = recordDecision(db,'approval.granted','default',{policy:{limits:[]}});
+    withApproval(id, () => {
+      const call = reserveBudget(db,scope,'preparing');
+      db.prepare("INSERT INTO budget_limits(scope,id,max_calls) VALUES('global','all',4)").run();
+      let sent = 0;
+      expect(() => dispatchBudget(db,call,() => { sent++; })).toThrow('预算策略已改变');
+      settleBudget(db,call);
+      expect(sent).toBe(0);
+      expect(() => reserveBudget(db,scope)).toThrow('预算策略已改变');
+    });
+    const approved = db.prepare('SELECT * FROM budget_limits').all();
+    const next = recordDecision(db,'approval.granted','default',{policy:{limits:approved}});
+    db.prepare('UPDATE budget_limits SET max_calls=8').run();
+    expect(() => withApproval(next,() => reserveBudget(db,scope))).toThrow('预算策略已改变');
+    expect(db.prepare('SELECT status FROM budget_calls').all()).toEqual([{status:'not_sent'}]);
+  } finally { db.close(); await rm(root,{recursive:true,force:true}); }
+});
