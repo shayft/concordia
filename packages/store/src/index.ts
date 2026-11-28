@@ -11,6 +11,7 @@ const migrations = [
   { version: 5, name: '005-code-bindings.sql' },
   { version: 6, name: '006-budget-ledger.sql' },
   { version: 7, name: '007-paused-pools.sql' },
+  { version: 8, name: '008-plan-draft.sql' },
 ] as const;
 
 /** 在写事务内再次读取版本，允许多个启动进程先后尝试迁移。 */
