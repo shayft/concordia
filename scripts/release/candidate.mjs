@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { devNull } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { dirname, join, posix, resolve } from 'node:path';
 import { parse } from 'yaml';
 import { verifyCandidate, hashFile } from './verify.mjs';
@@ -10,15 +10,16 @@ const [operation, commit, destination, ...rest] = process.argv.slice(2);
 if (operation !== 'build' || !/^[a-f0-9]{40}$/u.test(commit ?? '') || !destination || rest.length)
   throw new Error('用法：node scripts/release/candidate.mjs build <完整 Git 提交 SHA> <新目录>');
 
+const defaults = fileURLToPath(new URL('../../apps/server/src/worktrees/git.defaults', import.meta.url)).replaceAll('\\', '/');
 const gitEnvironment = {
-  GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_ATTR_NOSYSTEM: '1',
+  GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: defaults, GIT_ATTR_NOSYSTEM: '1',
   GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', TZ: 'UTC',
 };
 for (const name of ['PATH', 'SystemRoot', 'SystemDrive', 'WINDIR', 'ComSpec', 'TEMP', 'TMP', 'TMPDIR'])
   if (process.env[name]) gitEnvironment[name] = process.env[name];
 function git(args) {
   return execFileSync('git', ['-c', 'tar.umask=0022', '-c', 'core.autocrlf=false',
-    '-c', 'core.attributesFile=' + devNull, ...args], {
+    '-c', 'core.attributesFile=' + defaults, ...args], {
     shell: false, env: gitEnvironment, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   });
 }
