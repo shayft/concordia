@@ -1,3 +1,4 @@
+import type { Proposal, LegacyProposal } from './proposals.ts';
 import type { WaitHistory } from './timing.ts';
 import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import type { CallMeter } from './budget.ts';
@@ -102,7 +103,7 @@ export interface State {
   acceptedSnapshot?: AcceptanceSnapshot;
   receipts: Record<string, { fingerprint: string; result?: unknown; resultRef?: string }>;
   conflicts?: Record<string, string>;
-  proposals: { executionId: string; action: unknown }[];
+  proposals: (Proposal | LegacyProposal)[];
 }
 export const emptyState = (): State => ({
   archives: [],

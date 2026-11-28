@@ -1,3 +1,4 @@
+import { ProposalReview } from './proposals.tsx';
 import { ApprovalDetails, useApproval } from './approval.tsx';
 import { useEffect, useRef, useState } from 'react';
 import type { Catalog } from '@concordia/protocol/connections';
@@ -129,6 +130,7 @@ function TaskDetails({
   const slotName = (id: string) => board.slots.find((s) => s.id === id)?.title ?? id;
   return (
     <Modal title={task.title} onClose={close}>
+      {task.description && <p>{task.description}</p>}
       <div className="toolbar">
         <span className="tag on">{labels[task.status]}</span>
         <span>
@@ -525,6 +527,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
               全局停止
             </button>
           </div>
+          <ProposalReview key={board.spec.id} proposals={board.proposals ?? []} refresh={reload} />
           <div className="kanban">
             {(Object.keys(columns) as (keyof typeof columns)[]).map((col) => (
               <section key={col} className={'lane ' + col}>

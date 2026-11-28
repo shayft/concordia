@@ -1,3 +1,4 @@
+import { proposedSpec, proposals, type Proposal } from './proposals.ts';
 import type { PlatformAction } from '@concordia/protocol';
 import type { CoreDependencies } from './index.ts';
 import {
@@ -244,15 +245,18 @@ export function applyAction(
         scheduleReply(s, question, log, deps);
       return { status: 'review' };
     case 'create_task':
-    case 'assign_task':
+    case 'assign_task': {
       if (entity(plan.agents, exec.owner).role !== 'lead') throw new Error('只有负责人可以提议修改计划');
-      entity(plan.agents, action.assignee);
-      if (action.type === 'assign_task') entity(s.tasks, action.taskId);
-      if (action.type === 'create_task' && s.tasks.some((t) => t.id === action.taskId))
-        throw new Error('任务编号已存在');
-      s.proposals.push({ executionId: exec.id, action });
-      log('plan.proposed', { executionId: exec.id, kind: action.type });
-      return { approvalRequired: true };
+      const existing = proposals(s).find(p => p.executionId === exec.id && JSON.stringify(p.action) === JSON.stringify(action));
+      if (existing) return { approvalRequired: existing.status === 'pending', proposalId: existing.id };
+      proposedSpec(s, action);
+      const proposal: Proposal = { id: deps.nextId(), planId: plan.id, submittedRevision: s.revision,
+        executionId: exec.id, action, status: 'pending' };
+      s.proposals ??= [];
+      s.proposals.push(proposal);
+      log('plan.proposed', { id: proposal.id, executionId: exec.id, kind: action.type });
+      return { approvalRequired: true, proposalId: proposal.id };
+    }
     case 'write_file':
     case 'read_file':
     case 'commit_artifact':

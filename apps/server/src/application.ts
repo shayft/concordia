@@ -311,6 +311,21 @@ export async function registerApplication(app: FastifyInstance, path: string) {
       return current.scheduler.apply(checkedSpec(input.spec), input.expectedRevision, input.revisionOf);
     },
   );
+  post('/api/proposals/:id/preview', empty, (_, p) => current.scheduler.previewProposal(identifier.parse(p.id)));
+  post('/api/proposals/:id/decide', z.strictObject({
+    decision: z.enum(['approved', 'rejected']),
+    expected: z.strictObject({
+      proposalId: identifier, planId: identifier, revision: z.number().int().min(0),
+      target: z.strictObject({
+        status: z.enum(['waiting','ready','running','decision','review','paused','done','failed','cancelled']),
+        executionId: identifier.nullable(),
+      }).nullable(),
+    }),
+  }), ({ decision, expected }, p) =>
+    current.scheduler.decideProposal(identifier.parse(p.id), decision, expected, spec => {
+      if (current.worker.occupied()) throw new Error('请先停止当前运行');
+      if (JSON.stringify(checkedSpec(spec)) !== JSON.stringify(spec)) throw new Error('成员配置已改变，请重新核对计划');
+    }));
   post('/api/demo/run', empty, () => {
     if (current.worker.occupied()) throw new Error('请先停止当前运行');
     return runDemo(current.scheduler);

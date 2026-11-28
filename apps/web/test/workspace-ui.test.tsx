@@ -897,6 +897,28 @@ it('任务与负责人在各自预检入口显示实际目录和权限，核对�
   ]);
 });
 
+it('从看板逐项预览分工，运行期间仅可拒绝，刷新后批准所见修订', async () => {
+  const { ProposalReview } = await import('../src/proposals.tsx');
+  const proposal = {id:'p',planId:'board',submittedRevision:1,executionId:'lead-run',status:'pending' as const,
+    action:{type:'create_task' as const,taskId:'card',description:'说明',assignee:'member'}};
+  const stamp = {proposalId:'p',planId:'board',revision:2,target:null};
+  let queued = true;
+  serve = path => path.endsWith('/preview') ? {proposal,stamp,queued,blocker:null,diff:{
+    spec:{tasks:[{id:'card',owner:'member',maxCalls:6,maxRework:1,maxRetries:1}]},taskChanges:[],
+  }} : {};
+  const refresh = vi.fn(async () => {});
+  await render(<ProposalReview proposals={[proposal]} refresh={refresh} />);
+  await click(button('预览提议'));
+  expect(container.textContent).toContain('说明');
+  expect(button('批准此项变更').disabled).toBe(true);
+  expect(button('拒绝提议').disabled).toBe(false);
+  queued = false;
+  await click(button('刷新差异'));
+  await click(button('批准此项变更'));
+  expect(requests.at(-1)).toMatchObject({path:'/api/proposals/p/decide',body:{decision:'approved',expected:stamp}});
+  expect(refresh).toHaveBeenCalledOnce();
+});
+
 it('空连接目录给出免费模拟入口，进入任务板不自动批准运行', async () => {
   serve = () => ({ connections: [], members: [], models: [], pools: [] });
   await render(<CatalogPage />);

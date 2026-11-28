@@ -32,6 +32,7 @@ const inputSchema = z
 export const taskSchema = z.strictObject({
   id,
   title,
+  description: z.string().trim().min(1).max(32_768).optional(),
   owner: id,
   produces: list(id).default([]),
   consumes: list(inputSchema).default([]),

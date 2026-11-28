@@ -1,3 +1,4 @@
+import { proposedSpec, proposalStamp, proposals, sameStamp, type ProposalStamp } from './proposals.ts';
 import { captureLegacyWaits, recordWaits, waitTime } from './timing.ts';
 import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import { exhausted } from './budget.ts';
@@ -136,78 +137,117 @@ export class Scheduler {
   }
   apply(input: unknown, expectedRevision?: number, revisionOf?: string) {
     const spec = workflowSpecSchema.parse(input);
-    return this.write((s, log) => {
-      if (expectedRevision !== undefined && s.revision !== expectedRevision)
-        throw new Error('计划版本已改变，请重新预览');
-      if (revisionOf !== undefined && (spec.id !== revisionOf || !this.stateForPlan(s, revisionOf)))
-        throw new Error('修订草案必须引用所选计划');
-      const switching = Boolean(s.spec && s.spec.id !== spec.id);
-      this.switchState(s, spec.id);
-      if (JSON.stringify(spec) === JSON.stringify(s.spec)) {
-        if (switching) {
-          s.revision++;
-          log('plan.switched', { id: spec.id, revision: s.revision });
-        }
-        return { revision: s.revision };
+    return this.write((s, log) => this.applySpec(s, log, spec, expectedRevision, revisionOf));
+  }
+  private applySpec(s: State, log: Append, spec: WorkflowSpec, expectedRevision?: number, revisionOf?: string, reassignId?: string) {
+    if (expectedRevision !== undefined && s.revision !== expectedRevision)
+      throw new Error('计划版本已改变，请重新预览');
+    if (revisionOf !== undefined && (spec.id !== revisionOf || !this.stateForPlan(s, revisionOf)))
+      throw new Error('修订草案必须引用所选计划');
+    const switching = Boolean(s.spec && s.spec.id !== spec.id);
+    this.switchState(s, spec.id);
+    if (JSON.stringify(spec) === JSON.stringify(s.spec)) {
+      if (switching) {
+        s.revision++;
+        log('plan.switched', { id: spec.id, revision: s.revision });
       }
-      const diff = planDiff(s, spec);
-
-      if (s.tasks.some((t) => t.active)) throw new Error('请先暂停运行中的任务');
-      const revised = new Set([...diff.removed, ...diff.changed]);
-      // Budget edits are safe between executions; existing lineage and ownership are immutable in a spec edit.
-      const structure = ({
-        maxCalls: _calls,
-        maxRetries: _tries,
-        maxRework: _rework,
-        maxCallsPerExecution: _execCalls,
-        maxTokens: _tokens,
-        priority: _priority,
-        ...rest
-      }: WorkflowSpec['tasks'][number]) => JSON.stringify(rest);
-      for (const id of revised) {
-        if (!s.executions.some((e) => e.taskId === id)) continue;
-        const old = s.spec?.tasks.find((t) => t.id === id),
-          replacement = spec.tasks.find((t) => t.id === id);
-        if (!old || !replacement || structure(old) !== structure(replacement))
-          throw new Error('已有执行的任务须通过改派或返工更新');
-        const task = entity(s.tasks, id);
-        task.maxCalls = replacement.maxCalls;
-        task.maxCallsPerExecution = replacement.maxCallsPerExecution;
-        task.maxTokens = replacement.maxTokens;
-        task.priority = replacement.priority;
-        task.maxRetries = replacement.maxRetries;
-        task.maxRework = replacement.maxRework;
-        revised.delete(id);
-      }
-      if (
-        s.questions.some(
-          (q) => q.status === 'open' && q.to !== 'user' && !spec.agents.some((a) => a.id === q.to),
-        )
-      )
-        throw new Error('仍有问题等待该成员答复');
-      validateInputs(s, spec);
-      s.spec = spec;
-      s.tasks = [
-        ...spec.tasks.map((t) => {
-          const old = s.tasks.find((task) => task.id === t.id);
-          if (old && !revised.has(t.id)) return old;
-          const task = makeTask(t);
-          if (old) task.waitHistory = old.waitHistory;
-          return task;
-        }),
-        ...s.tasks.filter((t) => t.replyFor),
-      ];
-      for (const task of s.tasks) if (task.status === 'ready' || task.status === 'waiting') refresh(task, s);
-      s.revision++;
-      s.plans.push(this.deps.storage.putContent(JSON.stringify(spec)));
-      s.acceptance = null;
-      log('plan.applied', {
-        revision: s.revision,
-        added: diff.added,
-        removed: diff.removed,
-        changed: diff.changed,
-      });
       return { revision: s.revision };
+    }
+    const diff = planDiff(s, spec);
+
+    if (s.tasks.some((t) => t.active)) throw new Error('请先暂停运行中的任务');
+    const revised = new Set([...diff.removed, ...diff.changed]);
+    // Budget edits are safe between executions; existing lineage and ownership are immutable in a spec edit.
+    const structure = ({
+      maxCalls: _calls,
+      maxRetries: _tries,
+      maxRework: _rework,
+      maxCallsPerExecution: _execCalls,
+      maxTokens: _tokens,
+      priority: _priority,
+      ...rest
+    }: WorkflowSpec['tasks'][number]) => JSON.stringify(rest);
+    for (const id of revised) {
+      const old = s.spec?.tasks.find((t) => t.id === id),
+        replacement = spec.tasks.find((t) => t.id === id);
+      if (id === reassignId && old && replacement && structure({ ...old, owner: replacement.owner }) === structure(replacement)) {
+        this.changeOwner(s, log, id, replacement.owner);
+        revised.delete(id);
+        continue;
+      }
+      if (!s.executions.some((e) => e.taskId === id)) continue;
+      if (!old || !replacement || structure(old) !== structure(replacement))
+        throw new Error('已有执行的任务须通过改派或返工更新');
+      const task = entity(s.tasks, id);
+      task.maxCalls = replacement.maxCalls;
+      task.maxCallsPerExecution = replacement.maxCallsPerExecution;
+      task.maxTokens = replacement.maxTokens;
+      task.priority = replacement.priority;
+      task.maxRetries = replacement.maxRetries;
+      task.maxRework = replacement.maxRework;
+      revised.delete(id);
+    }
+    if (
+      s.questions.some(
+        (q) => q.status === 'open' && q.to !== 'user' && !spec.agents.some((a) => a.id === q.to),
+      )
+    )
+      throw new Error('仍有问题等待该成员答复');
+    validateInputs(s, spec);
+    s.spec = spec;
+    s.tasks = [
+      ...spec.tasks.map((t) => {
+        const old = s.tasks.find((task) => task.id === t.id);
+        if (old && !revised.has(t.id)) return old;
+        const task = makeTask(t);
+        if (old) task.waitHistory = old.waitHistory;
+        return task;
+      }),
+      ...s.tasks.filter((t) => t.replyFor),
+    ];
+    for (const task of s.tasks) if (task.status === 'ready' || task.status === 'waiting') refresh(task, s);
+    s.revision++;
+    s.plans.push(this.deps.storage.putContent(JSON.stringify(spec)));
+    s.acceptance = null;
+    log('plan.applied', {
+      revision: s.revision,
+      added: diff.added,
+      removed: diff.removed,
+      changed: diff.changed,
+    });
+    return { revision: s.revision };
+  }
+  previewProposal(id: string) {
+    const state = this.deps.storage.read();
+    const proposal = entity(proposals(state), id);
+    const stamp = proposalStamp(state, proposal);
+    let diff: PlanPreview | null = null, blocker: string | null = null;
+    if (proposal.status === 'pending') {
+      try { diff = planDiff(state, proposedSpec(state, proposal.action)); }
+      catch (error) { blocker = error instanceof Error && !(error instanceof SyntaxError) &&
+        /^[\u4e00-\u9fff]+$/u.test(error.message) ? error.message : '提议无法应用到当前计划'; }
+    }
+    return { proposal, stamp, diff, blocker, queued: state.tasks.some(t => t.active) };
+  }
+  decideProposal(id: string, decision: 'approved' | 'rejected', expected: ProposalStamp, check?: (spec: WorkflowSpec) => void) {
+    return this.write((state, log) => {
+      const records = proposals(state), proposal = entity(records, id);
+      if (proposal.status !== 'pending') {
+        if (proposal.status === decision && proposal.decision && sameStamp(expected, proposal.decision)) return proposal;
+        throw new Error('提议已经处理');
+      }
+      if (!sameStamp(expected, proposalStamp(state, proposal))) throw new Error('提议或任务状态已改变，请重新预览');
+      if (decision === 'approved') {
+        const spec = proposedSpec(state, proposal.action);
+        check?.(spec);
+        this.applySpec(state, log, spec, expected.revision, expected.planId,
+          proposal.action.type === 'assign_task' ? proposal.action.taskId : undefined);
+      }
+      proposal.status = decision;
+      proposal.decision = expected;
+      state.proposals = records;
+      log('plan.proposal_decided', { id, decision, revision: state.revision });
+      return proposal;
     });
   }
   board() {
@@ -246,6 +286,7 @@ export class Scheduler {
     const nextSlot = [...slots].sort((a, b) => b.unblocks - a.unblocks)[0];
     return {
       ...s,
+      proposals: proposals(s),
       tasks,
       slots,
       versions,
@@ -319,7 +360,7 @@ export class Scheduler {
       const context = {
         goal: plan.goal,
         acceptance: plan.acceptance,
-        task: task.title,
+        task: task.description ?? task.title,
         inputs: Object.fromEntries(
           Object.entries(inputs).map(([slot, ver]) => {
             const version = entity(s.versions, ver);
@@ -524,22 +565,25 @@ export class Scheduler {
   }
   reassign(taskId: string, owner: string) {
     return this.write((s, log) => {
-      const task = entity(s.tasks, taskId),
-        plan = activePlan(s);
-      entity(plan.agents, owner);
-      if (task.replyFor || ['done', 'cancelled'].includes(task.status)) throw new Error('此任务不能改派');
-      fence(s, task, 'obsolete', this.deps.now());
-      const previousOwner = task.owner;
-      task.owner = owner;
-      reconcileReplies(s, previousOwner, log, this.deps);
-      entity(plan.tasks, taskId).owner = owner;
+      const task = this.changeOwner(s, log, taskId, owner);
       s.revision++;
-      s.plans.push(this.deps.storage.putContent(JSON.stringify(plan)));
-      refresh(task, s);
-      s.acceptance = null;
-      log('task.reassigned', { taskId, owner, revision: s.revision });
+      s.plans.push(this.deps.storage.putContent(JSON.stringify(activePlan(s))));
       return task;
     });
+  }
+  private changeOwner(s: State, log: Append, taskId: string, owner: string) {
+    const task = entity(s.tasks, taskId), plan = activePlan(s);
+    entity(plan.agents, owner);
+    if (task.replyFor || ['done', 'cancelled'].includes(task.status)) throw new Error('此任务不能改派');
+    fence(s, task, 'obsolete', this.deps.now());
+    const previousOwner = task.owner;
+    task.owner = owner;
+    reconcileReplies(s, previousOwner, log, this.deps);
+    entity(plan.tasks, taskId).owner = owner;
+    refresh(task, s);
+    s.acceptance = null;
+    log('task.reassigned', { taskId, owner, revision: s.revision + 1 });
+    return task;
   }
   reportConflict(issue: { id: string; taskIds: string[]; paths: string[] }) {
     if (
