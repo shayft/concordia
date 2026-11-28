@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { demoSpec, meetingSpec, parallelSpec, reviewSpec, Scheduler } from '@concordia/core/workflow';
 import { runDemo } from '@concordia/core/demo';
-import { workflowSpecSchema } from '@concordia/protocol/workflow';
+import { acceptanceSnapshotSchema, workflowSpecSchema } from '@concordia/protocol/workflow';
 import { openStore } from '@concordia/store';
 import { WorkflowStore } from '@concordia/store/workflow';
 import { startProcessRecovery } from '@concordia/runtimes/process';
@@ -20,7 +20,11 @@ import { serveDelivery } from './delivery.ts';
 const text = z.string().trim().min(1).max(8000);
 const approval = z.literal(true);
 const identifier = z.string().min(1).max(128);
-const taskOp = z.enum(['cancel', 'pause', 'resume', 'retry', 'accept', 'rework', 'reassign']);
+const taskControl = z.discriminatedUnion('action', [
+  z.strictObject({ action: z.enum(['cancel', 'pause', 'resume', 'retry']) }),
+  z.strictObject({ action: z.enum(['accept', 'rework']), expectedExecutionId: identifier }),
+  z.strictObject({ action: z.literal('reassign'), owner: identifier }),
+]);
 const empty = z.strictObject({});
 function rejected(reply: FastifyReply, error: unknown) {
   if (error instanceof z.ZodError)
@@ -308,21 +312,33 @@ export async function registerApplication(app: FastifyInstance, path: string) {
     if (current.worker.occupied()) throw new Error('请先停止当前运行');
     return runDemo(current.scheduler);
   });
+  post('/api/tasks/:id/inspect', z.strictObject({
+    confirmUnmanaged: z.boolean().optional(), projectId: identifier.optional(), treeId: z.uuid().optional(),
+  }).refine(x => Boolean(x.projectId) === Boolean(x.treeId)), (input, p) => {
+    assertRecovered();
+    return current.worker.inspectExecution({ taskId: p.id, projectId: input.projectId, treeId: input.treeId }, input.confirmUnmanaged);
+  });
+  post('/api/plans/inspect', z.strictObject({ agentId: identifier, confirmUnmanaged: z.boolean().optional() }), input => {
+    assertRecovered();
+    return current.worker.inspectExecution({ planner: input.agentId }, input.confirmUnmanaged);
+  });
   post('/api/tasks/:id/run', runOptions, (opts, p) => {
     assertRecovered();
     return current.worker.start(p.id, opts);
   });
   post(
     '/api/tasks/:id/control',
-    z.strictObject({ action: taskOp, owner: identifier.optional() }),
+    taskControl,
     (data, p) => {
       if (data.action === 'reassign') current.scheduler.reassign(p.id, identifier.parse(data.owner));
-      else current.scheduler.control(p.id, data.action);
+      else current.scheduler.control(p.id, data.action, 'expectedExecutionId' in data ? data.expectedExecutionId : undefined);
       if (['reassign', 'pause', 'cancel', 'rework'].includes(data.action)) current.worker.cancelTask(p.id);
       return { ok: true };
     },
   );
-  post('/api/accept', empty, () => ({ snapshot: current.scheduler.accept() }));
+  post('/api/accept', z.strictObject({ expected: acceptanceSnapshotSchema }), ({ expected }) => ({
+    snapshot: current.scheduler.accept(expected),
+  }));
   post(
     '/api/dispatch',
     z.strictObject({ maxCalls: z.number().int().min(1).max(50), approved: approval }),

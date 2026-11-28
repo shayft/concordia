@@ -106,7 +106,22 @@ it('codex 停用本机配置的 MCP 服务器，只保留本次执行的动作�
     const json = new CliAgentRuntime({ kind, executable:process.execPath, connectionId:'json', actionChannel:'json', confirmUnmanaged:true, env }, mcp, new Map());
     await json.run({ ...input, executionId:'json', prompt:'JSON 最终动作' }, () => {});
     expect(calls.at(-1)).toEqual({ type:'submit_result', summary:'JSON 最终动作' });
+    const selected = await json.validate();
+    await writeFile(join(directory, 'fixture-project-servers.json'), JSON.stringify(['project_only']));
+    await expect(json.run({ ...input, executionId:'old-dir', approvedInspectionId:selected.inspectionId }, () => {})).rejects.toThrow(/重新预检/);
+    const inTree = await new CliAgentRuntime({ kind, executable:process.execPath, cwd:directory,
+      connectionId:'json', actionChannel:'json', confirmUnmanaged:true, env }, mcp, new Map()).validate();
+    expect(inTree.disabledMcpServers).toContain('project_only');
+    await json.run({ ...input, executionId:'selected-tree', approvedInspectionId:inTree.inspectionId }, () => {});
+    await writeFile(join(directory, 'fixture-project-servers.json'), JSON.stringify(['fixture_ignores_disable']));
+    const count = calls.length;
+    await expect(json.run({ ...input, executionId:'ignored' }, () => {})).rejects.toThrow(/全部停用/);
+    expect(calls).toHaveLength(count);
+    await rm(join(directory, 'fixture-project-servers.json'));
     await writeFile(join(home, '.codex-fake-mcp.json'), JSON.stringify(['concordia']));
+    await json.run({ ...input, executionId:'json-same-name', prompt:'仍可提交' }, () => {});
+    expect(calls.at(-1)).toEqual({type:'submit_result', summary:'仍可提交'});
+    await runtime.run({ ...input, outputOnly:true, executionId:'text-same-name', prompt:'生成计划' }, () => {});
     await expect(runtime.run({ ...input, executionId:'clash' }, () => {})).rejects.toThrow(/重名/);
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));

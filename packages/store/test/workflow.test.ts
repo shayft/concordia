@@ -239,6 +239,30 @@ describe('真实 SQLite 与脚本化成员', () => {
     expect(task('review').status).toBe('ready');
     expect(scheduler.board().acceptance).toBeNull();
   });
+  it('钉住旧版的无产出审查在上游不兼容后撤销验收，旧快照不能重放', () => {
+    const spec = demoSpec();
+    scheduler.apply(spec);
+    const first = scheduler.claim('api');
+    const original = pub(first.id, 'contract', 'v1');
+    scheduler.control('api', 'pause');
+    spec.tasks.find(t => t.id === 'accept')!.consumes = [{ slotId:'contract', policy:'pinned', version:original.id }];
+    spec.requiredTasks = ['accept'];
+    spec.requiredSlots = [];
+    scheduler.apply(spec);
+    const review = scheduler.claim('accept');
+    scheduler.act(review.id, { type:'submit_result', summary:'核对 v1' });
+    expect(() => scheduler.control('accept','accept','previous-execution')).toThrow('待审执行已改变');
+    scheduler.control('accept','accept',review.id);
+    const snapshot = scheduler.board().acceptanceCandidate!;
+    expect(snapshot.executions).toEqual({accept:review.id});
+    expect(() => scheduler.accept({...snapshot, revision:snapshot.revision-1})).toThrow('快照已改变');
+    scheduler.accept(snapshot);
+    scheduler.control('api','resume');
+    pub(scheduler.claim('api').id,'contract','v2',true);
+    expect(task('accept').status).toBe('done');
+    expect(scheduler.board().acceptedSnapshot).toBeNull();
+    expect(() => scheduler.accept(snapshot)).toThrow('审查的输入已过期');
+  });
   it('钉住旧版的任务可继续运行，但基于不兼容旧输入的快照不能验收', () => {
     const spec = demoSpec();
     scheduler.apply(spec);

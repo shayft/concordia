@@ -10,6 +10,7 @@ const tomlUrl = args.find(a => a.startsWith('mcp_servers='))?.match(/url="([^"]+
 function userMcpServers() {
   let names = [];
   try { names = JSON.parse(readFileSync(join(process.env.HOME, '.codex-fake-mcp.json'), 'utf8')); } catch { /* None. */ }
+  try { names.push(...JSON.parse(readFileSync(join(process.cwd(), 'fixture-project-servers.json'), 'utf8'))); } catch { /* None. */ }
   let state = new Map(names.map(name => [name, true]));
   args.forEach((arg, i) => {
     if (args[i - 1] !== '-c') return;
@@ -17,7 +18,7 @@ function userMcpServers() {
     const disabled = /^mcp_servers\.(.+)\.enabled=false$/.exec(arg)?.[1];
     if (disabled === undefined) return;
     if (!state.has(disabled)) { console.error('invalid transport'); process.exit(1); }
-    state.set(disabled, false);
+    if (disabled !== 'fixture_ignores_disable') state.set(disabled, false);
   });
   return state;
 }

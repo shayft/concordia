@@ -23,6 +23,8 @@ import {
   type State,
   type WorkflowStorage,
 } from './state.ts';
+import { acceptanceCandidate, sameAcceptance, reviewExecution } from './acceptance.ts';
+import type { AcceptanceSnapshot } from '@concordia/protocol/workflow';
 import { applyAction, scheduleReply } from './workflow-actions.ts';
 export * from './state.ts';
 export * from './templates.ts';
@@ -71,6 +73,11 @@ export class Scheduler {
       const now = this.deps.now();
       captureLegacyWaits(state);
       const result = callback(state, (type, data) => append(type, { ...data, time: now }));
+      if (state.acceptance && typeof acceptanceCandidate(state) === 'string') {
+        state.acceptance = null;
+        append('plan.acceptance_invalidated', { time: now });
+      }
+      if (!state.acceptance) delete state.acceptedSnapshot;
       recordWaits(state, now);
       return result;
     });
@@ -86,6 +93,7 @@ export class Scheduler {
     };
     const next = archive ? (JSON.parse(this.deps.storage.getContent(archive.ref)) as State) : emptyState();
     const archives = [...s.archives.filter((w) => w.id !== id), previous];
+    delete s.acceptedSnapshot;
     Object.assign(s, next, { archives, revision: s.revision });
   }
   switchWorkspace(id: string) {
@@ -191,6 +199,7 @@ export class Scheduler {
         const inputs = inputsFor(t, s);
         const card = {
           ...t,
+          reviewExecutionId: t.status === 'review' ? reviewExecution(s, t)?.id : undefined,
           waitTime: waitTime(t, s, now),
           column: column(t),
           missing: t.consumes.filter((c) => !inputs[c.slotId]).map((c) => c.slotId),
@@ -212,12 +221,18 @@ export class Scheduler {
         .filter(([slot, id]) => latest(s, slot)?.id !== id)
         .map(([slot]) => slot),
     }));
+    const candidate = acceptanceCandidate(s);
+    const eligible = typeof candidate !== 'string';
     const nextSlot = [...slots].sort((a, b) => b.unblocks - a.unblocks)[0];
     return {
       ...s,
       tasks,
       slots,
       versions,
+      acceptance: eligible ? s.acceptance : null,
+      acceptedSnapshot: eligible && s.acceptance ? s.acceptedSnapshot ?? null : null,
+      acceptanceCandidate: eligible ? candidate : null,
+      acceptanceBlocker: eligible ? null : candidate,
       criticalSlot: nextSlot?.unblocks ? nextSlot.id : null,
       agents: s.spec?.agents ?? [],
     };
@@ -429,7 +444,7 @@ export class Scheduler {
       log('pool.resumed', { pool });
     });
   }
-  control(taskId: string, operation: Control) {
+  control(taskId: string, operation: Control, expectedExecutionId?: string) {
     return this.write((s, log) => {
       const task = entity(s.tasks, taskId);
       switch (operation) {
@@ -445,15 +460,17 @@ export class Scheduler {
           refresh(task, s);
           break;
         case 'accept':
-        case 'rework':
+        case 'rework': {
           if (task.status !== 'review') throw new Error('任务尚未进入审查');
+          const result = reviewExecution(s, task);
+          if (!result || (expectedExecutionId !== undefined && result.id !== expectedExecutionId))
+            throw new Error('待审执行已改变，请重新核对');
           if (operation === 'accept') {
-            const result = s.executions.findLast((e) => e.taskId === taskId && e.status === 'success');
-            if (!result) throw new Error('任务缺少可验收的执行');
             task.acceptedExecution = result.id;
             transition(task, 'done');
           } else reopen(task, s, this.deps.now());
           break;
+        }
         default:
           throw new Error('未知控制指令');
       }
@@ -593,36 +610,15 @@ export class Scheduler {
       return count;
     });
   }
-  accept() {
+  accept(expected?: AcceptanceSnapshot) {
     return this.write((s, log) => {
-      const plan = activePlan(s),
-        snapshot: Record<string, string> = {};
-      for (const slot of plan.requiredSlots) {
-        const v = latest(s, slot);
-        if (!v || v.stale || entity(s.tasks, v.taskId).status !== 'done')
-          throw new Error('必需交付物未验收或已过期');
-        snapshot[slot] = v.id;
-      }
-      const requiredTasks = plan.requiredTasks?.length
-        ? plan.requiredTasks
-        : plan.requiredSlots.length
-          ? []
-          : plan.tasks.map((t) => t.id);
-      if (requiredTasks.some((id) => entity(s.tasks, id).status !== 'done'))
-        throw new Error('必需任务尚未完成审查');
-      if (s.questions.some((q) => q.status === 'open' && q.blocking)) throw new Error('尚有未答复的阻塞问题');
-      s.acceptance = snapshot;
-      const acceptedExecutions = Object.fromEntries(
-        [...new Set([...requiredTasks, ...plan.requiredSlots.map((id) => latest(s, id)!.taskId)])].map(
-          (id) => [
-            id,
-            entity(s.tasks, id).acceptedExecution ??
-              s.executions.findLast((e) => e.taskId === id && e.status === 'success')?.id,
-          ],
-        ),
-      );
-      log('plan.accepted', { snapshot, acceptedExecutions, revision: s.revision });
-      return snapshot;
+      const candidate = acceptanceCandidate(s);
+      if (typeof candidate === 'string') throw new Error(candidate);
+      if (expected && !sameAcceptance(candidate, expected)) throw new Error('验收快照已改变，请重新核对');
+      s.acceptance = candidate.versions;
+      s.acceptedSnapshot = candidate;
+      log('plan.accepted', { snapshot: candidate.versions, acceptedExecutions: candidate.executions, revision: s.revision });
+      return candidate.versions;
     });
   }
 }

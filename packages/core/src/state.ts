@@ -1,7 +1,7 @@
 import type { WaitHistory } from './timing.ts';
 import type { ModelSnapshot } from '@concordia/protocol/pricing';
 import type { CallMeter } from './budget.ts';
-import type { TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
+import type { AcceptanceSnapshot, TaskSpec, WorkflowSpec } from '@concordia/protocol/workflow';
 
 export type TaskStatus =
   | 'waiting'
@@ -98,6 +98,7 @@ export interface State {
   stoppedPools: string[];
   wakeups: string[];
   acceptance: Record<string, string> | null;
+  acceptedSnapshot?: AcceptanceSnapshot;
   receipts: Record<string, { fingerprint: string; result?: unknown; resultRef?: string }>;
   conflicts?: Record<string, string>;
   proposals: { executionId: string; action: unknown }[];

@@ -16,6 +16,8 @@ export interface CliOptions {
   signal?: AbortSignal;
   confirmUnmanaged?: boolean;
   model?: string;
+  /** The selected task will inject Concordia's own MCP endpoint. */
+  requiresPlatformMcp?: boolean;
   actionChannel?: 'mcp' | 'json';
 }
 
@@ -135,7 +137,7 @@ async function prepare(kind: CliKind, options: CliOptions, cwd: string) {
     }
     disabledMcpServers = listedMcpServers(await invoke([...codexOptions, 'mcp', 'list', '--json']))
       .map(server => server.name).sort();
-    if (disabledMcpServers.includes(platformMcpServer)) {
+    if (options.requiresPlatformMcp && disabledMcpServers.includes(platformMcpServer)) {
       throw new CliDiagnosticError('Codex 配置中已有名为 concordia 的 MCP 服务器，与平台动作通道重名。请在 Codex 配置中改名后重新预检。');
     }
     const unnamed = disabledMcpServers.filter(name => !bareServerName.test(name));

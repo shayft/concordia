@@ -339,6 +339,43 @@ export class Worker {
       });
   }
 
+  private cliLocation(binding: Binding, task: string, tree?: string, project?: string, planning = false) {
+    const c = binding.connection;
+    if ('baseUrl' in c) throw new Error('当前连接不是本地命令行');
+    const key = createHash('sha256')
+      .update(JSON.stringify([this.workspace, this.scheduler.board().spec?.id,
+        planning ? ['plan', binding.member.id] : task]))
+      .digest('hex');
+    const cwd = tree ? this.trees.executionTree(project!, task, tree, this.treeScope()).path
+      : (c.cwd ?? safeDataDirectory(this.directory, 'cli-work', key));
+    return { key, cwd };
+  }
+
+  async inspectExecution(target: { taskId: string; treeId?: string; projectId?: string } | { planner: string },
+    confirmUnmanaged?: boolean) {
+    const task = 'taskId' in target ? this.scheduler.board().tasks.find(t => t.id === target.taskId) : undefined;
+    if ('taskId' in target && task?.status !== 'ready') throw new Error('任务尚未就绪');
+    const binding = resolveMember(this.db, 'planner' in target ? target.planner : task!.owner);
+    const c = binding.connection;
+    if ('baseUrl' in c) throw new Error('当前连接不是本地命令行');
+    if (task && this.scheduler.board().agents.find(a => a.id === task.owner)?.connection !== c.id)
+      throw new Error('计划与成员当前连接不匹配');
+    this.checkConnection(binding);
+    const planning = 'planner' in target;
+    const taskId = task?.id ?? 'plan';
+    const { cwd } = this.cliLocation(binding, taskId, 'treeId' in target ? target.treeId : undefined,
+      'projectId' in target ? target.projectId : undefined, planning);
+    const id = randomUUID();
+    const job: LiveJob = { controller: new AbortController(), task: taskId, member: binding.member.id,
+      connection: c.id, pool: binding.poolId };
+    this.jobs.set(id, job);
+    const pending = inspectCli(c.kind, { cwd, executable: c.executable, model: binding.model?.modelId,
+      confirmUnmanaged, actionChannel: c.actionChannel, signal: job.controller.signal,
+      requiresPlatformMcp: !planning && c.actionChannel !== 'json' });
+    job.finished = pending.then(() => {}, () => {});
+    try { return await pending; } finally { this.jobs.delete(id); }
+  }
+
   private async cli(
     binding: Binding,
     job: LiveJob,
@@ -360,14 +397,8 @@ export class Worker {
       confirmUnmanaged: options.confirmUnmanaged,
       signal: job.controller.signal,
     };
-    const checked = await inspectCli(c.kind, config);
-    if (checked.inspectionId !== options.inspectionId) throw new Error('CLI 预检已变化');
-    const key = createHash('sha256')
-      .update(JSON.stringify([this.workspace, this.scheduler.board().spec?.id, job.task]))
-      .digest('hex');
-    const cwd = job.tree
-      ? this.trees.executionTree(job.project!, job.task, job.tree, this.treeScope()).path
-      : (c.cwd ?? safeDataDirectory(this.directory, 'cli-work', key));
+    if (!options.inspectionId) throw new Error('请先完成实际工作目录的预检');
+    const { key, cwd } = this.cliLocation(binding, job.task, job.tree, job.project, outputOnly);
     const runtime = new CliAgentRuntime(config, this.mcp, {
       get: (key) =>
         this.db.prepare('SELECT session FROM cli_sessions WHERE binding=?').get(this.workspace + '|' + key)
@@ -387,10 +418,10 @@ export class Worker {
         {
           executionId: id,
           memberId: job.member,
-          taskId: this.workspace + ':' + key,
+          taskId: this.workspace + ':' + (outputOnly ? id : key),
           cwd,
           prompt,
-          approvedDiagnostic: checked,
+          approvedInspectionId: options.inspectionId,
           outputOnly,
           allowedActions: outputOnly ? new Set<never>() : job.allowed,
           permission: job.tree && job.allowed?.has('write_file') ? 'worktree-write' : 'read-only',

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import type { State, WorkflowEvent } from '@concordia/core/workflow';
+import type { Scheduler, WorkflowEvent } from '@concordia/core/workflow';
 import { startLocalServer } from '../src/local-server.ts';
 import { git } from '../src/worktrees/git.ts';
 
@@ -86,8 +86,8 @@ async function configure(ui: Client, stream?:boolean) {
   ];
   expect(responses.map(r=>r.status)).toEqual([201,201,201]);
 }
-async function board(ui: Client): Promise<State> {
-  const response=await ui.get('/api/board');expect(response.status).toBe(200);return response.json() as Promise<State>;
+async function board(ui: Client): Promise<ReturnType<Scheduler['board']>> {
+  const response=await ui.get('/api/board');expect(response.status).toBe(200);return response.json() as Promise<ReturnType<Scheduler['board']>>;
 }
 async function history(ui:Client,after=0):Promise<WorkflowEvent[]> {
   return (await ui.get('/api/history?after='+after)).json() as Promise<WorkflowEvent[]>;
@@ -113,8 +113,13 @@ it('README 无账号示例从手工预览到主卡验收均可在空连接目录
   expect(executions[0]).toMatchObject({ status: 'success', connection: 'mock-editor' });
   expect(version.slotId).toBe('title-card');
   expect(await (await ui.get('/api/versions/' + version.id)).json()).toMatchObject({ content: '模拟交付 · 发布标题卡' });
-  expect((await ui.post(task + '/control', { action: 'accept' })).status).toBe(200);
-  expect(await (await ui.post('/api/accept', {})).json()).toEqual({ snapshot: { 'title-card': version.id } });
+  expect((await ui.post(task + '/control', { action: 'accept' })).status).toBe(400);
+  expect((await ui.post(task + '/control', { action: 'accept', expectedExecutionId: 'old' })).status).toBe(409);
+  expect((await ui.post(task + '/control', { action: 'accept', expectedExecutionId: executions[0].id })).status).toBe(200);
+  const expected = (await board(ui)).acceptanceCandidate!;
+  expect((await ui.post('/api/accept', {})).status).toBe(400);
+  expect((await ui.post('/api/accept', {expected: {...expected, versions: {}}})).status).toBe(409);
+  expect(await (await ui.post('/api/accept', { expected: (await board(ui)).acceptanceCandidate })).json()).toEqual({ snapshot: { 'title-card': version.id } });
   expect(api.seen).toHaveLength(0);
 });
 
@@ -156,8 +161,8 @@ it('阶段 2/4：用原生 HTTP 会话创建连接，先批准生成再批准计
   const version=current.versions[0];
   expect(version).toMatchObject({slotId:'sample',executionId});
   expect(JSON.stringify(await (await ui.get('/api/versions/'+version.id)).json())).toContain(actions[0].content);
-  expect((await ui.post('/api/tasks/write/control',{action:'accept'})).status).toBe(200);
-  expect(await (await ui.post('/api/accept',{})).json()).toEqual({snapshot:{sample:version.id}});
+  expect((await ui.post('/api/tasks/write/control',{action:'accept',expectedExecutionId:executionId})).status).toBe(200);
+  expect(await (await ui.post('/api/accept',{expected:(await board(ui)).acceptanceCandidate})).json()).toEqual({snapshot:{sample:version.id}});
   expect(api.seen).toEqual(Array.from({length:2},()=>({stream:true,model:'dev/任意模型',url:'/custom/v1/chat/completions',authorization:false})));
 },20_000);
 

@@ -137,3 +137,11 @@ export interface PlanPreview {
   }[];
   taskChanges: { id: string; before: TaskSpec; after: TaskSpec }[];
 }
+
+export const acceptanceSnapshotSchema = z.strictObject({
+  planId: id,
+  revision: z.number().int().min(0),
+  versions: z.record(id, id),
+  executions: z.record(id, id),
+});
+export type AcceptanceSnapshot = z.infer<typeof acceptanceSnapshotSchema>;

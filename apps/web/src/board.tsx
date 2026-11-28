@@ -97,6 +97,7 @@ function TaskDetails({
   const [message, setMessage] = useState('');
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [askCancel, setAskCancel] = useState(false);
+  const [reviewedExecution, setReviewedExecution] = useState(task.reviewExecutionId);
   const action = useAction(),
     control = useAction();
   const agent = board.agents.find((a) => a.id === task.owner);
@@ -114,7 +115,11 @@ function TaskDetails({
   const id = 'tasks/' + encodeURIComponent(task.id) + '/';
   const perform = (name: ControlName) =>
     void control.run(async () => {
-      await api(id + 'control', 'POST', { action: name, ...(name === 'reassign' && { owner }) });
+      await api(id + 'control', 'POST', {
+        action: name,
+        ...(name === 'reassign' && { owner }),
+        ...((name === 'accept' || name === 'rework') && { expectedExecutionId: reviewedExecution }),
+      });
       await refresh();
       setAskCancel(false);
     }, '任务状态已更新。');
@@ -230,8 +235,8 @@ function TaskDetails({
                   onClick={() =>
                     void action.run(async () =>
                       setInspection(
-                        await api('connections/' + encodeURIComponent(connection.id) + '/inspect', 'POST', {
-                          modelId: member?.modelId,
+                        await api(id + 'inspect', 'POST', {
+                          ...(tree && { treeId: tree.id, projectId: tree.projectId }),
                           confirmUnmanaged: unmanaged,
                         }),
                       ),
@@ -323,10 +328,14 @@ function TaskDetails({
         )}
         {task.status === 'review' && (
           <>
-            <button className="primary" disabled={control.busy} onClick={() => perform('accept')}>
+            <p>待审执行 {task.reviewExecutionId}</p>
+            {reviewedExecution !== task.reviewExecutionId && (
+              <button onClick={() => setReviewedExecution(task.reviewExecutionId)}>核对此次待审执行</button>
+            )}
+            <button className="primary" disabled={control.busy || reviewedExecution !== task.reviewExecutionId} onClick={() => perform('accept')}>
               验收通过
             </button>
-            <button disabled={control.busy} onClick={() => perform('rework')}>
+            <button disabled={control.busy || reviewedExecution !== task.reviewExecutionId} onClick={() => perform('rework')}>
               打回返工
             </button>
           </>
@@ -439,6 +448,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
     if (openRequest.current === request) setSelected(id);
   }
   const [dialog, setDialog] = useState<'demo' | 'dispatch' | 'stop' | 'accept'>();
+  const [expected, setExpected] = useState<Board['acceptanceCandidate']>(null);
   const [version, setVersion] = useState<{
     id: string;
     content: string;
@@ -521,7 +531,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
             </label>
             {owner && <button onClick={() => setOwner('')}>清除筛选</button>}
             <button onClick={() => setDialog('dispatch')}>授权并发派发</button>
-            <button onClick={() => setDialog('accept')}>验收主卡</button>
+            <button onClick={() => { setExpected(board.acceptanceCandidate); setDialog('accept'); }}>验收主卡</button>
             <button className="danger" onClick={() => setDialog('stop')}>
               全局停止
             </button>
@@ -642,6 +652,11 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
               }[dialog]
             }
           </p>
+          {dialog === 'accept' && (expected ? <div>
+            <p>计划 {expected.planId} · 修订 {expected.revision}</p>
+            <p>交付物版本</p><pre>{JSON.stringify(expected.versions, null, 2)}</pre>
+            <p>已审执行</p><pre>{JSON.stringify(expected.executions, null, 2)}</pre>
+          </div> : <p>{board?.acceptanceBlocker ?? '尚无可验收的快照'}</p>)}
           {dialog === 'dispatch' && (
             <div className="compact surface">
               <h3>本工作区成员与调用来源</h3>
@@ -684,6 +699,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
               className={dialog === 'stop' ? 'danger' : 'primary'}
               disabled={
                 action.busy ||
+                (dialog === 'accept' && !expected) ||
                 (dialog === 'dispatch' && (!Number.isInteger(calls) || calls < 1 || calls > 50))
               }
               onClick={() =>
@@ -691,7 +707,7 @@ export function BoardPage({ openPlans, events }: { openPlans: () => void; events
                   const url = { demo: 'demo/run', dispatch: 'dispatch', stop: 'stop', accept: 'accept' }[
                     dialog
                   ];
-                  await api(url, 'POST', dialog === 'dispatch' ? { approved: true, maxCalls: calls } : {});
+                  await api(url, 'POST', dialog === 'dispatch' ? { approved: true, maxCalls: calls } : dialog === 'accept' ? { expected } : {});
                   await reload();
                   setDialog(undefined);
                 }, '已更新任务板。')

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { text } from 'node:stream/consumers';
 import { expect, it, vi } from 'vitest';
-import type { State } from '@concordia/core/workflow';
+import type { Scheduler } from '@concordia/core/workflow';
 import { startLocalServer } from '../src/local-server.ts';
 
 // The service configures the real Node executable on each OS. Only its argv
@@ -81,7 +81,7 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
       return result.json();
     };
     const board = async () =>
-      (await client.get('/api/board')).json() as Promise<State>;
+      (await client.get('/api/board')).json() as Promise<ReturnType<Scheduler['board']>>;
     await post('/api/connections', {
       id: 'cli',
       name: '脚本化 Codex',
@@ -177,8 +177,11 @@ it('已批准的批次在 CLI 的 MCP 发布事件后立即唤醒 API 审查卡�
       async () => expect((await board()).tasks.find((t) => t.id === 'write')?.status).toBe('review'),
       { timeout: 10_000 },
     );
-    for (const id of ['write', 'review']) await post('/api/tasks/' + id + '/control', { action: 'accept' });
-    expect(await post('/api/accept', {})).toEqual({
+    for (const id of ['write', 'review']) {
+      const card = (await board()).tasks.find(t => t.id === id)!;
+      await post('/api/tasks/' + id + '/control', { action: 'accept', expectedExecutionId: card.reviewExecutionId });
+    }
+    expect(await post('/api/accept', { expected: (await board()).acceptanceCandidate })).toEqual({
       snapshot: { contract: contract.id, verdict: verdict.id },
     });
   } finally {

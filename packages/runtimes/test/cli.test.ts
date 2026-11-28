@@ -91,7 +91,8 @@ describe('以独立进程执行两种假 CLI', () => {
       await servers(['node_repl']);
       await expect(runCliProbe('codex', { ...options, approved: true, inspectionId: inspected.inspectionId })).rejects.toThrow(/重新预检/);
       await servers(['concordia']);
-      await expect(inspectCli('codex', options)).rejects.toThrow(/重名/);
+      expect((await inspectCli('codex', options)).disabledMcpServers).toEqual(['concordia']);
+      await expect(inspectCli('codex', { ...options, requiresPlatformMcp: true })).rejects.toThrow(/重名/);
       await servers(['team.tools']);
       await expect(inspectCli('codex', options)).rejects.toThrow(/无法按名称停用/);
     } finally { await rm(home, { recursive: true, force: true }); }

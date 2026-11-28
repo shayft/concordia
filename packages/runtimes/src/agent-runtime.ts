@@ -22,7 +22,7 @@ export type AgentRuntimeEvent =
 export interface AgentExecutionInput {
   executionId: string; memberId: string; taskId: string; prompt: string; cwd: string;
   permission: 'read-only' | 'worktree-write'; authorizedWorktree?: string;
-  mcpOrigin: string; outputOnly?: boolean; approvedDiagnostic?: Awaited<ReturnType<typeof inspectCli>>; allowedActions?: ReadonlySet<ActionName>; recoveryDir?: string; signal?: AbortSignal;
+  mcpOrigin: string; outputOnly?: boolean; approvedInspectionId?: string; allowedActions?: ReadonlySet<ActionName>; recoveryDir?: string; signal?: AbortSignal;
 }
 export interface CliSessionStore { get(key: string): string | undefined; set(key: string, session: string): void }
 interface RuntimeConfig extends CliOptions { kind: CliKind; connectionId: string }
@@ -101,13 +101,10 @@ export class CliAgentRuntime {
     let opened = false;
     try {
       const signal = controller.signal;
-      const diagnostic = await inspectCli(kind, { ...this.config, cwd, signal });
-      if (input.approvedDiagnostic) {
-        // The working tree can differ from the inspected connection directory.
-        // Reject a different executable, credential method, model or environment.
-        const profile = (d: typeof diagnostic) => JSON.stringify([d.kind, d.executable, d.version,
-          d.login, d.authMethod, d.billing, d.billingEnvironment, d.unmanagedConfirmed, d.actionChannel, d.arguments]);
-        if (profile(input.approvedDiagnostic) !== profile(diagnostic)) throw new CliDiagnosticError('工作目录中的 CLI 连接与批准的预检结果不符。');
+      const diagnostic = await inspectCli(kind, { ...this.config, cwd, signal,
+        requiresPlatformMcp: !input.outputOnly && this.config.actionChannel !== 'json' });
+      if (input.approvedInspectionId !== undefined && input.approvedInspectionId !== diagnostic.inspectionId) {
+        throw new CliDiagnosticError('工作目录中的 CLI 连接与批准的预检结果不符，请重新预检。');
       }
       if (kind === 'claude' && !diagnostic.unmanagedConfirmed) throw new CliDiagnosticError('需要确认 Claude 无受管策略。','permission');
       if (diagnostic.login === '未登录') throw new CliDiagnosticError('CLI 未登录。','auth');

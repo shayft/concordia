@@ -209,7 +209,7 @@ export function PlansPage({ openBoard }: { openBoard: () => void }) {
               onClick={() =>
                 void action.run(async () => {
                   setInspection(
-                    await api('members/' + encodeURIComponent(agent) + '/inspect', 'POST', {
+                    await api('plans/inspect', 'POST', { agentId: agent,
                       confirmUnmanaged: unmanaged,
                     }),
                   );
