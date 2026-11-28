@@ -6,7 +6,7 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { assertSingleFile, existingDataDirectory, privateTemporaryDirectory, safeDatabasePath } from '@concordia/store/paths';
 import { acquireDataDirectory } from './data-directory.ts';
-import { catalogRecovery, LedgerRecoveryError, worktreeRecovery } from './ledger-presence.ts';
+import { catalogRecovery, LedgerRecoveryError, rehearsalRecovery, worktreeRecovery } from './ledger-presence.ts';
 import { verifyBackupReferences } from './backup-integrity.ts';
 
 const manifest = 'concordia-backup-v1.sha256';
@@ -46,12 +46,12 @@ async function copyState(source: string, target: string, snapshot: boolean) {
   async function skipSidecar(path: string) {
     if (!isManagedSidecar(path)) return false;
     const main = path.replace(sidecar, '');
-    if (main.endsWith('worktrees.sqlite')) {
+    if (main.endsWith('worktrees.sqlite') || main.endsWith('/delivery.sqlite')) {
       const file = await lstat(join(source, main)).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'ENOENT') throw error;
         return null;
       });
-      if (!file) throw new LedgerRecoveryError(worktreeRecovery);
+      if (!file) throw new LedgerRecoveryError(main.endsWith('/delivery.sqlite') ? rehearsalRecovery : worktreeRecovery);
     }
     return true;
   }

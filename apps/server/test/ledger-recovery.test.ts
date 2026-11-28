@@ -223,3 +223,79 @@ it('匹配旧迁移记录的看板可通过备份检查并在恢复后迁移', a
     upgraded.close();
   }
 });
+
+it.each(['empty', 'foreign', 'damaged', 'missing-column'] as const)(
+  '工作树台账已存在但损坏（%s），目录库和进程登记均保持原样',
+  { timeout: 60_000 },
+  async fault => {
+    await start();
+    await stop();
+    const catalog = join(data, 'catalog.sqlite'), file = join(data, 'worktrees.sqlite');
+    const pending = new DatabaseSync(catalog);
+    try {
+      pending.prepare("INSERT INTO plan_requests(id,workspace,member,connection,started,status) VALUES('waiting','default','p','c',1,'running')").run();
+    } finally { pending.close(); }
+    const originalCatalog = await readFile(catalog);
+    const id = '759785bf-5a7e-4b96-8acc-329fc583936d';
+    const record = join(data, 'processes', id + '.json');
+    await writeFile(record, JSON.stringify({ id, pid: process.pid, executionId: 'synthetic', startedAtMs: Date.now() }));
+    if (fault === 'missing-column') {
+      const broken = new DatabaseSync(file);
+      try { broken.exec('ALTER TABLE approvals RENAME COLUMN result TO missing_result'); } finally { broken.close(); }
+    } else {
+      await rename(file, join(scratch, 'original-ledger'));
+      if (fault === 'foreign') {
+        const foreign = new DatabaseSync(file);
+        try { foreign.exec('CREATE TABLE foreign_data(value TEXT)'); } finally { foreign.close(); }
+      } else await writeFile(file, fault === 'empty' ? '' : 'synthetic damaged header');
+    }
+    const before = await readFile(file);
+    await expect(start()).rejects.toThrow('工作树登记库缺失或无效');
+    expect(await readFile(file)).toEqual(before);
+    expect(await readFile(catalog)).toEqual(originalCatalog);
+    expect(await readdir(join(data, 'processes'))).toEqual([id + '.json']);
+  },
+);
+
+it('已使用的演练丢失历史库，启动和备份拒绝；有效的原库带回原演练和审批阶段', { timeout: 90_000 }, async () => {
+  let ui = await start();
+  const run = await json(ui.post('/api/delivery/start', { approved: true }));
+  expect(run.phase).toBe('approve-test');
+  await stop();
+  const file = join(data, 'assignee-delivery', 'delivery.sqlite');
+  const backup = join(scratch, 'legacy');
+  await copyApplicationState('create', data, backup);
+  const saved = join(scratch, 'saved-history.sqlite');
+  await rename(file, saved);
+  const catalog = join(data, 'catalog.sqlite');
+  const before = await readFile(catalog);
+  await expect(start()).rejects.toThrow('演练的历史库缺失');
+  expect(await readFile(catalog)).toEqual(before);
+  await expect(access(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  const rejected = join(scratch, 'must-not-publish');
+  await expect(copyApplicationState('create', data, rejected)).rejects.toThrow('演练的历史库缺失');
+  await expect(access(rejected)).rejects.toMatchObject({ code: 'ENOENT' });
+  await rm(join(backup, 'assignee-delivery', 'delivery.sqlite'));
+  await signLegacyFixture(backup);
+  await expect(copyApplicationState('restore', backup, rejected)).rejects.toThrow('演练的历史库缺失');
+  await expect(access(rejected)).rejects.toMatchObject({ code: 'ENOENT' });
+  await rename(saved, file);
+  ui = await start();
+  expect(await json(ui.get('/api/delivery'))).toMatchObject({ id: run.id, phase: 'approve-test', command: { id: run.command.id } });
+});
+
+it('仅建立空演练目录的首次启动可继续；缺主库的孤立演练日志保留现场', { timeout: 60_000 }, async () => {
+  await start();
+  await stop();
+  const dir = join(data, 'assignee-delivery');
+  await rename(dir, join(scratch, 'complete'));
+  await mkdir(join(dir, 'objects'), { recursive: true });
+  const journal = join(dir, 'delivery.sqlite-journal');
+  await writeFile(journal, 'synthetic hot journal');
+  await expect(start()).rejects.toThrow('演练的历史库缺失');
+  await expect(copyApplicationState('create', data, join(scratch, 'wrong'))).rejects.toThrow('演练的历史库缺失');
+  expect(await readFile(journal, 'utf8')).toBe('synthetic hot journal');
+  await rm(journal);
+  const ui = await start();
+  expect(await json(ui.get('/api/delivery'))).toMatchObject({ phase: 'idle' });
+});

@@ -4,13 +4,19 @@ import { databaseVersion } from '@concordia/store/database-identity';
 export function identifyWorktreeDatabase(db: DatabaseSync) {
   const version = databaseVersion(db, 4);
   if (!version) return version;
-  const tables = ['projects', 'trees', 'publications', 'approvals'];
-  if (version >= 2) tables.push('conflict_issues');
-  const present = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name));
-  if (tables.some(name => !present.has(name)) ||
-      (version >= 3 && !db.prepare("SELECT 1 FROM pragma_table_info('trees') WHERE name='scope'").get()))
-    throw new Error('已有数据库未包含匹配的 Concordia 工作树表。');
-  if (version >= 4 && db.prepare("SELECT COUNT(*) AS count FROM pragma_table_info('approvals') WHERE name IN ('acceptance','run_order')").get()?.count !== 2)
-    throw new Error('工作树数据库缺少审批证据字段。');
+  const expected: [string, string][] = [
+    ['projects', 'id,repository,target,writable,commands'],
+    ['trees', 'id,project,task,kind,branch,base,sha,status,snapshot,conflicts' + (version >= 3 ? ',scope' : '')],
+    ['publications', 'tree,sha'],
+    ['approvals', 'id,tree,kind,sha,target,name,command,status,result' + (version >= 4 ? ',acceptance,run_order' : '')],
+  ];
+  if (version >= 2) expected.push(['conflict_issues', 'tree,recipients']);
+  const tables = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name));
+  for (const [name, columns] of expected) {
+    if (!tables.has(name)) throw new Error('已有数据库未包含匹配的 Concordia 工作树表。');
+    // Resolving the projection verifies all columns used by this schema revision
+    // before opening a writable connection. No project rows or paths are exposed.
+    db.prepare('SELECT ' + columns + ' FROM ' + name + ' LIMIT 0');
+  }
   return version;
 }

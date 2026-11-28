@@ -9,7 +9,7 @@ import { safeDatabasePath, safeDataDirectory } from '@concordia/store/paths';
 import { WorkflowStore } from '@concordia/store/workflow';
 import { git } from './worktrees/git.ts';
 import { WorktreeService } from './worktrees/service.ts';
-import { preflightWorktreeLedger, worktreeLedgerExpected } from './ledger-presence.ts';
+import { preflightRehearsal, worktreeLedgerExpected } from './ledger-presence.ts';
 import { exampleFiles } from './delivery-example.ts';
 
 type Phase =
@@ -45,8 +45,8 @@ export function serveDelivery(app: FastifyInstance, dataDirectory: string, asser
   const directory = safeDataDirectory(dataDirectory, 'assignee-delivery');
   safeDataDirectory(directory, 'objects');
   const file = safeDatabasePath(directory, 'delivery.sqlite');
-  preflightWorktreeLedger(directory, file);
-  const db = openStore(file);
+  const required = preflightRehearsal(directory);
+  const db = openStore(file, { mustExist: required });
   app.addHook('onClose', async () => db.close());
   db.exec(readFileSync(new URL('./delivery.sql', import.meta.url), 'utf8'));
   const scheduler = new Scheduler({

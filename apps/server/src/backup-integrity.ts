@@ -3,7 +3,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { identifyStore } from '@concordia/store';
-import { catalogRecovery, LedgerRecoveryError, worktreeLedgerExpected, worktreeRecovery } from './ledger-presence.ts';
+import {
+  catalogRecovery, identifyRehearsal, LedgerRecoveryError, rehearsalLedgerExpected,
+  rehearsalRecovery, worktreeLedgerExpected, worktreeRecovery,
+} from './ledger-presence.ts';
 import { identifyWorktreeDatabase } from './worktrees/database.ts';
 import type { State } from '@concordia/core/state';
 
@@ -121,11 +124,16 @@ export function verifyBackupReferences(root: string) {
   const rehearsal = join(root, 'assignee-delivery');
   if (lstatSync(rehearsal, { throwIfNoEntry: false })) {
     const file = join(rehearsal, 'delivery.sqlite');
+    const required = rehearsalLedgerExpected(rehearsal);
     if (lstatSync(file, { throwIfNoEntry: false })) {
       inspect(file, db => {
+        identifyRehearsal(db, required);
         verifyWorktreeLedger(rehearsal, db);
         if (table(db, 'workflow_state')) verifyWorkflow(rehearsal, db);
       });
-    } else verifyWorktreeLedger(rehearsal);
+    } else {
+      if (required) throw new LedgerRecoveryError(rehearsalRecovery);
+      verifyWorktreeLedger(rehearsal);
+    }
   }
 }

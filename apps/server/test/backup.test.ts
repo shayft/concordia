@@ -60,8 +60,9 @@ it('演练的数据库、示例仓库和内容也位于快照中，运行时 PID
   const demo = join(source, 'assignee-delivery');
   await mkdir(join(demo, 'example-test', '.git'), {recursive:true});
   await writeFile(join(demo, 'example-test', '.git', 'HEAD'), 'ref: refs/heads/main');
+  await openWorktrees(demo).close();
   const ledger = openStore(join(demo, 'delivery.sqlite'));
-  ledger.exec("CREATE TABLE rehearsal (phase TEXT); INSERT INTO rehearsal VALUES ('ready')");
+  ledger.exec("CREATE TABLE delivery_runs(id TEXT PRIMARY KEY,details TEXT NOT NULL); INSERT INTO delivery_runs VALUES ('demo','ready')");
   ledger.close();
   await mkdir(join(source, 'processes'));
   await writeFile(join(source, 'processes', 'placeholder'), '模拟运行登记');
@@ -69,7 +70,7 @@ it('演练的数据库、示例仓库和内容也位于快照中，运行时 PID
   await copyApplicationState('restore', snapshot, restored);
   expect(await readFile(join(restored,'assignee-delivery/example-test/.git/HEAD'),'utf8')).toBe('ref: refs/heads/main');
   const db = openStore(join(restored, 'assignee-delivery/delivery.sqlite'));
-  try { expect(db.prepare('SELECT phase FROM rehearsal').get()?.phase).toBe('ready'); } finally { db.close(); }
+  try { expect(db.prepare('SELECT details FROM delivery_runs').get()?.details).toBe('ready'); } finally { db.close(); }
   await expect(access(join(restored,'processes'))).rejects.toThrow();
 });
 
