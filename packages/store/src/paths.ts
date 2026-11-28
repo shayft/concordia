@@ -1,5 +1,5 @@
 import { checkPrivateDirectory } from './private-directory.ts';
-import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync } from 'node:fs';
 import { isAbsolute, join, parse, resolve, sep } from 'node:path';
 
 function checkPath(path: string): void {
@@ -93,4 +93,17 @@ export function safeDatabasePath(root: string, ...segments: string[]): string {
   const path = join(directory, name);
   for (const suffix of ['', '-wal', '-shm', '-journal']) assertSingleFile(path + suffix);
   return path;
+}
+
+export function privateTemporaryDirectory(parent: string, prefix: string): string {
+  checkSegment(prefix);
+  const dir = mkdtempSync(join(existingDataDirectory(parent), prefix));
+  try {
+    // Only tighten the empty directory atomically allocated by this process.
+    checkPrivateDirectory(dir, 'secure-new-temp');
+    return dir;
+  } catch (error) {
+    rmdirSync(dir);
+    throw error;
+  }
 }

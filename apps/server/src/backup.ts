@@ -4,8 +4,7 @@ import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, rename,
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
-import { assertSingleFile, existingDataDirectory, safeDatabasePath } from '@concordia/store/paths';
-import { privateTemporaryDirectory } from '@concordia/store/private-directory';
+import { assertSingleFile, existingDataDirectory, privateTemporaryDirectory, safeDatabasePath } from '@concordia/store/paths';
 import { acquireDataDirectory } from './data-directory.ts';
 import { verifyBackupReferences } from './backup-integrity.ts';
 

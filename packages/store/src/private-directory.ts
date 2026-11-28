@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdtempSync, rmdirSync } from 'node:fs';
+import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Fixed .NET operations in the system Windows PowerShell. User-controlled paths
@@ -63,17 +63,5 @@ export function checkPrivateDirectory(path: string, operation: 'create' | 'inspe
       env: { LC_ALL: 'C' }, timeout: 3_000, maxBuffer: 256 * 1024 });
     if (acl.status !== 0 || /^\s*\d+:.*\ballow\b/mu.test(acl.stdout))
       throw new PrivateDirectoryError('数据目录的 macOS 扩展权限无法确认为私有。');
-  }
-}
-
-export function privateTemporaryDirectory(parent: string, prefix: string): string {
-  const dir = mkdtempSync(join(parent, prefix));
-  try {
-    // Only tighten the empty directory atomically allocated by this process.
-    checkPrivateDirectory(dir, 'secure-new-temp');
-    return dir;
-  } catch (error) {
-    rmdirSync(dir);
-    throw error;
   }
 }

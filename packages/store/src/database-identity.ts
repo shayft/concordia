@@ -1,7 +1,7 @@
 import { constants, copyFileSync, lstatSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { privateTemporaryDirectory } from './private-directory.ts';
+import { privateTemporaryDirectory } from './paths.ts';
 import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 

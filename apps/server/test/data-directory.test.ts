@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { acquireDataDirectory, safeDatabasePath, safeDataDirectory, defaultDataDirectory } from '../src/data-directory.ts';
 
-import { privateDataDirectory } from '@concordia/store/paths';
+import { privateDataDirectory, privateTemporaryDirectory } from '@concordia/store/paths';
 
 let root: string, data: string, outside: string;
 beforeEach(async () => {
@@ -94,4 +94,12 @@ it.skipIf(process.platform !== 'win32')('Windows 私有目录通过，添加 Eve
   expect(() => acquireDataDirectory(shared)).toThrow('Windows');
   expect(run([shared]).stdout).toBe(before.stdout);
   await expect(lstat(join(shared, 'server-lock.sqlite'))).rejects.toThrow();
+});
+
+it('临时 SQLite 检查目录也不得进入 CLI 私有目录或重定向父目录', async () => {
+  expect(() => privateTemporaryDirectory(join(root, '.codex'), 'inspection-')).toThrow();
+  const linked = join(root, 'redirected-temp');
+  await symlink(outside, linked, process.platform === 'win32' ? 'junction' : 'dir');
+  expect(() => privateTemporaryDirectory(linked, 'inspection-')).toThrow();
+  expect(() => privateTemporaryDirectory(root, '../elsewhere')).toThrow();
 });
