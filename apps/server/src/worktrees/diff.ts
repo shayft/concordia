@@ -12,26 +12,51 @@ export function versionDiff(repo: string, base: string, sha: string) {
 function hunk(path: string, before: string, after: string) {
   if (before === after) return '';
   const lines = (text: string) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-  const left = lines(before), right = lines(after);
-  let start = 0, l = left.length, r = right.length;
+  const left = lines(before),
+    right = lines(after);
+  let start = 0,
+    l = left.length,
+    r = right.length;
   while (start < l && start < r && left[start] === right[start]) start++;
-  while (l > start && r > start && left[l - 1] === right[r - 1]) { l--; r--; }
-  const render = (part: string[], prefix: string) => part.map(line =>
-    prefix + line + (line.endsWith('\n') ? '' : '\n\\ No newline at end of file\n')).join('');
-  return '--- a/' + path + '\n+++ b/' + path + '\n@@ -' + (l === start ? start : start + 1) + ',' +
-    (l - start) + ' +' + (r === start ? start : start + 1) + ',' + (r - start) + ' @@\n' +
-    render(left.slice(start,l), '-') + render(right.slice(start,r), '+');
+  while (l > start && r > start && left[l - 1] === right[r - 1]) {
+    l--;
+    r--;
+  }
+  const render = (part: string[], prefix: string) =>
+    part
+      .map((line) => prefix + line + (line.endsWith('\n') ? '' : '\n\\ No newline at end of file\n'))
+      .join('');
+  return (
+    '--- a/' +
+    path +
+    '\n+++ b/' +
+    path +
+    '\n@@ -' +
+    (l === start ? start : start + 1) +
+    ',' +
+    (l - start) +
+    ' +' +
+    (r === start ? start : start + 1) +
+    ',' +
+    (r - start) +
+    ' @@\n' +
+    render(left.slice(start, l), '-') +
+    render(right.slice(start, r), '+')
+  );
 }
 
 export function workingDiff(path: string) {
   const staged = git(path, [...diffOptions, '--cached', 'HEAD', '--']);
   const entries = git(path, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all'])
-    .split('\0').filter(Boolean);
+    .split('\0')
+    .filter(Boolean);
   if (entries.length > 512) throw new Error('变更文件太多，请在本机 Git 中查看。');
   const untracked: string[] = [];
-  let diff = staged;
+  let diff = staged ? '已暂存的变更\n' + staged : '';
+  let working = false;
   for (const entry of entries) {
-    const name = entry.slice(3), status = entry[1];
+    const name = entry.slice(3),
+      status = entry[1];
     if (status === ' ') continue;
     const isNew = entry.startsWith('?? ');
     if (isNew) untracked.push(name);
@@ -49,6 +74,10 @@ export function workingDiff(path: string) {
       section = hunk(name, previous, current) || '文件状态已改变：' + name + '\n';
     } catch {
       section = '无法安全显示此文件的文本差异：' + name + '\n';
+    }
+    if (!working) {
+      diff += '未暂存和未跟踪的变更\n';
+      working = true;
     }
     diff += section;
     if (Buffer.byteLength(diff) > 2 * 1024 * 1024) throw new Error('差异超过显示上限，请在本机 Git 中查看。');

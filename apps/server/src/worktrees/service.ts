@@ -76,7 +76,7 @@ function identifyWorktreeDatabase(db: DatabaseSync) {
   if (tables.some(name => !present.has(name)) ||
       (version >= 3 && !db.prepare("SELECT 1 FROM pragma_table_info('trees') WHERE name='scope'").get()))
     throw new Error('已有数据库未包含匹配的 Concordia 工作树表。');
-  if (version >= 4 && !db.prepare("SELECT 1 FROM pragma_table_info('approvals') WHERE name='acceptance'").get())
+  if (version >= 4 && db.prepare("SELECT COUNT(*) AS count FROM pragma_table_info('approvals') WHERE name IN ('acceptance','run_order')").get()?.count !== 2)
     throw new Error('工作树数据库缺少审批证据字段。');
   return version;
 }

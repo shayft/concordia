@@ -465,7 +465,7 @@ it('普通项目合并在发票和批准时复核主卡、工作区、当前计�
   const projectId = 'repo';
   await ui.post('/api/worktrees/projects',{id:projectId,repository,targetBranch:'main',writeEnabled:true,
     commands:[{name:'check',executable:process.execPath,args:['--version']}]});
-  const member = await (await ui.post('/api/worktrees/member',{projectId,taskId:'write'})).json() as {id:string};
+  const member = await (await ui.post('/api/worktrees/member',{projectId,taskId:'write'})).json() as {id:string;path:string};
   api.queue.push(res=>finish(res,{actions:[
     {type:'write_file',path:'sample.txt',content:'accepted source'},
     {type:'commit_artifact',slotId:'sample'},
@@ -493,6 +493,17 @@ it('普通项目合并在发票和批准时复核主卡、工作区、当前计�
   const old = await pending.json() as {id:string};
   expect(old).toMatchObject({checkId:command.id,acceptance:{workspaceId:'default',planId:spec.id,
     sources:[{versionId:version.id,treeId:member.id,sha:publication.content}]}});
+  // Another real commit from the same member tree is not the accepted slot version.
+  await writeFile(join(member.path,'later.txt'),'not part of the accepted snapshot');
+  const later = await (await ui.post('/api/worktrees/publish',{treeId:member.id})).json() as {treeId:string;sha:string};
+  const other = await (await ui.post('/api/worktrees/integrate',{projectId,snapshot:[later]})).json() as {tree:{id:string}};
+  const laterCommand = await (await ui.post('/api/worktrees/request-command',{treeId:other.tree.id,name:'check'})).json() as {id:string};
+  expect((await ui.post('/api/worktrees/approve-command',{id:laterCommand.id})).status).toBe(200);
+  expect((await ui.post('/api/worktrees/review-merge',{treeId:other.tree.id})).status).toBe(409);
+  // Selecting another board cannot approve or consume a ticket from this one.
+  expect((await ui.post('/api/workspaces',{name:'other board'})).status).toBe(200);
+  expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);
+  expect((await ui.post('/api/workspaces/default/select',{})).status).toBe(200);
   const revision = (await board(ui)).revision;
   expect((await ui.post('/api/spec/apply',{spec:{...spec,title:'重新核对的需求'},expectedRevision:revision,approved:true})).status).toBe(200);
   expect((await ui.post('/api/worktrees/approve-merge',{id:old.id})).status).toBe(409);

@@ -96,13 +96,19 @@ export async function startProcessRecovery(path: string) {
   const dir = directory(path);
   // Capture the exact launches present while the app owns the startup lock.
   // Later manual rechecks must never stop a healthy, newly launched task.
-  const pending = new Map(readdirSync(dir).filter(name => name.endsWith('.json')).map(name => name.slice(0,-5))
-    .filter(id => uuid.test(id)).map(id => [id, id]));
+  const pending = new Map(
+    readdirSync(dir)
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => name.slice(0, -5))
+      .filter((id) => uuid.test(id))
+      .map((id) => [id, id]),
+  );
   const recovered: string[] = [];
   const report = () => ({ recovered: [...recovered], unresolved: [...pending.values()] });
   let checking: Promise<ReturnType<typeof report>> | undefined;
   async function check() {
-    await Promise.all([...pending.keys()].map(async id => {
+    await Promise.all(
+      [...pending.keys()].map(async (id) => {
         let executionId = id;
         try {
           const filename = join(dir, id + '.json');
@@ -139,11 +145,14 @@ export async function startProcessRecovery(path: string) {
           /* Preserve ambiguous records for manual handling. */
         }
         pending.set(id, executionId);
-    }));
+      }),
+    );
     return report();
   }
   function recheck() {
-    checking ??= check().finally(() => { checking = undefined; });
+    checking ??= check().finally(() => {
+      checking = undefined;
+    });
     return checking;
   }
   await recheck();

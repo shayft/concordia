@@ -64,7 +64,8 @@ async function hasExited(pid: number) {
     const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
     return stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+    // An exiting process can disappear after procfs opens the file but before the read.
+    if (['ENOENT', 'ESRCH'].includes((err as NodeJS.ErrnoException).code ?? '')) return true;
     throw err;
   }
 }
