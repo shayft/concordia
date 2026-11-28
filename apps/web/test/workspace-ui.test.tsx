@@ -466,7 +466,7 @@ it('岗位保存直属上级和显式空动作白名单，重新打开仍为受�
 
 it('活动页的下载使用当前会话的固定 JSON 摘要端点', async () => {
   const { HistoryPage } = await import('../src/history.tsx');
-  serve = (path) => path.startsWith('/api/history/page') ? { events:[], hasMore:false } : path === '/api/recovery' ? { recovered: [], unresolved: [] } : [];
+  serve = (path) => path === '/api/governance' ? {items:[],next:null} : path.startsWith('/api/history/page') ? { events:[], hasMore:false } : path === '/api/recovery' ? { recovered: [], unresolved: [] } : [];
   await render(<HistoryPage events={0} />);
   expect(requests.some((r) => r.path === '/api/export/audit')).toBe(false);
   const clickLink = vi.spyOn(dom.HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
@@ -526,7 +526,7 @@ it('活动页显示任务执行时价格、已知成本和未知用量，并随�
     amount: 0.00002,
   };
   serve = (path) =>
-    path === '/api/execution-costs'
+    path === '/api/governance' ? {items:[],next:null} : path === '/api/execution-costs'
       ? [first, { ...first, id: 'e2', modelId: null, pricing: null, amount: null, inputTokens: null }]
       : path === '/api/recovery'
         ? { recovered: 0, unresolved: [] }
@@ -662,6 +662,7 @@ it('读取旧活动页时 SSE 不移动页码，回到最新后按游标增量�
       if (path.includes('after=102')) return { events: [record(103)], hasMore: false };
       return { events: [record(101), record(latest)], hasMore: true };
     }
+    if (path === '/api/governance') return {items:[],next:null};
     if (path === '/api/recovery/recheck') unresolved = [];
     if (path.startsWith('/api/recovery')) return { recovered: [], unresolved };
     return [];
