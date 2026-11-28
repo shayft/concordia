@@ -61,6 +61,7 @@ it('既有默认看板旁遗失目录库，重启不创建替代库；复原后�
 // These fixtures contain only directories and ordinary files; no SQLite sidecars.
 async function signLegacyFixture(dir: string) {
   const manifest = 'concordia-backup-v1.sha256';
+  await rm(join(dir, 'concordia-backup-v2.json'), { force: true });
   const digest = createHash('sha256');
   async function visit(relative: string) {
     const entries = await readdir(join(dir, relative), { withFileTypes: true });
@@ -215,6 +216,7 @@ it('匹配旧迁移记录的看板可通过备份检查并在恢复后迁移', a
   const copy = join(scratch, 'snapshot'),
     restored = join(scratch, 'restored');
   await copyApplicationState('create', data, copy);
+  await signLegacyFixture(copy);
   await copyApplicationState('restore', copy, restored);
   const upgraded = openStore(join(restored, relative), { mustExist: true });
   try {

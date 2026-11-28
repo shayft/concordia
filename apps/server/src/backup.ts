@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { chmod, copyFile, cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, lstat, mkdir, readdir, readlink, rename, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
@@ -8,8 +8,8 @@ import { assertSingleFile, existingDataDirectory, privateTemporaryDirectory, saf
 import { acquireDataDirectory } from './data-directory.ts';
 import { catalogRecovery, LedgerRecoveryError, rehearsalRecovery, worktreeRecovery } from './ledger-presence.ts';
 import { verifyBackupReferences } from './backup-integrity.ts';
+import { BackupManifestError, readBackupManifest, verifyBackupManifest, writeBackupManifest } from './backup-manifest.ts';
 
-const manifest = 'concordia-backup-v1.sha256';
 const applicationRoots = new Set(['catalog.sqlite', 'worktrees.sqlite', 'objects', 'boards', 'worktrees', 'assignee-delivery']);
 const dbFile = /^(?:catalog\.sqlite|worktrees\.sqlite|boards\/[^/]+\/workspace\.sqlite|assignee-delivery\/(?:delivery|worktrees)\.sqlite)$/u;
 const sidecar = /-(?:shm|wal|journal)$/u;
@@ -41,8 +41,9 @@ function checkDatabase(file: string) {
   }
 }
 
-async function copyState(source: string, target: string, snapshot: boolean) {
+async function copyState(source: string, target: string, snapshot: boolean, preserveExecutable: boolean) {
   const digest = createHash('sha256');
+  const executableFiles: string[] | null = process.platform === 'win32' ? null : [];
   async function skipSidecar(path: string) {
     if (!isManagedSidecar(path)) return false;
     const main = path.replace(sidecar, '');
@@ -79,8 +80,11 @@ async function copyState(source: string, target: string, snapshot: boolean) {
         assertSingleFile(from);
         await copyFile(from, to);
       }
-      // Preserve executable bits for a restored project command while keeping backups private.
-      if (process.platform !== 'win32') await chmod(to, 0o600 | (stat.mode & 0o100));
+      if (executableFiles) {
+        const execute = preserveExecutable ? stat.mode & 0o100 : 0;
+        if (execute) executableFiles.push(path);
+        await chmod(to, 0o600 | execute);
+      }
       const hash = await digestFile(to);
       if (/^(?:boards\/[^/]+\/|assignee-delivery\/)?objects\/[a-f0-9]{64}$/u.test(path) && hash !== basename(path)) {
         throw new Error('交付物内容与 SHA-256 名称不匹配。');
@@ -98,7 +102,7 @@ async function copyState(source: string, target: string, snapshot: boolean) {
   for (const name of (await readdir(source)).sort()) {
     if (!(await skipSidecar(name)) && applicationRoots.has(name)) await visit(name);
   }
-  return digest.digest('hex');
+  return { contentHash: digest.digest('hex'), executableFiles: executableFiles?.sort() ?? null };
 }
 
 /** An offline, local snapshot. A destination must be new, even after a failed attempt. */
@@ -120,13 +124,8 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
   let lease: ReturnType<typeof acquireDataDirectory> | undefined;
   let staging: string | undefined;
   try {
-    let expected: string | undefined;
-    if (mode === 'restore') {
-      const file = join(from, manifest);
-      assertSingleFile(file);
-      expected = (await readFile(file, 'utf8')).trim();
-      if (!/^[a-f0-9]{64}$/u.test(expected)) throw new Error('备份摘要无效。');
-    } else {
+    const expected = mode === 'restore' ? await readBackupManifest(from) : undefined;
+    if (mode === 'create') {
       const lockPath = join(from, 'server-lock.sqlite');
       if (!(await lstat(lockPath)).isFile()) throw new Error('请选择应用已使用的数据目录。');
       lease = acquireDataDirectory(from);
@@ -141,9 +140,10 @@ export async function copyApplicationState(mode: 'create' | 'restore', source: s
       }
     }
     staging = privateTemporaryDirectory(dirname(to), '.concordia-copy-');
-    const digest = await copyState(from, staging, mode === 'create');
-    if (mode === 'create') await writeFile(join(staging, manifest), digest + '\n', { mode: 0o600, flag: 'wx' });
-    else if (digest !== expected) throw new Error('备份摘要不匹配。');
+    const preserveExecutable = expected?.version !== 2 || expected.executableFiles !== null;
+    const contents = await copyState(from, staging, mode === 'create', preserveExecutable);
+    if (expected) verifyBackupManifest(expected, contents);
+    else await writeBackupManifest(staging, contents);
     verifyBackupReferences(staging);
     // Publish only a complete, verified directory on the same volume.
     await rename(staging, to);
@@ -162,7 +162,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   } else {
     try { await copyApplicationState(mode, source, destination); process.stdout.write('数据复制和校验已完成。\n'); }
     catch (error) {
-      const diagnostic = error instanceof PendingProcessRecovery || error instanceof LedgerRecoveryError ? error.message
+      const diagnostic = error instanceof PendingProcessRecovery || error instanceof LedgerRecoveryError || error instanceof BackupManifestError ? error.message
         : '请检查服务是否已停止、路径及权限、数据库和内容完整性；保留原目录，勿启用不完整的目标。';
       process.stderr.write('操作未完成。' + diagnostic + '\n');
       process.exitCode = 1;

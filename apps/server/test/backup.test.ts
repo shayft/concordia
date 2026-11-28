@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
@@ -38,6 +38,34 @@ beforeEach(async () => {
   } finally { lock.release(); }
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+it.skipIf(process.platform === 'win32')('POSIX 新清单校验未提交脚本的执行位并恢复私有权限', async () => {
+  const script = 'worktrees/task/check.sh', plain = 'worktrees/task/project.txt';
+  await writeFile(join(source, script), 'exit 0\n', { mode: 0o700 });
+  await chmod(join(source, plain), 0o600);
+  await copyApplicationState('create', source, snapshot);
+  await copyApplicationState('restore', snapshot, restored);
+  expect((await lstat(join(restored, script))).mode & 0o777).toBe(0o700);
+  expect((await lstat(join(restored, plain))).mode & 0o777).toBe(0o600);
+
+  for (const [path, changed, original] of [[script, 0o600, 0o700], [plain, 0o700, 0o600]] as const) {
+    await chmod(join(snapshot, path), changed);
+    const rejected = join(root, 'rejected');
+    await expect(copyApplicationState('restore', snapshot, rejected)).rejects.toThrow('执行权限已改变');
+    await expect(access(rejected)).rejects.toMatchObject({ code: 'ENOENT' });
+    await chmod(join(snapshot, path), original);
+  }
+});
+
+it.skipIf(process.platform !== 'win32')('Windows 备份将 POSIX 执行位记为未提供，保留文件正文', async () => {
+  const fixture = 'worktrees/task/sample.exe';
+  await writeFile(join(source, fixture), '测试数据');
+  await copyApplicationState('create', source, snapshot);
+  const manifest = JSON.parse(await readFile(join(snapshot, 'concordia-backup-v2.json'), 'utf8'));
+  expect(manifest).toMatchObject({ version: 2, executableFiles: null });
+  await copyApplicationState('restore', snapshot, restored);
+  expect(await readFile(join(restored, fixture), 'utf8')).toBe('测试数据');
+});
 
 it('恢复已提交的 SQLite/WAL、事件、内容对象和未提交的 worktree 文件', async () => {
   const catalog = openStore(join(source, 'catalog.sqlite'));
