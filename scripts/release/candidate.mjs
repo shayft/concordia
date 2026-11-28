@@ -10,11 +10,16 @@ const [operation, commit, destination, ...rest] = process.argv.slice(2);
 if (operation !== 'build' || !/^[a-f0-9]{40}$/u.test(commit ?? '') || !destination || rest.length)
   throw new Error('用法：node scripts/release/candidate.mjs build <完整 Git 提交 SHA> <新目录>');
 
+const gitEnvironment = {
+  GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_ATTR_NOSYSTEM: '1',
+  GIT_NO_REPLACE_OBJECTS: '1', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C', TZ: 'UTC',
+};
+for (const name of ['PATH', 'SystemRoot', 'SystemDrive', 'WINDIR', 'ComSpec', 'TEMP', 'TMP', 'TMPDIR'])
+  if (process.env[name]) gitEnvironment[name] = process.env[name];
 function git(args) {
   return execFileSync('git', ['-c', 'tar.umask=0022', '-c', 'core.autocrlf=false',
     '-c', 'core.attributesFile=' + devNull, ...args], {
-    shell: false, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull },
-    encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
+    shell: false, env: gitEnvironment, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
   });
 }
 if (git(['cat-file', '-t', commit]).trim() !== 'commit') throw new Error('必须提供 commit 对象。');
@@ -83,7 +88,16 @@ if (existsSync(final)) throw new Error('候选目录已存在。');
 mkdirSync(dirname(final), { recursive: true });
 const stage = mkdtempSync(join(dirname(final), '.concordia-candidate-'));
 try {
-  git(['archive', '--format=tar', '--prefix=concordia/', '--output=' + join(stage, 'concordia-source.tar'), commit]);
+  // Local info/attributes can mark tracked files export-ignore. Archive through
+  // an empty repository that shares immutable Git objects, without local rules.
+  const objects = git(['rev-parse', '--path-format=absolute', '--git-path', 'objects']).trimEnd();
+  if (/[\r\n]/u.test(objects)) throw new Error('Git 对象目录不支持换行符。');
+  const bare = join(stage, 'archive.git');
+  git(['init', '--bare', '--quiet', '--template=', bare]);
+  writeFileSync(join(bare, 'objects', 'info', 'alternates'), objects + '\n');
+  git(['--git-dir=' + bare, 'archive', '--format=tar', '--prefix=concordia/',
+    '--output=' + join(stage, 'concordia-source.tar'), commit]);
+  rmSync(bare, { recursive: true });
   writeFileSync(join(stage, 'sbom.cdx.json'), json({
     bomFormat: 'CycloneDX', specVersion: '1.6', version: 1,
     metadata: { component: workspaces.get('.'), properties: [{ name: 'concordia:git:commit', value: commit }] },
