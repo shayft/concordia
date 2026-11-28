@@ -133,7 +133,9 @@ it('停服中断的规划在原工作区保留统计并等待用户决定', asyn
 
 it('取消规划只停止其命名请求，正在运行的普通任务仍可提交结果', async () => {
   expect((await ui.post('/api/spec/apply', { spec: spec('editor'), approved: true, expectedRevision: 0 })).status).toBe(200);
-  const task = await (await ui.post('/api/tasks/write/run', { mode: 'live', approved: true })).json();
+  const run = await ui.post('/api/tasks/write/run', { mode: 'live', approved: true });
+  expect(run.ok).toBe(true);
+  const task = await run.json();
   await vi.waitFor(() => expect(sent).toHaveLength(1));
   const plan = await (await ui.post('/api/plans/generate', req('lead'))).json() as PlanningRequest;
   await vi.waitFor(() => expect(sent).toHaveLength(2));
@@ -153,7 +155,10 @@ it('后台状态写入失败时保留现场，恢复可写后标记中断且不�
     frame(sent[0].res, JSON.stringify(spec('lead')), true);
     await vi.waitFor(() => expect(finish.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect((await ui.get(path)).status).toBe(409);
+    expect((await ui.post('/api/workspaces', { name: '另一个工作区' })).status).toBe(409);
   } finally { finish.mockRestore(); }
+  expect((await ui.post('/api/workspaces', { name: '另一个工作区' })).ok).toBe(true);
+  expect((await ui.post('/api/workspaces/default/select', {})).ok).toBe(true);
   expect((await list())[0]).toMatchObject({ id: job.id, status: 'interrupted', hasResult: false });
   expect(sent).toHaveLength(1);
 });

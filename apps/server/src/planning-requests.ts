@@ -26,7 +26,7 @@ export class PlanningRequests {
   rememberWriteFailure(id: string, bytes: number) {
     this.unsettled.set(id, bytes);
   }
-  private reconcile() {
+  flushInterrupted() {
     for (const [id, bytes] of this.unsettled) {
       try { this.finish(id, 'interrupted', bytes); }
       catch { throw new Error('规划状态尚未保存，请检查可用存储空间'); }
@@ -34,12 +34,12 @@ export class PlanningRequests {
     }
   }
   byKey(key: string) {
-    this.reconcile();
+    this.flushInterrupted();
     return this.db.prepare('SELECT ' + fields + ' FROM plan_requests WHERE workspace=? AND request_key=?')
       .get(this.workspace, key) as Row | undefined;
   }
   private row(id: string) {
-    this.reconcile();
+    this.flushInterrupted();
     const row = this.db.prepare('SELECT ' + fields + ' FROM plan_requests WHERE workspace=? AND id=?')
       .get(this.workspace, id) as Row | undefined;
     if (!row) throw new Error('当前工作区没有这项规划');
@@ -47,7 +47,7 @@ export class PlanningRequests {
   }
   get(id: string) { return summary(this.row(id)); }
   list() {
-    this.reconcile();
+    this.flushInterrupted();
     // A completed-page limit must never hide an active request's cancel control.
     const active = this.db.prepare('SELECT ' + fields + " FROM plan_requests WHERE workspace=? AND status='running' ORDER BY started DESC").all(this.workspace);
     const history = this.db.prepare('SELECT ' + fields + " FROM plan_requests WHERE workspace=? AND status<>'running' ORDER BY started DESC LIMIT 30").all(this.workspace);

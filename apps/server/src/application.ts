@@ -161,6 +161,7 @@ export async function registerApplication(app: FastifyInstance, path: string) {
   function switchBoard(id: string, newName?: string) {
     if (current.id === id) return;
     if (current.worker.occupied()) throw new Error('工作区仍有执行或已授权批次');
+    current.worker.requests.flushInterrupted();
     if (!newName && !workspaces().some((w) => w.id === id)) throw new Error('工作区不存在');
     const next = openBoard(id, newName !== undefined);
     try {
