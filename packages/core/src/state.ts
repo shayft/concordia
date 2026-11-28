@@ -68,6 +68,7 @@ export interface Question {
   blocking: boolean;
   hops: number;
   replyTo?: string;
+  replyTaskId?: string;
   status: 'open' | 'answered';
   answer?: string;
 }

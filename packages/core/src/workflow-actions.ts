@@ -22,17 +22,18 @@ export function scheduleReply(
   q: Question,
   log: Append,
   deps: CoreDependencies<WorkflowStorage>,
+  requireDecision = false,
 ) {
-  if (
-    !q.blocking ||
-    q.to === 'user' ||
-    q.status !== 'open' ||
-    state.tasks.some(
-      (t) =>
-        t.owner === q.to && (t.status === 'running' || (t.replyFor === q.taskId && t.status === 'ready')),
-    )
-  )
+  if (!q.blocking || q.to === 'user' || q.status !== 'open') return;
+  // A reply explicitly cancelled or paused by the user stays in that state.
+  if (q.replyTaskId && state.tasks.some(t => t.id === q.replyTaskId)) return;
+  const assigned = state.tasks.find(t => t.owner === q.to && t.replyFor === q.taskId &&
+    ['waiting','ready','decision','failed','paused'].includes(t.status));
+  if (assigned) {
+    q.replyTaskId = assigned.id;
     return;
+  }
+  if (state.tasks.some(t => t.owner === q.to && t.status === 'running')) return;
   const reply = makeTask({
     id: 'reply-' + deps.nextId(),
     title: '答复 · ' + entity(state.tasks, q.taskId).title,
@@ -44,9 +45,18 @@ export function scheduleReply(
     maxRetries: 1,
   });
   reply.replyFor = q.taskId;
-  refresh(reply, state);
+  q.replyTaskId = reply.id;
+  if (requireDecision) transition(reply, 'decision', '收件人的执行已结束，请决定是否答复');
+  else refresh(reply, state);
   state.tasks.push(reply);
   log('reply.scheduled', { taskId: reply.id, to: q.to });
+}
+
+export function reconcileReplies(state: State, owner: string, log: Append, deps: CoreDependencies<WorkflowStorage>) {
+  for (const question of state.questions) {
+    if (question.to === owner && question.blocking && question.status === 'open')
+      scheduleReply(state, question, log, deps, true);
+  }
 }
 
 export function applyAction(
@@ -102,6 +112,7 @@ export function applyAction(
       });
       if (s.acceptance && Object.values(s.acceptance).some((id) => entity(s.versions, id).stale))
         s.acceptance = null;
+      const interruptedOwners = new Set<string>();
       for (const downstream of s.tasks) {
         const last = s.executions.findLast((e) => e.taskId === downstream.id);
         if (
@@ -115,6 +126,7 @@ export function applyAction(
               entity(s.versions, last.inputs[c.slotId]).stale,
           )
         ) {
+          if (downstream.active) interruptedOwners.add(downstream.owner);
           reopen(downstream, s, deps.now());
           log('task.stale', { taskId: downstream.id, versionId: version.id });
           continue;
@@ -131,6 +143,7 @@ export function applyAction(
           });
         }
       }
+      for (const owner of interruptedOwners) reconcileReplies(s, owner, log, deps);
       return version;
     }
     case 'read_artifact': {
@@ -210,7 +223,7 @@ export function applyAction(
       if (
         task.replyFor &&
         s.questions.some(
-          (q) => q.taskId === task.replyFor && q.to === exec.owner && q.status === 'open' && q.blocking,
+          (q) => q.replyTaskId === task.id && q.to === exec.owner && q.status === 'open' && q.blocking,
         )
       )
         throw new Error('待答复问题尚未处理');

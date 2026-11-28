@@ -25,7 +25,7 @@ import {
 } from './state.ts';
 import { acceptanceCandidate, sameAcceptance, reviewExecution } from './acceptance.ts';
 import type { AcceptanceSnapshot } from '@concordia/protocol/workflow';
-import { applyAction, scheduleReply } from './workflow-actions.ts';
+import { applyAction, scheduleReply, reconcileReplies } from './workflow-actions.ts';
 export * from './state.ts';
 export * from './templates.ts';
 
@@ -289,6 +289,10 @@ export class Scheduler {
         log('budget.exhausted', { taskId });
         return null;
       }
+      if (task.replyFor) {
+        for (const q of s.questions)
+          if (q.to === agent.id && q.taskId === task.replyFor && q.status === 'open') q.replyTaskId = task.id;
+      }
       const id = this.deps.nextId(),
         inputs = inputsFor(task, s);
       if (Object.keys(inputs).length !== task.consumes.length) throw new Error('依赖尚未满足');
@@ -389,6 +393,7 @@ export class Scheduler {
       if (exhausted(plan, s, task, exec)) {
         fence(s, task, 'failed', this.deps.now());
         transition(task, 'decision', '调用预算已用尽');
+        reconcileReplies(s, exec.owner, log, this.deps);
         log('budget.exhausted', { taskId: task.id, id: exec.id });
         return false;
       }
@@ -435,6 +440,7 @@ export class Scheduler {
         task.retries++;
         refresh(task, s);
       } else transition(task, kind === 'fatal' || kind === 'transient' ? 'failed' : 'decision', kind);
+      reconcileReplies(s, exec.owner, log, this.deps);
       log('execution.failed', { id: exec.id, kind, status: task.status });
     });
   }
@@ -453,6 +459,7 @@ export class Scheduler {
           if (['done', 'failed', 'cancelled'].includes(task.status)) throw new Error('任务已经结束');
           fence(s, task, 'cancelled', this.deps.now());
           transition(task, operation === 'pause' ? 'paused' : 'cancelled');
+          reconcileReplies(s, task.owner, log, this.deps);
           break;
         case 'resume':
         case 'retry':
@@ -485,7 +492,9 @@ export class Scheduler {
       entity(plan.agents, owner);
       if (task.replyFor || ['done', 'cancelled'].includes(task.status)) throw new Error('此任务不能改派');
       fence(s, task, 'obsolete', this.deps.now());
+      const previousOwner = task.owner;
       task.owner = owner;
+      reconcileReplies(s, previousOwner, log, this.deps);
       entity(plan.tasks, taskId).owner = owner;
       s.revision++;
       s.plans.push(this.deps.storage.putContent(JSON.stringify(plan)));
@@ -599,14 +608,17 @@ export class Scheduler {
   recover() {
     return this.write((s, log) => {
       let count = 0;
+      const interrupted = new Set<string>();
       for (const task of s.tasks)
         if (task.active) {
           const id = task.active;
           fence(s, task, 'interrupted', this.deps.now());
           transition(task, 'decision', '上次执行中断');
+          interrupted.add(task.owner);
           log('execution.interrupted', { id, taskId: task.id });
           count++;
         }
+      for (const owner of interrupted) reconcileReplies(s, owner, log, this.deps);
       return count;
     });
   }

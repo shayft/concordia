@@ -188,6 +188,34 @@ describe('真实 SQLite 与脚本化成员', () => {
     scheduler.control('ui', 'accept');
     expect(task('ui').status).toBe('done');
   });
+  it.each(['failed','cancelled','interrupted','reassigned'] as const)('收件人 %s 时两条阻塞问题产生一份待决定的答复，重启不会再派发', ending => {
+    scheduler.apply(demoSpec());
+    const api = scheduler.claim('api');
+    pub(api.id, 'contract', 'v1');
+    const ui = scheduler.claim('ui');
+    for (const question of ['谁负责？','如何验证？'])
+      scheduler.act(ui.id,{type:'ask_question',to:'backend',blocking:true,question});
+    expect(scheduler.board().tasks.filter(t => t.replyFor)).toHaveLength(0);
+    if (ending === 'failed') scheduler.fail(api.id,'fatal');
+    if (ending === 'cancelled') scheduler.control('api','cancel');
+    if (ending === 'reassigned') scheduler.reassign('api','docs');
+    if (ending === 'interrupted') scheduler.recover();
+    const replies = scheduler.board().tasks.filter(t => t.replyFor === 'ui');
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({status:'decision',owner:'backend'});
+    expect(() => scheduler.claim(replies[0].id)).toThrow('尚未就绪');
+    scheduler.recover();
+    expect(scheduler.board().tasks.filter(t=>t.replyFor)).toHaveLength(1);
+    scheduler.control(replies[0].id,'resume');
+    expect(scheduler.context(scheduler.claim(replies[0].id).id).questions).toHaveLength(2);
+  });
+  it('全局停止后维持取消状态，不补发模型任务', () => {
+    scheduler.apply(demoSpec());
+    const api=scheduler.claim('api'); pub(api.id,'contract','v1');
+    scheduler.act(scheduler.claim('ui').id, {type:'ask_question',to:'backend',blocking:true,question:'如何验证？'});
+    scheduler.stopAll(); scheduler.recover();
+    expect(scheduler.board().tasks.filter(t=>t.replyFor)).toHaveLength(0);
+  });
   it('成员结束执行时仍有阻塞问题会安排一次答复，用户消息进入指定成员的下次输入', () => {
     scheduler.apply(demoSpec());
     const api = scheduler.claim('api');
